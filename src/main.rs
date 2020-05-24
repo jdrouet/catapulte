@@ -9,6 +9,8 @@ use actix_web::{middleware, App, HttpServer};
 use std::env;
 
 mod controller;
+mod error;
+mod service;
 
 fn get_address() -> String {
     match env::var("ADDRESS") {
@@ -37,11 +39,18 @@ macro_rules! bind_services {
 #[actix_rt::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
+
+    let smtp_pool = service::smtp::get_pool().expect("smtp service init");
+
     info!("starting server");
-    HttpServer::new(|| bind_services!(App::new().wrap(middleware::Logger::default())))
-        .bind(get_bind())?
-        .run()
-        .await
+    HttpServer::new(move || {
+        bind_services!(App::new()
+            .data(smtp_pool.clone())
+            .wrap(middleware::Logger::default()))
+    })
+    .bind(get_bind())?
+    .run()
+    .await
 }
 
 #[cfg(test)]
@@ -52,7 +61,8 @@ mod tests {
     use actix_web::{test, App};
 
     pub async fn execute_request(req: Request) -> ServiceResponse {
-        let mut app = test::init_service(bind_services!(App::new())).await;
+        let smtp_pool = service::smtp::get_pool().expect("smtp service init");
+        let mut app = test::init_service(bind_services!(App::new().data(smtp_pool.clone()))).await;
         test::call_service(&mut app, req).await
     }
 

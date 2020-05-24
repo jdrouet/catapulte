@@ -1,8 +1,12 @@
-use actix_web::{get, HttpResponse};
+use crate::service::smtp::SmtpPool;
+use actix_web::{get, web, HttpResponse};
 
 #[get("/status")]
-pub async fn handler() -> HttpResponse {
-    HttpResponse::NoContent().finish()
+pub async fn handler(smtp_pool: web::Data<SmtpPool>) -> HttpResponse {
+    match smtp_pool.get() {
+        Ok(_) => HttpResponse::NoContent().finish(),
+        Err(_) => HttpResponse::InternalServerError().json("Internal Server Error"),
+    }
 }
 
 #[cfg(test)]
@@ -11,7 +15,6 @@ mod tests {
     use actix_web::http::StatusCode;
     use actix_web::test;
 
-
     #[actix_rt::test]
     #[serial]
     async fn status_get_success() {
@@ -19,5 +22,4 @@ mod tests {
         let res = execute_request(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
     }
-
 }
