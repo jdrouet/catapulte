@@ -1,9 +1,11 @@
 use crate::error::ServerError;
 use lettre::smtp::authentication::Credentials;
+use lettre::smtp::error::Error as LettreError;
 use lettre::smtp::r2d2::SmtpConnectionManager;
 use lettre::{ClientSecurity, SmtpClient};
 use r2d2::Pool;
 use std::env;
+use std::string::ToString;
 use std::time::Duration;
 use url::Url;
 
@@ -12,9 +14,25 @@ pub enum SmtpError {
     PreconditionFailed(String),
 }
 
+impl ToString for SmtpError {
+    fn to_string(&self) -> String {
+        match self {
+            SmtpError::PreconditionFailed(msg) => {
+                format!("Smtp Error: precondition failed ({})", msg)
+            }
+        }
+    }
+}
+
+impl From<LettreError> for ServerError {
+    fn from(err: LettreError) -> Self {
+        ServerError::InternalServerError(err.to_string())
+    }
+}
+
 impl From<SmtpError> for ServerError {
     fn from(err: SmtpError) -> ServerError {
-        ServerError::Smtp(err)
+        ServerError::InternalServerError(err.to_string())
     }
 }
 

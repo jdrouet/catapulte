@@ -5,7 +5,7 @@ extern crate serial_test;
 #[macro_use]
 extern crate log;
 
-use actix_web::{middleware, App, HttpServer};
+use actix_web::{middleware, web, App, HttpServer};
 use std::env;
 
 mod controller;
@@ -30,9 +30,16 @@ fn get_bind() -> String {
     format!("{}:{}", get_address(), get_port())
 }
 
+macro_rules! create_app {
+    () => {
+        App::new().app_data(web::JsonConfig::default().error_handler(error::json_error_handler))
+    };
+}
+
 macro_rules! bind_services {
     ($app: expr) => {
         $app.service(controller::status::handler)
+            .service(controller::template_send::handler)
     };
 }
 
@@ -40,13 +47,18 @@ macro_rules! bind_services {
 async fn main() -> std::io::Result<()> {
     env_logger::init();
 
+    let template_provider =
+        service::template::provider::TemplateProvider::from_env().expect("template provider init");
     let smtp_pool = service::smtp::get_pool().expect("smtp service init");
 
     info!("starting server");
     HttpServer::new(move || {
-        bind_services!(App::new()
+        bind_services!(create_app!()
+            .data(template_provider.clone())
             .data(smtp_pool.clone())
-            .wrap(middleware::Logger::default()))
+            .wrap(middleware::DefaultHeaders::new().header("X-Version", "0.1.0"))
+            .wrap(middleware::Logger::default())
+            .wrap(middleware::Compress::default()))
     })
     .bind(get_bind())?
     .run()
@@ -61,8 +73,13 @@ mod tests {
     use actix_web::{test, App};
 
     pub async fn execute_request(req: Request) -> ServiceResponse {
+        let template_provider = service::template::provider::TemplateProvider::from_env()
+            .expect("template provider init");
         let smtp_pool = service::smtp::get_pool().expect("smtp service init");
-        let mut app = test::init_service(bind_services!(App::new().data(smtp_pool.clone()))).await;
+        let mut app = test::init_service(bind_services!(create_app!()
+            .data(template_provider.clone())
+            .data(smtp_pool.clone())))
+        .await;
         test::call_service(&mut app, req).await
     }
 

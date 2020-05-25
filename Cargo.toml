@@ -7,14 +7,20 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+actix-http = "1.0"
 actix-web = "2.0"
 actix-rt = "1.0"
 env_logger = "0.7"
+handlebars = "3.0"
 lettre = { features = ["connection-pool", "r2d2", "smtp-transport"], version = "0.9" }
+lettre_email = "0.9"
 log = "0.4"
+mrml = "0.1"
 r2d2 = "0.8"
+serde = { features = ["derive"], version = "1.0" }
+serde_json = { version = "1.0" }
 url = "2.1"
 
 [dev-dependencies]
-actix-http = "1.0"
+reqwest = { features = ["json"], version = "0.10" }
 serial_test = "0.4"
