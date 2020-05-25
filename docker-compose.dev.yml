@@ -1,0 +1,7 @@
+version: '2'
+
+services:
+  smtp:
+    image: reachfive/fake-smtp-server
+    ports:
+      - 1025:1025
