@@ -5,3 +5,4 @@ services:
     image: reachfive/fake-smtp-server
     ports:
       - 1025:1025
+      - 1080:1080

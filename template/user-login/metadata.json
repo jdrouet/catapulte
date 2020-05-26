@@ -1,0 +1,16 @@
+{
+  "name": "user-login",
+  "description": "Template for login with magic link",
+  "path": "template.mjml",
+  "attributes": {
+    "type": "object",
+    "properties": {
+      "token": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "token"
+    ]
+  }
+}

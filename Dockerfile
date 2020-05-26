@@ -8,6 +8,7 @@ COPY Cargo.toml /code/Cargo.toml
 RUN cargo fetch
 
 COPY src /code/src
+COPY template /code/template
 
 CMD [ "cargo", "test", "--offline" ]
 

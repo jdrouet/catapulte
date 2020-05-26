@@ -1,0 +1,14 @@
+<mjml>
+  <mj-head>
+    <mj-title>Hello {{name}}!</mj-title>
+    <mj-preview>Hello {{name}}!</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hello {{name}}!</mj-text>
+        <mj-button href="http://example.com/login?token={{token}}">Login</mj-button>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

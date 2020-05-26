@@ -11,6 +11,8 @@ jobs:
     docker:
       - image: jdrouet/rust-nightly:buster-slim-dev
       - image: reachfive/fake-smtp-server
+    environment:
+      TEMPLATE_ROOT: template
     steps:
       - checkout
       - run: bash script/run-coverage.sh
