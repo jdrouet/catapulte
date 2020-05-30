@@ -39,7 +39,8 @@ macro_rules! create_app {
 macro_rules! bind_services {
     ($app: expr) => {
         $app.service(controller::status::handler)
-            .service(controller::template_send::handler)
+            .service(controller::template_send_json::handler)
+            .service(controller::template_send_multipart::handler)
     };
 }
 
@@ -71,6 +72,29 @@ mod tests {
     use actix_http::Request;
     use actix_web::dev::ServiceResponse;
     use actix_web::{test, App};
+    use reqwest;
+    use serde::Deserialize;
+    use uuid::Uuid;
+
+    #[derive(Deserialize)]
+    pub struct Email {
+        pub html: String,
+        pub text: String,
+    }
+
+    pub async fn get_latest_inbox(from: &String, to: &String) -> Vec<Email> {
+        let url = format!("http://localhost:1080/api/emails?from={}&to={}", from, to);
+        reqwest::get(url.as_str())
+            .await
+            .unwrap()
+            .json::<Vec<Email>>()
+            .await
+            .unwrap()
+    }
+
+    pub fn create_email() -> String {
+        format!("{}@example.com", Uuid::new_v4())
+    }
 
     pub async fn execute_request(req: Request) -> ServiceResponse {
         let template_provider = service::template::provider::TemplateProvider::from_env()

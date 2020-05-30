@@ -8,19 +8,26 @@ edition = "2018"
 
 [dependencies]
 actix-http = "1.0"
+actix-multipart = "0.2"
 actix-web = "2.0"
 actix-rt = "1.0"
+bytes = "0.5"
 env_logger = "0.7"
+futures = "0.3"
 handlebars = "3.0"
 lettre = { features = ["connection-pool", "r2d2", "smtp-transport"], version = "0.9" }
 lettre_email = "0.9"
 log = "0.4"
+mime = "0.3"
 mrml = "0.1"
 r2d2 = "0.8"
 serde = { features = ["derive"], version = "1.0" }
 serde_json = { version = "1.0" }
+tempfile = "3.1"
 url = "2.1"
+uuid = { version = "0.8", features = ["v4"] }
 
 [dev-dependencies]
+common-multipart-rfc7578 = "0.2.0-rc"
 reqwest = { features = ["json"], version = "0.10" }
 serial_test = "0.4"

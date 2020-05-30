@@ -1,4 +1,5 @@
 use crate::error::ServerError;
+use crate::service::multipart::MultipartFile;
 use handlebars::{Handlebars, TemplateRenderError as HandlebarTemplateRenderError};
 use lettre::SendableEmail;
 use lettre_email::{error::Error as LetterError, EmailBuilder};
@@ -60,11 +61,33 @@ pub struct Template {
     pub mjml: String,
 }
 
+pub fn default_attachments() -> Vec<MultipartFile> {
+    vec![]
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TemplateOptions {
     to: String,
     from: String,
     params: JsonValue,
+    #[serde(default = "default_attachments", skip_deserializing, skip_serializing)]
+    attachments: Vec<MultipartFile>,
+}
+
+impl TemplateOptions {
+    pub fn new(
+        from: String,
+        to: String,
+        params: JsonValue,
+        attachments: Vec<MultipartFile>,
+    ) -> Self {
+        Self {
+            from,
+            to,
+            params,
+            attachments,
+        }
+    }
 }
 
 impl Template {
@@ -85,13 +108,20 @@ impl Template {
 
     pub fn to_email(&self, opts: &TemplateOptions) -> Result<SendableEmail, TemplateError> {
         debug!("rendering template: {} ({})", self.name, self.description);
-        let email = EmailBuilder::new()
+        let mut builder = EmailBuilder::new()
             .from(opts.from.clone())
             .to(opts.to.clone())
             .subject(self.get_title(&opts))
             .text(self.get_text(&opts))
-            .html(self.get_html(&opts)?)
-            .build()?;
+            .html(self.get_html(&opts)?);
+        for item in opts.attachments.iter() {
+            builder = builder.attachment_from_file(
+                item.filepath.as_path(),
+                item.filename.as_ref().map(|value| value.as_str()),
+                &item.content_type,
+            )?;
+        }
+        let email = builder.build()?;
         Ok(email.into())
     }
 }
