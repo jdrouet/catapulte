@@ -130,7 +130,7 @@ pub async fn handler(
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::{create_email, get_latest_inbox, execute_request};
+    use crate::tests::{create_email, execute_request, get_latest_inbox};
     use actix_web::http::{Method, StatusCode};
     use actix_web::test;
     use actix_web::web::BytesMut;
