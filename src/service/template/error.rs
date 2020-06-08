@@ -1,5 +1,5 @@
-use super::provider::TemplateProviderError;
 use super::manager::TemplateManagerError;
+use super::provider::TemplateProviderError;
 use super::template::TemplateError;
 
 #[derive(Debug)]
