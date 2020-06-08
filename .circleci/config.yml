@@ -15,5 +15,6 @@ jobs:
       TEMPLATE_ROOT: template
     steps:
       - checkout
+      - run: rustfmt --edition 2018 --check src/{**/,}*.rs
       - run: bash script/run-coverage.sh
       - run: bash script/push-coverage.sh
