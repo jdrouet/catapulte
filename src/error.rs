@@ -82,3 +82,9 @@ pub fn json_error_handler(err: JsonPayloadError, _req: &HttpRequest) -> ActixErr
     let res = error.error_response();
     actix_web::error::InternalError::from_response(error, res).into()
 }
+
+impl std::convert::From<std::io::Error> for ServerError {
+    fn from(error: std::io::Error) -> Self {
+        ServerError::InternalServerError(error.to_string())
+    }
+}
