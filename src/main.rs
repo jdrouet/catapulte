@@ -5,7 +5,7 @@ extern crate serial_test;
 #[macro_use]
 extern crate log;
 
-use actix_web::{middleware, web, App, HttpServer};
+use actix_web::{guard, middleware, web, App, HttpServer};
 use std::env;
 
 mod controller;
@@ -39,8 +39,20 @@ macro_rules! create_app {
 macro_rules! bind_services {
     ($app: expr) => {
         $app.service(controller::status::handler)
-            .service(controller::template_send_json::handler)
-            .service(controller::template_send_multipart::handler)
+            .route(
+                "/templates/{name}",
+                web::route()
+                    .guard(guard::Post())
+                    .guard(guard::fn_guard(controller::template_send_multipart::filter))
+                    .to(controller::template_send_multipart::handler),
+            )
+            .route(
+                "/templates/{name}",
+                web::route()
+                    .guard(guard::Post())
+                    .guard(guard::fn_guard(controller::template_send_json::filter))
+                    .to(controller::template_send_json::handler),
+            )
     };
 }
 

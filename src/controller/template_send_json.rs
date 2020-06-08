@@ -3,10 +3,18 @@ use crate::service::smtp::SmtpPool;
 use crate::service::template::manager::TemplateManager;
 use crate::service::template::provider::TemplateProvider;
 use crate::service::template::template::TemplateOptions;
-use actix_web::{post, web, HttpResponse};
+use actix_http::RequestHead;
+use actix_web::{web, HttpResponse};
 use lettre::Transport;
 
-#[post("/templates/{name}/json")]
+pub fn filter(req: &RequestHead) -> bool {
+    req.headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Some(value == "application/json"))
+        .unwrap_or(false)
+}
+
 pub async fn handler(
     smtp_pool: web::Data<SmtpPool>,
     template_provider: web::Data<TemplateProvider>,
@@ -41,7 +49,7 @@ mod tests {
             }
         });
         let req = test::TestRequest::post()
-            .uri("/templates/user-login/json")
+            .uri("/templates/user-login")
             .set_json(&payload)
             .to_request();
         let res = execute_request(req).await;
@@ -69,7 +77,7 @@ mod tests {
             }
         });
         let req = test::TestRequest::post()
-            .uri("/templates/user-login/json")
+            .uri("/templates/user-login")
             .set_json(&payload)
             .to_request();
         let res = execute_request(req).await;
@@ -96,7 +104,7 @@ mod tests {
             }
         });
         let req = test::TestRequest::post()
-            .uri("/templates/not-found/json")
+            .uri("/templates/not-found")
             .set_json(&payload)
             .to_request();
         let res = execute_request(req).await;
@@ -115,7 +123,7 @@ mod tests {
             }
         });
         let req = test::TestRequest::post()
-            .uri("/templates/user-login/json")
+            .uri("/templates/user-login")
             .set_json(&payload)
             .to_request();
         let res = execute_request(req).await;

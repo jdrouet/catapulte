@@ -6,8 +6,9 @@ use crate::service::smtp::SmtpPool;
 use crate::service::template::manager::TemplateManager;
 use crate::service::template::provider::TemplateProvider;
 use crate::service::template::template::TemplateOptions;
+use actix_http::RequestHead;
 use actix_multipart::{Field, Multipart};
-use actix_web::{post, web, HttpResponse};
+use actix_web::{web, HttpResponse};
 use futures::TryStreamExt;
 use lettre::Transport;
 use serde_json::Value as JsonValue;
@@ -15,6 +16,14 @@ use std::convert::TryInto;
 use std::default::Default;
 use std::path::Path;
 use tempfile::TempDir;
+
+pub fn filter(req: &RequestHead) -> bool {
+    req.headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Some(value.starts_with("multipart/form-data")))
+        .unwrap_or(false)
+}
 
 #[derive(Default)]
 struct TemplateOptionsParser {
@@ -101,7 +110,7 @@ impl TryInto<TemplateOptions> for TemplateOptionsParser {
     }
 }
 
-#[post("/templates/{name}/multipart")]
+// #[post("/templates/{name}/multipart")]
 pub async fn handler(
     smtp_pool: web::Data<SmtpPool>,
     template_provider: web::Data<TemplateProvider>,
@@ -156,7 +165,7 @@ mod tests {
         }
         let req = test::TestRequest::with_header("content-type", content_type)
             .method(Method::POST)
-            .uri("/templates/user-login/multipart")
+            .uri("/templates/user-login")
             .set_payload(bytes)
             .to_request();
         let res = execute_request(req).await;
