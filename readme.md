@@ -2,20 +2,13 @@
 
 [![codecov](https://codecov.io/gh/jdrouet/catapulte/branch/master/graph/badge.svg)](https://codecov.io/gh/jdrouet/catapulte)
 [![CircleCI Build Status](https://circleci.com/gh/jdrouet/catapulte.svg?style=shield)](https://circleci.com/gh/jdrouet/catapulte)
-[![Greenkeeper badge](https://badges.greenkeeper.io/jdrouet/catapulte.svg)](https://greenkeeper.io/)
-
-You wanna use it? Open the [documentation](doc/index.md)
 
 ## What is catapulte?
 Catapulte is an open source mailer you can host yourself.
 
 You can use it to quickly catapult your transactionnal emails to destination.
 
-It works with the amazing https://www.jolimail.io template builder, so that your boss|marketing team|client|designer can make the email template themself. Or you can [build your own templates by hand](./doc/local-template.md).
-
-You can focus on things that really matter (let's face it, making responsive email templates is a pain).
-
-## Why did we buid catapulte?
+## Why did we build catapulte?
 
 Catapulte comes from the frustration of using several email providers.
 We used to work with products like [sendgrid](https://sendgrid.com/),
@@ -24,15 +17,14 @@ We used to work with products like [sendgrid](https://sendgrid.com/),
 But they have many disadvantages :
 
 - Most of them are not really transactionnal oriented, and users complain that their login emails take a long time to arrive.
-- You cannot host it, use it on premise
+- You cannot host it nor use it on premise
 - It's amurican! They can get your data without asking your permission... not really nice...
 - They usually don't have templating tools for our non tech coworkers that ask us to change a wording every 2 days.
   And when they do, the editors are like html online editors, so it ends up being our job to make the template anyway.
 
 ## Should you use it?
 
-If, like us, you didn't find any good way of doing transactionnal emails, then Yes !
-Wether you want to send your emails yourself or you just don't want to deal with building the templates, we have you covered.
+If, like us, you didn't find any good way of doing transactionnal emails, then Yes!
 
 ## Why you should use it :
 
