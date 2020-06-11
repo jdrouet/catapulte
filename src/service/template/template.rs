@@ -91,29 +91,22 @@ impl TemplateOptions {
 }
 
 impl Template {
-    fn get_title(&self, _opts: &TemplateOptions) -> String {
-        "".into()
-    }
-
-    fn get_text(&self, _opts: &TemplateOptions) -> String {
-        "".into()
-    }
-
-    fn get_html(&self, opts: &TemplateOptions) -> Result<String, TemplateError> {
+    fn render(&self, opts: &TemplateOptions) -> Result<mrml::Email, TemplateError> {
         let reg = Handlebars::new();
         let mjml = reg.render_template(self.mjml.as_str(), &opts.params)?;
-        let html = mrml::to_html(mjml.as_str(), mrml::Options::default())?;
-        Ok(html)
+        let email = mrml::to_email(mjml.as_str(), mrml::Options::default())?;
+        Ok(email)
     }
 
     pub fn to_email(&self, opts: &TemplateOptions) -> Result<SendableEmail, TemplateError> {
         debug!("rendering template: {} ({})", self.name, self.description);
+        let email = self.render(opts)?;
         let mut builder = EmailBuilder::new()
             .from(opts.from.clone())
             .to(opts.to.clone())
-            .subject(self.get_title(&opts))
-            .text(self.get_text(&opts))
-            .html(self.get_html(&opts)?);
+            .subject(email.subject)
+            .text(email.text)
+            .html(email.html);
         for item in opts.attachments.iter() {
             builder = builder.attachment_from_file(
                 item.filepath.as_path(),

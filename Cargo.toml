@@ -19,7 +19,7 @@ lettre = { features = ["connection-pool", "r2d2", "smtp-transport"], version = "
 lettre_email = "0.9"
 log = "0.4"
 mime = "0.3"
-mrml = "0.1"
+mrml = "0.2"
 r2d2 = "0.8"
 serde = { features = ["derive"], version = "1.0" }
 serde_json = { version = "1.0" }
