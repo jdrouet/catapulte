@@ -1,4 +1,9 @@
-FROM rust:1-slim-buster AS base
+ARG PLATFORM
+FROM ${PLATFORM}/rust:1-slim-buster AS base
+
+RUN apt-get update \
+  && apt-get install -y libssl-dev pkg-config \
+  && rm -rf /var/lib/apt/lists/*
 
 ENV USER=root
 
@@ -16,7 +21,12 @@ FROM base AS builder
 
 RUN cargo build --release --offline
 
-FROM rust:1-slim-buster
+ARG PLATFORM
+FROM ${PLATFORM}/debian:buster-slim
+
+RUN apt-get update \
+  && apt-get install -y ca-certificates libssl1.1 \
+  && rm -rf /var/lib/apt/lists/*
 
 ENV ADDRESS=0.0.0.0
 ENV PORT=3000
