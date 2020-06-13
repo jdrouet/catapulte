@@ -22,6 +22,44 @@ But they have many disadvantages :
 - They usually don't have templating tools for our non tech coworkers that ask us to change a wording every 2 days.
   And when they do, the editors are like html online editors, so it ends up being our job to make the template anyway.
 
+## How to use it?
+
+Catapulte is a simple service that renders your mjml template, interpolates some data and then send it to a SMTP server.
+If you want to see how to create your own template, take a look at the `/template` folder in this repository.
+
+You can then start catapulte in different ways. We recommend using Docker if you are on a amd64, i386 or arm64v8 architecture.
+By doing the following, you'll be able to have a running server that will render and send your email.
+
+```bash
+docker run -d \
+  --name catapulte \
+  -e SMTP_URL=smtp://localhost:25 \
+  -e TEMPLATE_ROOT=/templates \
+  -p 3000:3000 \
+  -v /path/to/your/templates:/templates:ro \
+  jdrouet/catapulte
+```
+
+Once your server started, you can simply send an email using an `HTTP` request.
+
+```bash
+curl -X POST -v \
+  -H "Content-Type: application/json" \
+  --data '{"from":"alice@example.com","to":"bob@example.com","params":{"some":"data"}}' \
+  http://localhost:3000/templates/the-name-of-your-template
+```
+
+You can also send attachments using a multipart request.
+
+```bash
+curl -X POST -v \
+  -F attachments=@asset/cat.jpg \
+  -F from=alice@example.com \
+  -F to=bob@example.com \
+  -F params='{"some":"data"}' \
+  http://localhost:3000/templates/user-login
+```
+
 ## Should you use it?
 
 If, like us, you didn't find any good way of doing transactionnal emails, then Yes!
