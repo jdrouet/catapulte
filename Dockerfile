@@ -1,5 +1,4 @@
-ARG PLATFORM
-FROM ${PLATFORM}/rust:1-slim-buster AS base
+FROM rust:1-slim-buster AS base
 
 RUN apt-get update \
   && apt-get install -y libssl-dev pkg-config \
@@ -21,8 +20,7 @@ FROM base AS builder
 
 RUN cargo build --release --offline
 
-ARG PLATFORM
-FROM ${PLATFORM}/debian:buster-slim
+FROM debian:buster-slim
 
 RUN apt-get update \
   && apt-get install -y ca-certificates libssl1.1 \

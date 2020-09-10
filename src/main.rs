@@ -94,8 +94,22 @@ mod tests {
         pub text: String,
     }
 
+    fn get_inbox_hostname() -> String {
+        std::env::var("INBOX_HOSTNAME").unwrap_or("localhost".into())
+    }
+
+    fn get_inbox_port() -> String {
+        std::env::var("INBOX_PORT").unwrap_or("1080".into())
+    }
+
     pub async fn get_latest_inbox(from: &String, to: &String) -> Vec<Email> {
-        let url = format!("http://localhost:1080/api/emails?from={}&to={}", from, to);
+        let url = format!(
+            "http://{}:{}/api/emails?from={}&to={}",
+            get_inbox_hostname(),
+            get_inbox_port(),
+            from,
+            to
+        );
         reqwest::get(url.as_str())
             .await
             .unwrap()

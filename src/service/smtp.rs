@@ -7,7 +7,6 @@ use r2d2::Pool;
 use std::env;
 use std::string::ToString;
 use std::time::Duration;
-use url::Url;
 
 #[derive(Debug)]
 pub enum SmtpError {
@@ -36,52 +35,46 @@ impl From<SmtpError> for ServerError {
     }
 }
 
-fn get_smtp_url() -> Result<Url, SmtpError> {
-    let url = match env::var("SMTP_URL") {
-        Ok(value) => value,
-        Err(_) => "smtp://127.0.0.1:1025".into(),
-    };
-    match Url::parse(url.as_str()) {
-        Ok(value) => Ok(value),
-        Err(_) => Err(SmtpError::PreconditionFailed("couldn't parse url".into())),
-    }
+fn get_smtp_hostname() -> String {
+    env::var("SMTP_HOSTNAME").unwrap_or("localhost".into())
 }
 
-fn get_smtp_domain(url: &Url) -> String {
-    match url.host().and_then(|host| Some(host.to_string())) {
-        Some(value) => value,
-        None => "127.0.0.1".into(),
-    }
+fn get_smtp_port() -> u16 {
+    env::var("SMTP_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(25u16)
 }
 
-fn get_smtp_port(url: &Url) -> u16 {
-    match url.port() {
-        Some(value) => value,
-        None => 25u16,
-    }
+fn get_smtp_username() -> Option<String> {
+    env::var("SMTP_USERNAME").ok()
 }
 
-fn get_credentials(url: &Url) -> Option<Credentials> {
-    let username = url.username();
-    let password = url.password();
-    if username.len() == 0 && password.is_none() {
+fn get_smtp_password() -> Option<String> {
+    env::var("SMTP_PASSWORD").ok()
+}
+
+fn get_credentials() -> Option<Credentials> {
+    let username = get_smtp_username();
+    let password = get_smtp_password();
+    if username.is_none() && password.is_none() {
         None
     } else {
-        let password = password.or_else(|| Some("")).unwrap();
+        let username = username.unwrap_or("".into());
+        let password = password.unwrap_or("".into());
         Some(Credentials::new(username.into(), password.into()))
     }
 }
 
-fn get_security(_url: &Url) -> ClientSecurity {
+fn get_security() -> ClientSecurity {
     // TODO
     ClientSecurity::None
 }
 
 fn get_client() -> Result<SmtpClient, SmtpError> {
-    let url = get_smtp_url()?;
-    let domain = get_smtp_domain(&url);
-    let port = get_smtp_port(&url);
-    let security = get_security(&url);
+    let domain = get_smtp_hostname();
+    let port = get_smtp_port();
+    let security = get_security();
     let client = match SmtpClient::new((domain.as_str(), port), security) {
         Ok(client) => client,
         Err(_) => {
@@ -91,11 +84,11 @@ fn get_client() -> Result<SmtpClient, SmtpError> {
         }
     };
     let client = client.timeout(Some(Duration::from_secs(5)));
-    let client = match get_credentials(&url) {
-        Some(creds) => client.credentials(creds),
-        None => client,
-    };
-    Ok(client)
+    if let Some(creds) = get_credentials() {
+        Ok(client.credentials(creds))
+    } else {
+        Ok(client)
+    }
 }
 
 fn get_connection_manager() -> Result<SmtpConnectionManager, SmtpError> {
