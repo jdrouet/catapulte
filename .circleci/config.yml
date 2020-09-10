@@ -13,6 +13,8 @@ jobs:
       - image: reachfive/fake-smtp-server
     environment:
       TEMPLATE_ROOT: template
+      SMTP_HOSTNAME: localhost
+      SMTP_PORT: 1025
     steps:
       - checkout
       - run: rustfmt --edition 2018 --check src/{**/,}*.rs
