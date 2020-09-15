@@ -27,7 +27,7 @@ pub async fn handler(
     Ok(HttpResponse::NoContent().finish())
 }
 
-// EXCL_COVERAGE_START
+// LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
     use crate::tests::{create_email, execute_request, get_latest_inbox};
@@ -130,4 +130,4 @@ mod tests {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 }
-// EXCL_COVERAGE_STOP
+// LCOV_EXCL_END

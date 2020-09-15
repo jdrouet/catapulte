@@ -46,7 +46,7 @@ impl TemplateProvider {
     }
 }
 
-// EXCL_COVERAGE_START
+// LCOV_EXCL_START
 #[cfg(test)]
 impl TemplateProvider {
     #[cfg(feature = "provider-jolimail")]
@@ -90,4 +90,4 @@ mod tests {
         assert!(provider.unwrap().is_jolimail());
     }
 }
-// EXCL_COVERAGE_STOP
+// LCOV_EXCL_END

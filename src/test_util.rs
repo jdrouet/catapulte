@@ -1,4 +1,4 @@
-// EXCL_COVERAGE_START
+// LCOV_EXCL_START
 pub struct TempEnvVar {
     pub key: String,
     pub initial_value: Option<String>,
@@ -31,4 +31,4 @@ impl Drop for TempEnvVar {
         }
     }
 }
-// EXCL_COVERAGE_STOP
+// LCOV_EXCL_END

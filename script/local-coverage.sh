@@ -7,8 +7,8 @@ grcov ./target/debug \
   --ignore-not-existing \
   --source-dir . \
   --output-path target/lcov.info \
-  --excl-start '// EXCL_COVERAGE_START'\
-  --excl-stop '// EXCL_COVERAGE_STOP'
+  --excl-start '// LCOV_EXCL_START'\
+  --excl-stop '// LCOV_EXCL_END'
 
 grcov ./target/debug \
   --output-type html \
@@ -17,5 +17,5 @@ grcov ./target/debug \
   --ignore-not-existing \
   --source-dir . \
   --output-path target/coverage \
-  --excl-start '// EXCL_COVERAGE_START'\
-  --excl-stop '// EXCL_COVERAGE_STOP'
+  --excl-start '// LCOV_EXCL_START'\
+  --excl-stop '// LCOV_EXCL_END'

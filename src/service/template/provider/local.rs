@@ -64,7 +64,7 @@ impl TemplateManager for LocalTemplateProvider {
     }
 }
 
-// EXCL_COVERAGE_START
+// LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,4 +112,4 @@ mod tests {
         assert_eq!(result.description, "Template for login with magic link");
     }
 }
-// EXCL_COVERAGE_STOP
+// LCOV_EXCL_END

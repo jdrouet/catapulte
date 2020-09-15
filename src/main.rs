@@ -59,7 +59,7 @@ macro_rules! bind_services {
     };
 }
 
-// EXCL_COVERAGE_START
+// LCOV_EXCL_START
 #[actix_rt::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
@@ -169,4 +169,4 @@ mod tests {
         assert_eq!(get_bind(), "something:1234");
     }
 }
-// EXCL_COVERAGE_STOP
+// LCOV_EXCL_END

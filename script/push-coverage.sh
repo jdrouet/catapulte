@@ -7,8 +7,8 @@ grcov ./target/debug \
   --ignore-not-existing \
   --source-dir . \
   --output-path target/lcov.info \
-  --excl-start '// EXCL_COVERAGE_START'\
-  --excl-stop '// EXCL_COVERAGE_STOP' \
+  --excl-start '// LCOV_EXCL_START'\
+  --excl-stop '// LCOV_EXCL_END' \
   --token $CODECOV_TOKEN
 
 bash <(curl -s https://codecov.io/bash) -f target/lcov.info
