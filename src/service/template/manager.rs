@@ -1,12 +1,14 @@
 use super::template::Template;
 use crate::error::ServerError;
+use async_trait::async_trait;
 use serde_json::error::Error as JsonError;
 use std::io::Error as IoError;
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum TemplateManagerError {
-    TemplateNotFound,
     MetadataInvalid,
+    InternalError(String),
+    TemplateNotFound,
 }
 
 impl From<IoError> for TemplateManagerError {
@@ -21,9 +23,9 @@ impl From<JsonError> for TemplateManagerError {
     }
 }
 
-impl std::fmt::Display for TemplateManagerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+impl From<reqwest::Error> for TemplateManagerError {
+    fn from(err: reqwest::Error) -> Self {
+        TemplateManagerError::InternalError(format!("network error {:?}", err))
     }
 }
 
@@ -36,10 +38,12 @@ impl From<TemplateManagerError> for ServerError {
             TemplateManagerError::MetadataInvalid => {
                 ServerError::InternalServerError("unable to load metadata".into())
             }
+            TemplateManagerError::InternalError(msg) => ServerError::InternalServerError(msg),
         }
     }
 }
 
+#[async_trait]
 pub trait TemplateManager {
-    fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError>;
+    async fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError>;
 }

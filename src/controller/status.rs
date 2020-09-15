@@ -9,6 +9,7 @@ pub async fn handler(smtp_pool: web::Data<SmtpPool>) -> HttpResponse {
     }
 }
 
+// EXCL_COVERAGE_START
 #[cfg(test)]
 mod tests {
     use crate::tests::execute_request;
@@ -23,3 +24,4 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
     }
 }
+// EXCL_COVERAGE_STOP

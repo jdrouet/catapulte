@@ -3,7 +3,6 @@ use crate::service::multipart::{
     field_to_file, field_to_json_value, field_to_string, MultipartFile,
 };
 use crate::service::smtp::SmtpPool;
-use crate::service::template::manager::TemplateManager;
 use crate::service::template::provider::TemplateProvider;
 use crate::service::template::template::TemplateOptions;
 use actix_http::RequestHead;
@@ -117,7 +116,7 @@ pub async fn handler(
     name: web::Path<String>,
     body: Multipart,
 ) -> Result<HttpResponse, ServerError> {
-    let template = template_provider.find_by_name(name.as_str())?;
+    let template = template_provider.find_by_name(name.as_str()).await?;
     let tmp_dir = TempDir::new()?;
     let tmp_path = tmp_dir.path().to_owned();
     let parser = TemplateOptionsParser::from_multipart(&tmp_path, body).await?;
@@ -128,6 +127,7 @@ pub async fn handler(
     Ok(HttpResponse::NoContent().finish())
 }
 
+// EXCL_COVERAGE_START
 #[cfg(test)]
 mod tests {
     use crate::tests::{create_email, execute_request, get_latest_inbox};
@@ -180,3 +180,4 @@ mod tests {
             .contains("\"http://example.com/login?token=this_is_a_token\""));
     }
 }
+// EXCL_COVERAGE_STOP

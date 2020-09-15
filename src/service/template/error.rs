@@ -2,7 +2,7 @@ use super::manager::TemplateManagerError;
 use super::provider::TemplateProviderError;
 use super::template::TemplateError;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Error {
     ProviderError(TemplateProviderError),
     ManagerError(TemplateManagerError),
@@ -24,15 +24,5 @@ impl From<TemplateManagerError> for Error {
 impl From<TemplateError> for Error {
     fn from(error: TemplateError) -> Self {
         Error::TemplateError(error)
-    }
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::ProviderError(err) => err.fmt(f),
-            Error::ManagerError(err) => err.fmt(f),
-            Error::TemplateError(err) => err.fmt(f),
-        }
     }
 }

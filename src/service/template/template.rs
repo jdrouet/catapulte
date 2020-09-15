@@ -8,49 +8,44 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::string::ToString;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum TemplateError {
-    InterpolationError(HandlebarTemplateRenderError),
-    RenderingError(mrml::Error),
-    SendingError(LetterError),
+    InterpolationError(String),
+    RenderingError(String),
+    SendingError(String),
 }
 
 impl From<HandlebarTemplateRenderError> for TemplateError {
     fn from(err: HandlebarTemplateRenderError) -> Self {
-        TemplateError::InterpolationError(err)
+        TemplateError::InterpolationError(err.to_string())
     }
 }
 
 impl From<LetterError> for TemplateError {
     fn from(err: LetterError) -> Self {
-        TemplateError::SendingError(err)
+        TemplateError::SendingError(err.to_string())
     }
 }
 
 impl From<TemplateError> for ServerError {
     fn from(err: TemplateError) -> Self {
         match err {
-            TemplateError::InterpolationError(err) => ServerError::BadRequest(err.to_string()),
-            TemplateError::RenderingError(err) => ServerError::InternalServerError(match err {
-                mrml::Error::MJMLError(mjml_err) => match mjml_err {
-                    mrml::mjml::error::Error::ParseError(msg) => msg.clone(),
-                },
-                mrml::Error::XMLError(xml_err) => xml_err.to_string(),
-            }),
-            TemplateError::SendingError(err) => ServerError::InternalServerError(err.to_string()),
+            TemplateError::InterpolationError(msg) => ServerError::BadRequest(msg),
+            TemplateError::RenderingError(msg) => ServerError::InternalServerError(msg),
+            TemplateError::SendingError(msg) => ServerError::InternalServerError(msg),
         }
     }
 }
 
 impl From<mrml::Error> for TemplateError {
     fn from(err: mrml::Error) -> Self {
-        TemplateError::RenderingError(err)
-    }
-}
-
-impl std::fmt::Display for TemplateError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        let msg = match err {
+            mrml::Error::MJMLError(mjml_error) => match mjml_error {
+                mrml::mjml::error::Error::ParseError(msg) => format!("parser error: {}", msg),
+            },
+            mrml::Error::XMLError(xml_error) => xml_error.to_string(),
+        };
+        TemplateError::RenderingError(msg)
     }
 }
 
@@ -58,7 +53,8 @@ impl std::fmt::Display for TemplateError {
 pub struct Template {
     pub name: String,
     pub description: String,
-    pub mjml: String,
+    pub content: String,
+    pub attributes: JsonValue,
 }
 
 pub fn default_attachments() -> Vec<MultipartFile> {
@@ -93,7 +89,7 @@ impl TemplateOptions {
 impl Template {
     fn render(&self, opts: &TemplateOptions) -> Result<mrml::Email, TemplateError> {
         let reg = Handlebars::new();
-        let mjml = reg.render_template(self.mjml.as_str(), &opts.params)?;
+        let mjml = reg.render_template(self.content.as_str(), &opts.params)?;
         let email = mrml::to_email(mjml.as_str(), mrml::Options::default())?;
         Ok(email)
     }
@@ -118,3 +114,61 @@ impl Template {
         Ok(email.into())
     }
 }
+
+// EXCL_COVERAGE_START
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn render_success() {
+        let tmpl = Template {
+            name: "hello".into(),
+            description: "world".into(),
+            content: "<mjml></mjml>".into(),
+            attributes: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    }
+                },
+            }),
+        };
+        let opts = TemplateOptions::new(
+            "sender@example.com".into(),
+            "recipient@example.com".into(),
+            json!({"name": "Alice"}),
+            vec![],
+        );
+        let result = tmpl.render(&opts);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn to_email_success() {
+        let tmpl = Template {
+            name: "hello".into(),
+            description: "world".into(),
+            content: "<mjml></mjml>".into(),
+            attributes: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    }
+                },
+            }),
+        };
+        let opts = TemplateOptions::new(
+            "sender@example.com".into(),
+            "recipient@example.com".into(),
+            json!({"name": "Alice"}),
+            vec![],
+        );
+        let result = tmpl.to_email(&opts);
+        assert!(result.is_ok());
+    }
+}
+// EXCL_COVERAGE_STOP

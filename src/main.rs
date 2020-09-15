@@ -12,6 +12,9 @@ mod controller;
 mod error;
 mod service;
 
+#[cfg(test)]
+mod test_util;
+
 fn get_address() -> String {
     match env::var("ADDRESS") {
         Ok(value) => value,
@@ -56,6 +59,7 @@ macro_rules! bind_services {
     };
 }
 
+// EXCL_COVERAGE_START
 #[actix_rt::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
@@ -165,3 +169,4 @@ mod tests {
         assert_eq!(get_bind(), "something:1234");
     }
 }
+// EXCL_COVERAGE_STOP

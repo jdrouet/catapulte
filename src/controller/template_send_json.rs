@@ -1,6 +1,5 @@
 use crate::error::ServerError;
 use crate::service::smtp::SmtpPool;
-use crate::service::template::manager::TemplateManager;
 use crate::service::template::provider::TemplateProvider;
 use crate::service::template::template::TemplateOptions;
 use actix_http::RequestHead;
@@ -21,13 +20,14 @@ pub async fn handler(
     name: web::Path<String>,
     body: web::Json<TemplateOptions>,
 ) -> Result<HttpResponse, ServerError> {
-    let template = template_provider.find_by_name(name.as_str())?;
+    let template = template_provider.find_by_name(name.as_str()).await?;
     let email = template.to_email(&body)?;
     let mut conn = smtp_pool.get()?;
     conn.send(email)?;
     Ok(HttpResponse::NoContent().finish())
 }
 
+// EXCL_COVERAGE_START
 #[cfg(test)]
 mod tests {
     use crate::tests::{create_email, execute_request, get_latest_inbox};
@@ -130,3 +130,4 @@ mod tests {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 }
+// EXCL_COVERAGE_STOP

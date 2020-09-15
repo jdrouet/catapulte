@@ -6,11 +6,16 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["provider-jolimail"]
+provider-jolimail = ["reqwest"]
+
 [dependencies]
 actix-http = "1.0"
 actix-multipart = "0.2"
 actix-web = "2.0"
 actix-rt = "1.0"
+async-trait = "0.1"
 bytes = "0.5"
 env_logger = "0.7"
 futures = "0.3"
@@ -21,6 +26,7 @@ log = "0.4"
 mime = "0.3"
 mrml = "0.2"
 r2d2 = "0.8"
+reqwest = { version = "0.10", features = ["blocking", "json"], optional = true }
 serde = { features = ["derive"], version = "1.0" }
 serde_json = { version = "1.0" }
 tempfile = "3.1"
@@ -31,3 +37,4 @@ uuid = { version = "0.8", features = ["v4"] }
 common-multipart-rfc7578 = "0.2.0-rc"
 reqwest = { features = ["json"], version = "0.10" }
 serial_test = "0.4"
+wiremock = "0.2.4"
