@@ -109,7 +109,6 @@ impl TryInto<TemplateOptions> for TemplateOptionsParser {
     }
 }
 
-// #[post("/templates/{name}/multipart")]
 pub async fn handler(
     smtp_pool: web::Data<SmtpPool>,
     template_provider: web::Data<TemplateProvider>,

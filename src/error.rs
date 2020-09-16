@@ -5,8 +5,6 @@ use serde::Serialize;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
-use actix_web::error::{Error as ActixError, JsonPayloadError};
-
 #[derive(Debug, Serialize)]
 pub struct ServerErrorResponse {
     pub name: String,
@@ -61,10 +59,12 @@ impl ResponseError for ServerError {
     }
 }
 
-impl From<JsonPayloadError> for ServerError {
-    fn from(error: JsonPayloadError) -> Self {
+impl From<actix_web::error::JsonPayloadError> for ServerError {
+    fn from(error: actix_web::error::JsonPayloadError) -> Self {
         match error {
-            JsonPayloadError::Deserialize(err) => ServerError::BadRequest(err.to_string()),
+            actix_web::error::JsonPayloadError::Deserialize(err) => {
+                ServerError::BadRequest(err.to_string())
+            }
             _ => ServerError::BadRequest(error.to_string()),
         }
     }
@@ -76,7 +76,10 @@ impl std::convert::From<r2d2::Error> for ServerError {
     }
 }
 
-pub fn json_error_handler(err: JsonPayloadError, _req: &HttpRequest) -> ActixError {
+pub fn json_error_handler(
+    err: actix_web::error::JsonPayloadError,
+    _req: &HttpRequest,
+) -> actix_web::error::Error {
     error!("json_error_handler: {:?}", err);
     let error = ServerError::from(err);
     let res = error.error_response();
