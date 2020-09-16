@@ -46,7 +46,7 @@ impl TemplateProvider {
     }
 }
 
-// LCOV_EXCL_START
+#[cfg(not(tarpaulin_include))]
 #[cfg(test)]
 impl TemplateProvider {
     #[cfg(feature = "provider-jolimail")]
@@ -64,6 +64,7 @@ impl TemplateProvider {
     }
 }
 
+#[cfg(not(tarpaulin_include))]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,4 +91,3 @@ mod tests {
         assert!(provider.unwrap().is_jolimail());
     }
 }
-// LCOV_EXCL_END

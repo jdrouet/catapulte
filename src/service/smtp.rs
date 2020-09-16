@@ -66,6 +66,23 @@ fn get_credentials() -> Option<Credentials> {
     }
 }
 
+pub const CONFIG_POOL_MAX_SIZE: &'static str = "SMTP_POOL_MAX_SIZE";
+const DEFAULT_POOL_MAX_SIZE: u32 = 10;
+
+fn get_pool_max_size() -> Result<u32, SmtpError> {
+    let value = match env::var(CONFIG_POOL_MAX_SIZE) {
+        Ok(value) => value,
+        Err(_) => return Ok(DEFAULT_POOL_MAX_SIZE),
+    };
+    match value.parse::<u32>() {
+        Ok(value) => Ok(value),
+        Err(_) => Err(SmtpError::PreconditionFailed(format!(
+            "{} value invalid: {}",
+            CONFIG_POOL_MAX_SIZE, value
+        ))),
+    }
+}
+
 fn get_security() -> ClientSecurity {
     // TODO
     ClientSecurity::None
@@ -104,7 +121,10 @@ pub type SmtpPool = Pool<SmtpConnectionManager>;
 
 pub fn get_pool() -> Result<SmtpPool, SmtpError> {
     let manager = get_connection_manager()?;
-    match r2d2::Pool::builder().max_size(15).build(manager) {
+    match r2d2::Pool::builder()
+        .max_size(get_pool_max_size()?)
+        .build(manager)
+    {
         Ok(pool) => Ok(pool),
         Err(_) => Err(SmtpError::PreconditionFailed("couldn't create pool".into())),
     }

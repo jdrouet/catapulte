@@ -64,7 +64,7 @@ impl TemplateManager for LocalTemplateProvider {
     }
 }
 
-// LCOV_EXCL_START
+#[cfg(not(tarpaulin_include))]
 #[cfg(test)]
 mod tests {
     use super::*;

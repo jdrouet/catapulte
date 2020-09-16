@@ -40,7 +40,7 @@ impl TemplateManager for JolimailTemplateProvider {
     }
 }
 
-// LCOV_EXCL_START
+#[cfg(not(tarpaulin_include))]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,4 +96,3 @@ mod tests {
         assert!(manager.find_by_name("nice-slug").await.is_err());
     }
 }
-// LCOV_EXCL_END

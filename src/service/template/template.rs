@@ -115,7 +115,7 @@ impl Template {
     }
 }
 
-// LCOV_EXCL_START
+#[cfg(not(tarpaulin_include))]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,4 +171,3 @@ mod tests {
         assert!(result.is_ok());
     }
 }
-// LCOV_EXCL_END

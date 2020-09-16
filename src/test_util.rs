@@ -1,4 +1,3 @@
-// LCOV_EXCL_START
 pub struct TempEnvVar {
     pub key: String,
     pub initial_value: Option<String>,
@@ -31,4 +30,3 @@ impl Drop for TempEnvVar {
         }
     }
 }
-// LCOV_EXCL_END
