@@ -33,7 +33,7 @@ impl JolimailTemplateProvider {
 #[async_trait]
 impl TemplateManager for JolimailTemplateProvider {
     async fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError> {
-        let url = format!("{}/templates/{}/content", self.base_url, name);
+        let url = format!("{}/api/templates/{}/content", self.base_url, name);
         let request = reqwest::get(url.as_str()).await?;
         let result = request.json::<Template>().await?;
         Ok(result)
@@ -70,7 +70,7 @@ mod tests {
     async fn jolimail_find_by_slug_success() {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/templates/nice-slug/content"))
+            .and(path("/api/templates/nice-slug/content"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "name": "nice-slug",
                 "description": "yolo",
@@ -88,7 +88,7 @@ mod tests {
     async fn jolimail_find_by_slug_not_found() {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/templates/nice-slug/content"))
+            .and(path("/api/templates/nice-slug/content"))
             .respond_with(ResponseTemplate::new(404))
             .mount(&mock_server)
             .await;
