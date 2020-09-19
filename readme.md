@@ -4,6 +4,7 @@
 [![CircleCI Build Status](https://circleci.com/gh/jdrouet/catapulte.svg?style=shield)](https://circleci.com/gh/jdrouet/catapulte)
 
 ## What is catapulte?
+
 Catapulte is an open source mailer you can host yourself.
 
 You can use it to quickly catapult your transactionnal emails to destination.
@@ -33,11 +34,15 @@ By doing the following, you'll be able to have a running server that will render
 ```bash
 docker run -d \
   --name catapulte \
-  -e SMTP_URL=smtp://localhost:25 \
+  -e SMTP_HOSTNAME=localhost \
+  -e SMTP_PORT=25 \
+  -e SMTP_USERNAME=optional \
+  -e SMTP_PASSWORD=optional \
+  -e TEMPLATE_PROVIDER=local \
   -e TEMPLATE_ROOT=/templates \
   -p 3000:3000 \
   -v /path/to/your/templates:/templates:ro \
-  jdrouet/catapulte
+  jdrouet/catapulte:master
 ```
 
 Once your server started, you can simply send an email using an `HTTP` request.
@@ -60,6 +65,8 @@ curl -X POST -v \
   http://localhost:3000/templates/user-login
 ```
 
+You can find more informations in [this wiki](./wiki/template-provider.md).
+
 ## Should you use it?
 
 If, like us, you didn't find any good way of doing transactionnal emails, then Yes!
@@ -67,11 +74,13 @@ If, like us, you didn't find any good way of doing transactionnal emails, then Y
 ## Why you should use it :
 
 - You work in a startup
+
   - You don't have shit loads of money to spend on the mailing tools, so use something opensource, send your emails from your own SMTP (or from Amazon SES, it's cheap)
   - You don't have time to change the email template everyday, so let your Product Owner do it
   - You wanna be able to add this little feature, just do a pull request...
 
 - You work in a big company
+
   - You cannot use those external services because you're not allowed to put your user's data on an external service.
   - You cannot access external services because it's blocked by the proxy
   - You want to customise the way you authenticate to your SMTP
