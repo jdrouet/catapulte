@@ -1,0 +1,30 @@
+version: "2"
+
+services:
+  smtp:
+    image: reachfive/fake-smtp-server
+    networks:
+      - backend
+    ports:
+      - 1080:1080
+
+  catapulte:
+    # if you want to use the last version
+    image: jdrouet/catapulte:master
+    # if you want to build it locally
+    # build: .
+    environment:
+      RUST_LOG: info
+      SMTP_HOSTNAME: smtp
+      SMTP_PORT: 1025
+      TEMPLATE_PROVIDER: local
+      TEMPLATE_ROOT: /template
+    networks:
+      - backend
+    ports:
+      - 3010:3000
+    volumes:
+      - ./template:/template:ro
+
+networks:
+  backend: {}
