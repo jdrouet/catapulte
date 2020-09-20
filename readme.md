@@ -19,16 +19,16 @@ But they have many disadvantages :
 
 - Most of them are not really transactionnal oriented, and users complain that their login emails take a long time to arrive.
 - You cannot host it nor use it on premise
-- It's amurican! They can get your data without asking your permission... not really nice...
+- It's American, with the patriot act, they are able to access your users data.
 - They usually don't have templating tools for our non tech coworkers that ask us to change a wording every 2 days.
   And when they do, the editors are like html online editors, so it ends up being our job to make the template anyway.
 
 ## How to use it?
 
-Catapulte is a simple service that renders your mjml template, interpolates some data and then send it to a SMTP server.
+Catapulte is a simple service that renders your mjml template, interpolates the data and then sends it to a SMTP server.
 If you want to see how to create your own template, take a look at the `/template` folder in this repository.
 
-You can then start catapulte in different ways. We recommend using Docker if you are on a amd64, i386 or arm64v8 architecture.
+You then have several options for starting catapulte. We recommend using Docker if you are on a amd64, i386 or arm64v8 architecture.
 By doing the following, you'll be able to have a running server that will render and send your email.
 
 ```bash
@@ -69,7 +69,7 @@ You can find more informations in [this wiki](./wiki/template-provider.md).
 
 ## Should you use it?
 
-If, like us, you didn't find any good way of doing transactionnal emails, then Yes!
+If, like us, you didn't find any good way of doing transactionnal emails, then YES!
 
 ## Why you should use it :
 
