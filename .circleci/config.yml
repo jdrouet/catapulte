@@ -5,13 +5,13 @@ workflows:
   workflow:
     jobs:
       - test
-      - build:
-          filters:
-            branches:
-              only:
-                - master
-          requires:
-            - test
+      # - build:
+      #     filters:
+      #       branches:
+      #         only:
+      #           - master
+      #     requires:
+      #       - test
 
 jobs:
   test:
@@ -28,16 +28,16 @@ jobs:
       - run: bash script/run-coverage.sh
       - run: bash script/push-coverage.sh
 
-  build:
-    docker:
-      - image: jdrouet/docker-with-buildx:stable
-    steps:
-      - run: docker buildx install
-      - checkout
-      - setup_remote_docker
-      - run: docker run --rm --privileged docker/binfmt:66f9012c56a8316f9244ffd7622d7c21c1f6f28d
-      - run: docker login -u "$DOCKER_USERNAME" -p "$DOCKER_PASSWORD"
-      - run: docker buildx build --platform linux/amd64 --tag jdrouet/catapulte:$CIRCLE_BRANCH .
-      - run: docker buildx build --platform linux/386 --tag jdrouet/catapulte:$CIRCLE_BRANCH .
-      - run: docker buildx build --platform linux/arm64 --tag jdrouet/catapulte:$CIRCLE_BRANCH .
-      - run: docker buildx build --platform linux/amd64,linux/386,linux/arm64 --tag jdrouet/catapulte:$CIRCLE_BRANCH --push .
+  # build:
+  #   docker:
+  #     - image: jdrouet/docker-with-buildx:stable
+  #   steps:
+  #     - run: docker buildx install
+  #     - checkout
+  #     - setup_remote_docker
+  #     - run: docker run --rm --privileged docker/binfmt:66f9012c56a8316f9244ffd7622d7c21c1f6f28d
+  #     - run: docker login -u "$DOCKER_USERNAME" -p "$DOCKER_PASSWORD"
+  #     - run: docker buildx build --platform linux/amd64 --tag jdrouet/catapulte:$CIRCLE_BRANCH .
+  #     - run: docker buildx build --platform linux/386 --tag jdrouet/catapulte:$CIRCLE_BRANCH .
+  #     - run: docker buildx build --platform linux/arm64 --tag jdrouet/catapulte:$CIRCLE_BRANCH .
+  #     - run: docker buildx build --platform linux/amd64,linux/386,linux/arm64 --tag jdrouet/catapulte:$CIRCLE_BRANCH --push .
