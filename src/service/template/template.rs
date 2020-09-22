@@ -52,6 +52,7 @@ impl From<mrml::Error> for TemplateError {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Template {
     pub name: String,
+    #[serde(default = "String::new")]
     pub description: String,
     pub content: String,
     pub attributes: JsonValue,
