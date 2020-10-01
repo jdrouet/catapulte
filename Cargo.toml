@@ -24,7 +24,7 @@ lettre = { features = ["connection-pool", "r2d2", "smtp-transport"], version = "
 lettre_email = "0.9"
 log = "0.4"
 mime = "0.3"
-mrml = "0.2"
+mrml = "0.3"
 r2d2 = "0.8"
 reqwest = { version = "0.10", features = ["blocking", "json"], optional = true }
 serde = { features = ["derive"], version = "1.0" }

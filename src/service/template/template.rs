@@ -40,10 +40,8 @@ impl From<TemplateError> for ServerError {
 impl From<mrml::Error> for TemplateError {
     fn from(err: mrml::Error) -> Self {
         let msg = match err {
-            mrml::Error::MJMLError(mjml_error) => match mjml_error {
-                mrml::mjml::error::Error::ParseError(msg) => format!("parser error: {}", msg),
-            },
-            mrml::Error::XMLError(xml_error) => xml_error.to_string(),
+            mrml::Error::MJMLError(mjml_error) => format!("MJML Error: {:?}", mjml_error),
+            mrml::Error::ParserError(parser_error) => format!("Parser Error: {:?}", parser_error),
         };
         TemplateError::RenderingError(msg)
     }
