@@ -9,6 +9,8 @@ Catapulte is an open source mailer you can host yourself.
 
 You can use it to quickly catapult your transactionnal emails to destination.
 
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/jdrouet/catapulte)
+
 ## Why did we build catapulte?
 
 Catapulte comes from the frustration of using several email providers.
