@@ -1,0 +1,39 @@
+{
+  "name": "catapulte",
+  "description": "A Rust application that transform mjml template, interpolate variables and send the email",
+  "repository": "https://github.com/jdrouet/catapulte",
+  "keywords": ["rust", "mjml", "mrml", "email", "template"],
+  "website": "https://jolimail.io",
+  "env": {
+    "RUST_LOG": {
+      "description": "Log level",
+      "value": "info"
+    },
+    "SMTP_HOSTNAME": {
+      "description": "Hostname of the SMTP server",
+      "value": "localhost"
+    },
+    "SMTP_PORT": {
+      "description": "Port of the SMTP server",
+      "value": "25"
+    },
+    "SMTP_USERNAME": {
+      "description": "Username of the SMTP server",
+      "required": false,
+      "value": ""
+    },
+    "SMTP_PASSWORD": {
+      "description": "Password of the SMTP server",
+      "required": false,
+      "value": ""
+    },
+    "TMPLATE_PROVIDER": {
+      "description": "Type of provider for the template",
+      "value": "jolimail"
+    },
+    "TEMPLATE_PROVIDER_JOLIMAIL_BASE_URL": {
+      "description": "Url of the jolimail instance to fetch the templates from",
+      "value": "https://demo.jolimail.io"
+    }
+  }
+}
