@@ -1,0 +1,49 @@
+language: rust
+
+rust:
+  - stable
+  - beta
+  - nightly
+
+addons:
+  apt:
+    packages:
+      - libssl-dev
+
+matrix:
+  allow_failures:
+    - rust: nightly
+
+services:
+  - docker
+
+before_script:
+  - docker run -d -p 127.0.0.1:1025:1025 -p 127.0.0.1:1080:1080 reachfive/fake-smtp-server
+  - |
+    if [[ "$TRAVIS_RUST_VERSION" == stable ]]; then
+      cargo install cargo-tarpaulin
+      rustup component add rustfmt
+    fi
+
+cache: cargo
+
+env:
+  global:
+    - RUST_LOG=info
+    - SMTP_HOSTNAME=localhost
+    - SMTP_PORT=1025
+    - TEMPLATE_PROVIDER=local
+    - TEMPLATE_ROOT=./template
+
+script:
+  - |
+    if [[ "$TRAVIS_RUST_VERSION" == stable ]]; then
+      rustfmt --edition 2018 --check src/{**/,}*.rs
+    fi
+  - cargo test
+
+after_success: |
+  if [[ "$TRAVIS_RUST_VERSION" == stable ]]; then
+    cargo tarpaulin --out Xml
+    bash <(curl -s https://codecov.io/bash)
+  fi
