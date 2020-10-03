@@ -1,7 +1,7 @@
 # Catapulte
 
+[![Build Status](https://travis-ci.com/jdrouet/catapulte.svg?branch=main)](https://travis-ci.com/jdrouet/catapulte)
 [![codecov](https://codecov.io/gh/jdrouet/catapulte/branch/master/graph/badge.svg)](https://codecov.io/gh/jdrouet/catapulte)
-[![CircleCI Build Status](https://circleci.com/gh/jdrouet/catapulte.svg?style=shield)](https://circleci.com/gh/jdrouet/catapulte)
 
 ## What is catapulte?
 
