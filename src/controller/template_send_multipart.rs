@@ -20,7 +20,7 @@ pub fn filter(req: &RequestHead) -> bool {
     req.headers()
         .get("content-type")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| Some(value.starts_with("multipart/form-data")))
+        .map(|value| value.starts_with("multipart/form-data"))
         .unwrap_or(false)
 }
 
@@ -49,7 +49,7 @@ impl TemplateOptionsParser {
     }
 
     async fn parse_attachment(&mut self, root: &Path, field: Field) -> Result<(), ServerError> {
-        if let Some(file) = field_to_file(root, field).await.ok() {
+        if let Ok(file) = field_to_file(root, field).await {
             self.attachments.push(file);
         }
         Ok(())

@@ -5,7 +5,7 @@ use super::template::Template;
 pub mod jolimail;
 pub mod local;
 
-const CONFIG_TEMPLATE_PROVIDER: &'static str = "TEMPLATE_PROVIDER";
+const CONFIG_TEMPLATE_PROVIDER: &str = "TEMPLATE_PROVIDER";
 
 #[derive(Clone, Debug)]
 pub enum TemplateProviderError {
@@ -22,7 +22,7 @@ pub enum TemplateProvider {
 impl TemplateProvider {
     pub fn from_env() -> Result<Self, TemplateProviderError> {
         match std::env::var(CONFIG_TEMPLATE_PROVIDER)
-            .unwrap_or("local".into())
+            .unwrap_or_else(|_| "local".into())
             .as_str()
         {
             #[cfg(feature = "provider-jolimail")]
@@ -33,11 +33,11 @@ impl TemplateProvider {
         }
     }
 
-    fn get_manager(&self) -> Box<&dyn TemplateManager> {
+    fn get_manager(&self) -> &dyn TemplateManager {
         match self {
             #[cfg(feature = "provider-jolimail")]
-            Self::Jolimail(manager) => Box::new(manager),
-            Self::Local(manager) => Box::new(manager),
+            Self::Jolimail(manager) => manager,
+            Self::Local(manager) => manager,
         }
     }
 

@@ -8,7 +8,7 @@ use std::fs::{read_to_string, File};
 use std::io::BufReader;
 use std::path::Path;
 
-pub const CONFIG_PROVIDER_LOCAL_ROOT: &'static str = "TEMPLATE_ROOT";
+pub const CONFIG_PROVIDER_LOCAL_ROOT: &str = "TEMPLATE_ROOT";
 
 fn default_mjml_path() -> String {
     "template.mjml".into()
