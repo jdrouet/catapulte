@@ -3,7 +3,6 @@ use crate::service::multipart::MultipartFile;
 use handlebars::{Handlebars, TemplateRenderError as HandlebarTemplateRenderError};
 use lettre::SendableEmail;
 use lettre_email::{error::Error as LetterError, EmailBuilder};
-use mrml;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::string::ToString;
@@ -105,7 +104,7 @@ impl Template {
         for item in opts.attachments.iter() {
             builder = builder.attachment_from_file(
                 item.filepath.as_path(),
-                item.filename.as_ref().map(|value| value.as_str()),
+                item.filename.as_deref(),
                 &item.content_type,
             )?;
         }

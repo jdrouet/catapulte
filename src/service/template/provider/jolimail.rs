@@ -3,7 +3,7 @@ use crate::service::template::manager::{TemplateManager, TemplateManagerError};
 use crate::service::template::template::Template;
 use async_trait::async_trait;
 
-pub const CONFIG_BASE_URL: &'static str = "TEMPLATE_PROVIDER_JOLIMAIL_BASE_URL";
+pub const CONFIG_BASE_URL: &str = "TEMPLATE_PROVIDER_JOLIMAIL_BASE_URL";
 
 #[derive(Clone, Debug)]
 pub struct JolimailTemplateProvider {

@@ -36,7 +36,7 @@ impl From<SmtpError> for ServerError {
 }
 
 fn get_smtp_hostname() -> String {
-    env::var("SMTP_HOSTNAME").unwrap_or("localhost".into())
+    env::var("SMTP_HOSTNAME").unwrap_or_else(|_| "localhost".into())
 }
 
 fn get_smtp_port() -> u16 {
@@ -60,13 +60,13 @@ fn get_credentials() -> Option<Credentials> {
     if username.is_none() && password.is_none() {
         None
     } else {
-        let username = username.unwrap_or("".into());
-        let password = password.unwrap_or("".into());
-        Some(Credentials::new(username.into(), password.into()))
+        let username = username.unwrap_or_default();
+        let password = password.unwrap_or_default();
+        Some(Credentials::new(username, password))
     }
 }
 
-pub const CONFIG_POOL_MAX_SIZE: &'static str = "SMTP_POOL_MAX_SIZE";
+pub const CONFIG_POOL_MAX_SIZE: &str = "SMTP_POOL_MAX_SIZE";
 const DEFAULT_POOL_MAX_SIZE: u32 = 10;
 
 fn get_pool_max_size() -> Result<u32, SmtpError> {
