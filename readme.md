@@ -90,3 +90,7 @@ If, like us, you didn't find any good way of doing transactionnal emails, then Y
   - You cannot access external services because it's blocked by the proxy
   - You want to customise the way you authenticate to your SMTP
   - You want something user friendly enough that your manager can write the emails
+
+## Thank you!
+
+<a href="https://www.buymeacoffee.com/jdrouet" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-blue.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
