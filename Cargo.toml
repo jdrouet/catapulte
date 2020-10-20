@@ -18,7 +18,7 @@ actix-web = "2.0"
 actix-rt = "1.0"
 async-trait = "0.1"
 bytes = "0.5"
-env_logger = "0.7"
+env_logger = "0.8"
 futures = "0.3"
 handlebars = "3.0"
 lettre = { features = ["connection-pool", "r2d2", "smtp-transport"], version = "0.9" }
