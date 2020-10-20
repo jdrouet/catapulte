@@ -13,7 +13,7 @@ provider-jolimail = ["reqwest"]
 
 [dependencies]
 actix-http = "1.0"
-actix-multipart = "0.2"
+actix-multipart = "0.3"
 actix-web = "2.0"
 actix-rt = "1.0"
 async-trait = "0.1"
