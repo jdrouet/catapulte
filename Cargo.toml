@@ -37,5 +37,5 @@ uuid = { version = "0.8", features = ["v4"] }
 [dev-dependencies]
 common-multipart-rfc7578 = "0.2.0-rc"
 reqwest = { features = ["json"], version = "0.10" }
-serial_test = "0.4"
+serial_test = "0.5"
 wiremock = "0.2.4"
