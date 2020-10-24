@@ -70,7 +70,7 @@ curl -X POST -v \
   http://localhost:3000/templates/user-login
 ```
 
-You can find more informations in [this wiki](./wiki/template-provider.md).
+You can configure it with [some environment variable](./wiki/environment-variables.md) and can find more information in [this wiki](./wiki/template-provider.md) .
 
 ## Should you use it?
 
