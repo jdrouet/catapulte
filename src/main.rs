@@ -73,7 +73,7 @@ async fn main() -> std::io::Result<()> {
         bind_services!(create_app!()
             .data(template_provider.clone())
             .data(smtp_pool.clone())
-            .wrap(middleware::DefaultHeaders::new().header("X-Version", "0.1.0"))
+            .wrap(middleware::DefaultHeaders::new().header("X-Version", env!("CARGO_PKG_VERSION")))
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default()))
     })
