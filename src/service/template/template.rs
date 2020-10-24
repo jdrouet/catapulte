@@ -3,9 +3,31 @@ use crate::service::multipart::MultipartFile;
 use handlebars::{Handlebars, TemplateRenderError as HandlebarTemplateRenderError};
 use lettre::SendableEmail;
 use lettre_email::{error::Error as LetterError, EmailBuilder};
+use mrml::util::size::Size;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::str::FromStr;
 use std::string::ToString;
+
+fn build_mrml_options() -> mrml::Options {
+    let mut result = mrml::Options::default();
+    if let Some(value) = std::env::var("MRML_BREAKPOINT")
+        .ok()
+        .and_then(|breakpoint| Size::from_str(breakpoint.as_str()).ok())
+    {
+        result.breakpoint = value;
+    }
+    if let Some(value) = std::env::var("MRML_KEEP_COMMENTS")
+        .ok()
+        .and_then(|keep_comments| keep_comments.parse::<bool>().ok())
+    {
+        result.keep_comments = value;
+    }
+    if let Ok(value) = std::env::var("MRML_SOCIAL_ICON_ORIGIN") {
+        result.social_icon_origin = value;
+    }
+    result
+}
 
 #[derive(Clone, Debug)]
 pub enum TemplateError {
@@ -88,7 +110,7 @@ impl Template {
     fn render(&self, opts: &TemplateOptions) -> Result<mrml::Email, TemplateError> {
         let reg = Handlebars::new();
         let mjml = reg.render_template(self.content.as_str(), &opts.params)?;
-        let email = mrml::to_email(mjml.as_str(), mrml::Options::default())?;
+        let email = mrml::to_email(mjml.as_str(), build_mrml_options())?;
         Ok(email)
     }
 
@@ -117,7 +139,79 @@ impl Template {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::TempEnvVar;
+    use mrml::Options;
     use serde_json::json;
+
+    #[test]
+    #[serial]
+    fn building_mrml_options_breakpoint_unset() {
+        let _breakpoint = TempEnvVar::new("MRML_BREAKPOINT");
+        let result = build_mrml_options();
+        assert_eq!(
+            result.breakpoint.to_string(),
+            Options::default().breakpoint.to_string()
+        );
+    }
+    #[test]
+    #[serial]
+    fn building_mrml_options_breakpoint_set() {
+        let _breakpoint = TempEnvVar::new("MRML_BREAKPOINT").with("800px");
+        let result = build_mrml_options();
+        assert_eq!(result.breakpoint.to_string(), "800px");
+    }
+
+    #[test]
+    #[serial]
+    fn building_mrml_options_breakpoint_invalid() {
+        let _breakpoint = TempEnvVar::new("MRML_BREAKPOINT").with("invalid");
+        let result = build_mrml_options();
+        assert_eq!(
+            result.breakpoint.to_string(),
+            Options::default().breakpoint.to_string()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn building_mrml_options_keep_comments_unset() {
+        let _breakpoint = TempEnvVar::new("MRML_KEEP_COMMENTS");
+        let result = build_mrml_options();
+        assert_eq!(result.keep_comments, Options::default().keep_comments);
+    }
+    #[test]
+    #[serial]
+    fn building_mrml_options_keep_comments_set() {
+        let _breakpoint = TempEnvVar::new("MRML_KEEP_COMMENTS").with("TrUe");
+        let result = build_mrml_options();
+        assert_eq!(result.keep_comments, true);
+    }
+
+    #[test]
+    #[serial]
+    fn building_mrml_options_keep_comments_invalid() {
+        let _breakpoint = TempEnvVar::new("MRML_KEEP_COMMENTS").with("invalid");
+        let result = build_mrml_options();
+        assert_eq!(result.keep_comments, Options::default().keep_comments);
+    }
+
+    #[test]
+    #[serial]
+    fn building_mrml_options_social_icon_origin_unset() {
+        let _breakpoint = TempEnvVar::new("MRML_SOCIAL_ICON_ORIGIN");
+        let result = build_mrml_options();
+        assert_eq!(
+            result.social_icon_origin,
+            Options::default().social_icon_origin
+        );
+    }
+    #[test]
+    #[serial]
+    fn building_mrml_options_social_icon_origin_set() {
+        let _breakpoint = TempEnvVar::new("MRML_SOCIAL_ICON_ORIGIN").with("http://wherever.com/");
+        let result = build_mrml_options();
+        assert_eq!(result.social_icon_origin, "http://wherever.com/");
+    }
 
     #[test]
     fn render_success() {
