@@ -1,0 +1,85 @@
+swagger: "2.0"
+
+info:
+  description: Endpoint of the catapulte service
+  version: 0.1.0
+  title: Catapulte
+  contact:
+    name: Jeremie Drouet
+    email: jeremie.drouet@gmail.com
+
+  license:
+    name: Jolimail Source Available License (JSAL) Agreement
+    url: https://github.com/jdrouet/catapulte/blob/main/license.md
+
+paths:
+  /status:
+    get:
+      summary: get service status
+      operationId: getStatus
+      description: Checks if the SMTP server is reachable
+      responses:
+        204:
+          description: Everything works fine
+        500:
+          description: The SMTP server is not reachable
+
+  /templates/{name}:
+    post:
+      summary: adds an inventory item
+      operationId: addInventory
+      description: Adds an item to the system
+      consumes:
+        - application/json
+        - multipart/form-data
+      produces:
+        - application/json
+      parameters:
+        - in: path
+          name: name
+          description: Name of the template
+          required: true
+          type: string
+        - in: body
+          name: templateOptions
+          description: Options to give to the template
+          required: true
+          schema:
+            $ref: "#/definitions/TemplateOptions"
+      responses:
+        204:
+          description: email was properly sent
+        400:
+          description: invalid input, object invalid
+
+definitions:
+  TemplateOptions:
+    type: object
+    required:
+      - to
+      - from
+      - params
+    properties:
+      to:
+        type: string
+        format: email
+        example: recipient@jolimail.io
+      from:
+        type: string
+        format: email
+        example: sender@jolimail.io
+      params:
+        type: object
+        example:
+          name: Recipient
+      attachments:
+        type: array
+        items:
+          type: string
+          format: binary
+
+# the demo instance
+host: catapulte.jolimail.io
+basePath: /
+schemes:
+  - https
