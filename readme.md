@@ -70,7 +70,9 @@ curl -X POST -v \
   http://localhost:3000/templates/user-login
 ```
 
-You can configure it with [some environment variable](./wiki/environment-variables.md) and can find more information in [this wiki](./wiki/template-provider.md) .
+You can configure it with [some environment variable](./wiki/environment-variables.md) and can find more information in [this wiki](./wiki/template-provider.md).
+
+If you some API specification, the [Open API specification](./openapi.yml) is also available.
 
 ## Should you use it?
 
