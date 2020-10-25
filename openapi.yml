@@ -2,7 +2,7 @@ swagger: "2.0"
 
 info:
   description: Endpoint of the catapulte service
-  version: 0.1.0
+  version: 0.2.0
   title: Catapulte
   contact:
     name: Jeremie Drouet
