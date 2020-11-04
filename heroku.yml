@@ -1,0 +1,5 @@
+build:
+  docker:
+    web: heroku.Dockerfile
+run:
+  web: /usr/bin/catapulte

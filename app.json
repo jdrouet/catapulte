@@ -4,6 +4,7 @@
   "repository": "https://github.com/jdrouet/catapulte",
   "keywords": ["rust", "mjml", "mrml", "email", "template"],
   "website": "https://jolimail.io",
+  "stack": "container",
   "env": {
     "RUST_LOG": {
       "description": "Log level",
