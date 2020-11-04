@@ -1,0 +1,1 @@
+FROM jdrouet/catapulte:latest
