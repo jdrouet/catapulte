@@ -14,3 +14,9 @@ release:
 		--label org.label-schema.version=${VERSION} \
 		--label org.label-schema.vcs-ref=${shell git rev-parse --short HEAD} \
 		.
+
+dev-env:
+	docker-compose -f docker-compose.dev.yml up -d
+
+dev-test:
+	SMTP_PORT=1025 TEMPLATE_ROOT=./template cargo test

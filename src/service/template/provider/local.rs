@@ -68,7 +68,7 @@ impl TemplateManager for LocalTemplateProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::TempEnvVar;
+    use env_test_util::TempEnvVar;
 
     fn get_root() -> String {
         match std::env::var(CONFIG_PROVIDER_LOCAL_ROOT) {

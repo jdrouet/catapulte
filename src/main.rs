@@ -12,9 +12,6 @@ mod controller;
 mod error;
 mod service;
 
-#[cfg(test)]
-mod test_util;
-
 fn get_address() -> String {
     match env::var("ADDRESS") {
         Ok(value) => value,
@@ -141,9 +138,9 @@ mod tests {
     #[serial]
 
     fn test_get_address() {
-        std::env::remove_var("ADDRESS");
+        let _address = env_test_util::TempEnvVar::new("ADDRESS");
         assert_eq!(get_address(), "localhost");
-        std::env::set_var("ADDRESS", "something");
+        let _address = _address.with("something");
         assert_eq!(get_address(), "something");
     }
 
@@ -151,21 +148,20 @@ mod tests {
     #[serial]
 
     fn test_get_port() {
-        std::env::remove_var("PORT");
+        let _port = env_test_util::TempEnvVar::new("PORT");
         assert_eq!(get_port(), "3000");
-        std::env::set_var("PORT", "1234");
+        let _port = _port.with("1234");
         assert_eq!(get_port(), "1234");
     }
 
     #[test]
     #[serial]
-
     fn test_bind() {
-        std::env::remove_var("ADDRESS");
-        std::env::remove_var("PORT");
+        let _address = env_test_util::TempEnvVar::new("ADDRESS");
+        let _port = env_test_util::TempEnvVar::new("PORT");
         assert_eq!(get_bind(), "localhost:3000");
-        std::env::set_var("ADDRESS", "something");
-        std::env::set_var("PORT", "1234");
+        let _address = _address.with("something");
+        let _port = _port.with("1234");
         assert_eq!(get_bind(), "something:1234");
     }
 }

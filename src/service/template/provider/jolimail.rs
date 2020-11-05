@@ -44,7 +44,7 @@ impl TemplateManager for JolimailTemplateProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::TempEnvVar;
+    use env_test_util::TempEnvVar;
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

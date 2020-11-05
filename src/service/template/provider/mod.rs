@@ -67,7 +67,7 @@ impl TemplateProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::TempEnvVar;
+    use env_test_util::TempEnvVar;
 
     #[test]
     #[serial]

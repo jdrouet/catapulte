@@ -2,8 +2,6 @@ language: rust
 
 rust: stable
 
-cache: cargo
-
 env:
   global:
     - RUST_LOG=info
