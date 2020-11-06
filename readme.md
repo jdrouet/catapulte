@@ -1,7 +1,7 @@
 # Catapulte
 
 [![Build Status](https://travis-ci.com/jdrouet/catapulte.svg?branch=main)](https://travis-ci.com/jdrouet/catapulte)
-[![codecov](https://codecov.io/gh/jdrouet/catapulte/branch/master/graph/badge.svg)](https://codecov.io/gh/jdrouet/catapulte)
+[![codecov](https://codecov.io/gh/jdrouet/catapulte/branch/main/graph/badge.svg)](https://codecov.io/gh/jdrouet/catapulte)
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/jdrouet/catapulte)](https://hub.docker.com/r/jdrouet/catapulte)
 [![Docker Image Size (latest by date)](https://img.shields.io/docker/image-size/jdrouet/catapulte?sort=date)](https://hub.docker.com/r/jdrouet/catapulte)
