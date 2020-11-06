@@ -56,7 +56,7 @@ macro_rules! bind_services {
     };
 }
 
-// LCOV_EXCL_START
+#[cfg(not(tarpaulin_include))]
 #[actix_rt::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
@@ -165,4 +165,3 @@ mod tests {
         assert_eq!(get_bind(), "something:1234");
     }
 }
-// LCOV_EXCL_END

@@ -70,8 +70,14 @@ impl From<actix_web::error::JsonPayloadError> for ServerError {
     }
 }
 
-impl std::convert::From<r2d2::Error> for ServerError {
+impl From<r2d2::Error> for ServerError {
     fn from(error: r2d2::Error) -> Self {
+        ServerError::InternalServerError(error.to_string())
+    }
+}
+
+impl From<std::io::Error> for ServerError {
+    fn from(error: std::io::Error) -> Self {
         ServerError::InternalServerError(error.to_string())
     }
 }
@@ -84,10 +90,4 @@ pub fn json_error_handler(
     let error = ServerError::from(err);
     let res = error.error_response();
     actix_web::error::InternalError::from_response(error, res).into()
-}
-
-impl std::convert::From<std::io::Error> for ServerError {
-    fn from(error: std::io::Error) -> Self {
-        ServerError::InternalServerError(error.to_string())
-    }
 }
