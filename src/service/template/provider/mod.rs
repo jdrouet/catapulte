@@ -33,7 +33,7 @@ impl TemplateProvider {
         }
     }
 
-    fn get_manager(&self) -> &dyn TemplateManager {
+    fn inner(&self) -> &dyn TemplateManager {
         match self {
             #[cfg(feature = "provider-jolimail")]
             Self::Jolimail(manager) => manager,
@@ -42,12 +42,12 @@ impl TemplateProvider {
     }
 
     pub async fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError> {
-        self.get_manager().find_by_name(name).await
+        self.inner().find_by_name(name).await
     }
 }
 
-// LCOV_EXCL_START
 #[cfg(test)]
+#[cfg_attr(tarpaulin, ignore)]
 impl TemplateProvider {
     #[cfg(feature = "provider-jolimail")]
     fn is_jolimail(&self) -> bool {
@@ -56,6 +56,7 @@ impl TemplateProvider {
             _ => false,
         }
     }
+
     fn is_local(&self) -> bool {
         match self {
             Self::Local(_) => true,
@@ -65,6 +66,7 @@ impl TemplateProvider {
 }
 
 #[cfg(test)]
+#[cfg_attr(tarpaulin, ignore)]
 mod tests {
     use super::*;
     use env_test_util::TempEnvVar;
@@ -90,4 +92,3 @@ mod tests {
         assert!(provider.unwrap().is_jolimail());
     }
 }
-// LCOV_EXCL_END

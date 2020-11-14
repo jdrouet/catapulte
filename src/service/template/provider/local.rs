@@ -30,16 +30,14 @@ pub struct LocalTemplateProvider {
 
 impl LocalTemplateProvider {
     pub fn from_env() -> Result<Self, TemplateProviderError> {
-        match std::env::var(CONFIG_PROVIDER_LOCAL_ROOT) {
-            Ok(value) => Ok(Self::new(value.as_str())),
-            Err(_) => Err(TemplateProviderError::ConfigurationInvalid(
-                "variable TEMPLATE_ROOT not found".into(),
-            )),
-        }
+        Ok(Self::new(
+            std::env::var(CONFIG_PROVIDER_LOCAL_ROOT)
+                .unwrap_or_else(|_| String::from("./template")),
+        ))
     }
 
-    pub fn new(root: &str) -> Self {
-        Self { root: root.into() }
+    pub fn new(root: String) -> Self {
+        Self { root }
     }
 }
 
@@ -81,22 +79,22 @@ mod tests {
     #[serial]
     fn without_template_root() {
         let _env_base_url = TempEnvVar::new(CONFIG_PROVIDER_LOCAL_ROOT);
-        let result = LocalTemplateProvider::from_env();
-        assert!(result.is_err());
+        let result = LocalTemplateProvider::from_env().unwrap();
+        assert_eq!(result.root, "./template");
     }
 
     #[test]
     #[serial]
     fn with_template_root() {
-        let _env_base_url = TempEnvVar::new(CONFIG_PROVIDER_LOCAL_ROOT).with("./template");
-        let result = LocalTemplateProvider::from_env();
-        assert!(result.is_ok());
+        let _env_base_url = TempEnvVar::new(CONFIG_PROVIDER_LOCAL_ROOT).with("./somewhere");
+        let result = LocalTemplateProvider::from_env().unwrap();
+        assert_eq!(result.root, "./somewhere");
     }
 
     #[actix_rt::test]
     #[serial]
     async fn local_find_by_name_not_found() {
-        let manager = LocalTemplateProvider::new(get_root().as_str());
+        let manager = LocalTemplateProvider::new(get_root());
         assert!(match manager.find_by_name("not_found").await.unwrap_err() {
             TemplateManagerError::TemplateNotFound => true,
             _ => false,
@@ -106,7 +104,7 @@ mod tests {
     #[actix_rt::test]
     #[serial]
     async fn local_find_by_name_success() {
-        let manager = LocalTemplateProvider::new(get_root().as_str());
+        let manager = LocalTemplateProvider::new(get_root());
         let result = manager.find_by_name("user-login").await.unwrap();
         assert_eq!(result.name, "user-login");
         assert_eq!(result.description, "Template for login with magic link");

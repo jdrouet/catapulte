@@ -6,28 +6,27 @@ extern crate serial_test;
 extern crate log;
 
 use actix_web::{guard, middleware, web, App, HttpServer};
-use std::env;
 
 mod controller;
 mod error;
 mod service;
 
-fn get_address() -> String {
-    match env::var("ADDRESS") {
-        Ok(value) => value,
-        Err(_) => "localhost".into(),
-    }
+struct Config {
+    pub address: String,
+    pub port: String,
 }
 
-fn get_port() -> String {
-    match env::var("PORT") {
-        Ok(value) => value,
-        Err(_) => "3000".into(),
+impl Config {
+    pub fn from_env() -> Self {
+        Self {
+            address: std::env::var("ADDRESS").unwrap_or_else(|_| String::from("localhost")),
+            port: std::env::var("PORT").unwrap_or_else(|_| String::from("3000")),
+        }
     }
-}
 
-fn get_bind() -> String {
-    format!("{}:{}", get_address(), get_port())
+    fn to_bind(&self) -> String {
+        format!("{}:{}", self.address, self.port)
+    }
 }
 
 macro_rules! create_app {
@@ -56,14 +55,17 @@ macro_rules! bind_services {
     };
 }
 
-// LCOV_EXCL_START
+#[cfg(not(tarpaulin_include))]
 #[actix_rt::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
 
+    let server_cfg = Config::from_env();
+    let smtp_cfg = service::smtp::Config::from_env();
+
     let template_provider =
         service::template::provider::TemplateProvider::from_env().expect("template provider init");
-    let smtp_pool = service::smtp::get_pool().expect("smtp service init");
+    let smtp_pool = smtp_cfg.get_pool().expect("smtp service init");
 
     info!("starting server");
     HttpServer::new(move || {
@@ -74,12 +76,13 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default()))
     })
-    .bind(get_bind())?
+    .bind(server_cfg.to_bind())?
     .run()
     .await
 }
 
 #[cfg(test)]
+#[cfg(not(tarpaulin_include))]
 mod tests {
     use super::*;
     use actix_http::Request;
@@ -126,7 +129,9 @@ mod tests {
     pub async fn execute_request(req: Request) -> ServiceResponse {
         let template_provider = service::template::provider::TemplateProvider::from_env()
             .expect("template provider init");
-        let smtp_pool = service::smtp::get_pool().expect("smtp service init");
+        let smtp_pool = service::smtp::Config::from_env()
+            .get_pool()
+            .expect("smtp service init");
         let mut app = test::init_service(bind_services!(create_app!()
             .data(template_provider.clone())
             .data(smtp_pool.clone())))
@@ -139,9 +144,9 @@ mod tests {
 
     fn test_get_address() {
         let _address = env_test_util::TempEnvVar::new("ADDRESS");
-        assert_eq!(get_address(), "localhost");
+        assert_eq!(Config::from_env().address, "localhost");
         let _address = _address.with("something");
-        assert_eq!(get_address(), "something");
+        assert_eq!(Config::from_env().address, "something");
     }
 
     #[test]
@@ -149,9 +154,9 @@ mod tests {
 
     fn test_get_port() {
         let _port = env_test_util::TempEnvVar::new("PORT");
-        assert_eq!(get_port(), "3000");
+        assert_eq!(Config::from_env().port, "3000");
         let _port = _port.with("1234");
-        assert_eq!(get_port(), "1234");
+        assert_eq!(Config::from_env().port, "1234");
     }
 
     #[test]
@@ -159,10 +164,9 @@ mod tests {
     fn test_bind() {
         let _address = env_test_util::TempEnvVar::new("ADDRESS");
         let _port = env_test_util::TempEnvVar::new("PORT");
-        assert_eq!(get_bind(), "localhost:3000");
+        assert_eq!(Config::from_env().to_bind(), "localhost:3000");
         let _address = _address.with("something");
         let _port = _port.with("1234");
-        assert_eq!(get_bind(), "something:1234");
+        assert_eq!(Config::from_env().to_bind(), "something:1234");
     }
 }
-// LCOV_EXCL_END
