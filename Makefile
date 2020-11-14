@@ -19,4 +19,10 @@ dev-env:
 	docker-compose -f docker-compose.dev.yml up -d
 
 dev-test:
-	SMTP_PORT=1025 TEMPLATE_ROOT=./template cargo test
+	SMTP_PORT=1025 cargo test
+
+dev-coverage:
+	SMTP_PORT=1025 cargo tarpaulin --out Html
+
+install-tarpaulin:
+	cargo install cargo-tarpaulin
