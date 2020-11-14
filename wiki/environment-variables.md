@@ -31,4 +31,4 @@ When the provider `jolimail` is used
 - `SMTP_PORT` is the port of the SMTP server (default `25`)
 - `SMTP_USERNAME` is the username used to authenticate with the SMTP server
 - `SMTP_PASSWORD` is the password used to authenticate with the SMTP server
-- `SMTP_POOL_MAX_SIZE` is the max number of connection to the SMTP server (default `10`)
+- `SMTP_MAX_POOL_SIZE` is the max number of connection to the SMTP server (default `10`)
