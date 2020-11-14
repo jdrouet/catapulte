@@ -1,9 +1,16 @@
-lint:
+clippy:
+	cargo clippy -- -D warnings
+
+ci-lint:
 	rustfmt --edition 2018 --check src/*.rs
 	rustfmt --edition 2018 --check src/**/*.rs
 
-test:
+ci-test:
 	cargo test
+
+ci-coverage:
+	cargo tarpaulin --out Xml
+	curl -s https://codecov.io/bash | bash
 
 release:
 	docker buildx build --push \
@@ -23,6 +30,12 @@ dev-test:
 
 dev-coverage:
 	SMTP_PORT=1025 cargo tarpaulin --out Html
+
+install-clippy:
+	rustup component add clippy
+
+install-rustfmt:
+	rustup component add rustfmt
 
 install-tarpaulin:
 	cargo install cargo-tarpaulin
