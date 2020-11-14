@@ -74,6 +74,8 @@ You can configure it with [some environment variable](./wiki/environment-variabl
 
 If you some API specification, the [Open API specification](./openapi.yml) is also available.
 
+To use it in production, we prepared a documentation on how to use Catapulte with [Amazon Simple Email Service](./wiki/with-aws-ses.md).
+
 ## Should you use it?
 
 If, like us, you didn't find any good way of doing transactionnal emails, then YES!
