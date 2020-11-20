@@ -32,6 +32,7 @@ fn build_mrml_options() -> mrml::Options {
 #[derive(Clone, Debug)]
 pub enum TemplateError {
     InterpolationError(String),
+    InvalidOptions(String),
     RenderingError(String),
     SendingError(String),
 }
@@ -52,6 +53,7 @@ impl From<TemplateError> for ServerError {
     fn from(err: TemplateError) -> Self {
         match err {
             TemplateError::InterpolationError(msg) => ServerError::BadRequest(msg),
+            TemplateError::InvalidOptions(msg) => ServerError::BadRequest(msg),
             TemplateError::RenderingError(msg) => ServerError::InternalServerError(msg),
             TemplateError::SendingError(msg) => ServerError::InternalServerError(msg),
         }
@@ -83,7 +85,9 @@ pub fn default_attachments() -> Vec<MultipartFile> {
 
 #[derive(Debug, Deserialize)]
 pub struct TemplateOptions {
-    to: String,
+    to: Vec<String>,
+    cc: Vec<String>,
+    bcc: Vec<String>,
     from: String,
     params: JsonValue,
     #[serde(default = "default_attachments", skip_deserializing, skip_serializing)]
@@ -93,16 +97,62 @@ pub struct TemplateOptions {
 impl TemplateOptions {
     pub fn new(
         from: String,
-        to: String,
+        to: Vec<String>,
+        cc: Vec<String>,
+        bcc: Vec<String>,
         params: JsonValue,
         attachments: Vec<MultipartFile>,
     ) -> Self {
         Self {
             from,
             to,
+            cc,
+            bcc,
             params,
             attachments,
         }
+    }
+
+    pub fn validate(&self) -> Result<(), TemplateError> {
+        if self.from.is_empty() {
+            Err(TemplateError::InvalidOptions(
+                "missing \"from\" field".into(),
+            ))
+        } else if self.to.is_empty() && self.cc.is_empty() && self.bcc.is_empty() {
+            Err(TemplateError::InvalidOptions(
+                "missing \"to\", \"cc\" and \"bcc\"".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl TemplateOptions {
+    pub fn to_builder(&self) -> EmailBuilder {
+        let mut builder = EmailBuilder::new().from(self.from.as_str());
+        builder = self.apply_to(builder);
+        builder = self.apply_cc(builder);
+        builder = self.apply_bcc(builder);
+        builder
+    }
+
+    fn apply_to(&self, builder: EmailBuilder) -> EmailBuilder {
+        self.to
+            .iter()
+            .fold(builder, |b, address| b.to(address.as_str()))
+    }
+
+    fn apply_cc(&self, builder: EmailBuilder) -> EmailBuilder {
+        self.cc
+            .iter()
+            .fold(builder, |b, address| b.cc(address.as_str()))
+    }
+
+    fn apply_bcc(&self, builder: EmailBuilder) -> EmailBuilder {
+        self.bcc
+            .iter()
+            .fold(builder, |b, address| b.bcc(address.as_str()))
     }
 }
 
@@ -117,9 +167,8 @@ impl Template {
     pub fn to_email(&self, opts: &TemplateOptions) -> Result<SendableEmail, TemplateError> {
         debug!("rendering template: {} ({})", self.name, self.description);
         let email = self.render(opts)?;
-        let mut builder = EmailBuilder::new()
-            .from(opts.from.clone())
-            .to(opts.to.clone())
+        let mut builder = opts
+            .to_builder()
             .subject(email.subject)
             .text(email.text)
             .html(email.html);
@@ -230,7 +279,9 @@ mod tests {
         };
         let opts = TemplateOptions::new(
             "sender@example.com".into(),
-            "recipient@example.com".into(),
+            vec!["recipient@example.com".into()],
+            vec![],
+            vec![],
             json!({"name": "Alice"}),
             vec![],
         );
@@ -255,7 +306,9 @@ mod tests {
         };
         let opts = TemplateOptions::new(
             "sender@example.com".into(),
-            "recipient@example.com".into(),
+            vec!["recipient@example.com".into()],
+            vec![],
+            vec![],
             json!({"name": "Alice"}),
             vec![],
         );
