@@ -5,6 +5,52 @@ use crate::service::template::template::TemplateOptions;
 use actix_http::RequestHead;
 use actix_web::{web, HttpResponse};
 use lettre::Transport;
+use serde::Deserialize;
+use serde_json::Value as JsonValue;
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Recipient {
+    One(String),
+    More(Vec<String>),
+}
+
+impl Recipient {
+    pub fn to_vec(&self) -> Vec<String> {
+        match self {
+            Recipient::One(item) => vec![item.clone()],
+            Recipient::More(list) => list.clone(),
+        }
+    }
+}
+
+impl Recipient {
+    pub fn option_to_vec(item: &Option<Recipient>) -> Vec<String> {
+        if let Some(item) = item {
+            item.to_vec()
+        } else {
+            vec![]
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Payload {
+    to: Option<Recipient>,
+    cc: Option<Recipient>,
+    bcc: Option<Recipient>,
+    from: String,
+    params: JsonValue,
+}
+
+impl Payload {
+    fn to_options(&self) -> TemplateOptions {
+        let to = Recipient::option_to_vec(&self.to);
+        let cc = Recipient::option_to_vec(&self.cc);
+        let bcc = Recipient::option_to_vec(&self.bcc);
+        TemplateOptions::new(self.from.clone(), to, cc, bcc, self.params.clone(), vec![])
+    }
+}
 
 pub fn filter(req: &RequestHead) -> bool {
     req.headers()
@@ -18,10 +64,12 @@ pub async fn handler(
     smtp_pool: web::Data<SmtpPool>,
     template_provider: web::Data<TemplateProvider>,
     name: web::Path<String>,
-    body: web::Json<TemplateOptions>,
+    body: web::Json<Payload>,
 ) -> Result<HttpResponse, ServerError> {
     let template = template_provider.find_by_name(name.as_str()).await?;
-    let email = template.to_email(&body)?;
+    let options: TemplateOptions = (&body).to_options();
+    options.validate()?;
+    let email = template.to_email(&options)?;
     let mut conn = smtp_pool.get()?;
     conn.send(email)?;
     Ok(HttpResponse::NoContent().finish())
@@ -83,6 +131,36 @@ mod tests {
         let res = execute_request(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to).await;
+        assert!(list.len() > 0);
+        let last = list.first().unwrap();
+        assert!(last.text.contains("Hello bob!"));
+        assert!(last.html.contains("Hello bob!"));
+        assert!(last.html.contains("\"http://example.com/login?token=\""));
+    }
+
+    #[actix_rt::test]
+    #[serial]
+    async fn success_multiple_recipients() {
+        let from = create_email();
+        let to = vec![create_email(), create_email()];
+        let cc = vec![create_email(), create_email()];
+        let bcc = vec![create_email(), create_email()];
+        let payload = json!({
+            "from": from.clone(),
+            "to": to.clone(),
+            "cc": cc.clone(),
+            "bcc": bcc.clone(),
+            "params": {
+                "name": "bob"
+            }
+        });
+        let req = test::TestRequest::post()
+            .uri("/templates/user-login")
+            .set_json(&payload)
+            .to_request();
+        let res = execute_request(req).await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let list = get_latest_inbox(&from, &to[0]).await;
         assert!(list.len() > 0);
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello bob!"));
