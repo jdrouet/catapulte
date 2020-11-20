@@ -18,19 +18,19 @@ actix-web = "3.2.0"
 actix-rt = "1.1.1"
 async-trait = "0.1.41"
 bytes = "0.5.6"
-env_logger = "0.8.1"
-futures = "0.3.5"
+env_logger = "0.8.2"
+futures = "0.3.8"
 handlebars = "3.4.0"
-lettre = { features = ["connection-pool", "r2d2", "smtp-transport"], version = "0.9.3" }
+lettre = { features = ["connection-pool", "r2d2", "smtp-transport"], version = "0.9.5" }
 lettre_email = "0.9.4"
 log = "0.4.11"
 mime = "0.3.16"
 mrml = "0.4.0"
 native-tls = "0.2.6"
 r2d2 = "0.8.9"
-reqwest = { version = "0.10.8", features = ["json"], optional = true }
-serde = { features = ["derive"], version = "1.0.115" }
-serde_json = { version = "1.0.57" }
+reqwest = { version = "0.10.9", features = ["json"], optional = true }
+serde = { features = ["derive"], version = "1.0.117" }
+serde_json = { version = "1.0.59" }
 tempfile = "3.1.0"
 url = "2.1.1"
 uuid = { version = "0.8.1", features = ["v4"] }
@@ -38,6 +38,6 @@ uuid = { version = "0.8.1", features = ["v4"] }
 [dev-dependencies]
 common-multipart-rfc7578 = "0.2.0-rc"
 env-test-util = "1.0.1"
-reqwest = { version = "0.10.8", features = ["json"] }
+reqwest = { version = "0.10.9", features = ["json"] }
 serial_test = "0.5.0"
 wiremock = "0.3.0"
