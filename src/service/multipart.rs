@@ -1,8 +1,7 @@
 use actix_multipart::Field;
 use actix_web::web;
 use actix_web::web::BytesMut;
-use bytes::buf::{Buf, BufMut};
-use bytes::Bytes;
+use actix_web::web::{Buf, BufMut, Bytes};
 use futures::TryStreamExt;
 use mime::Mime;
 use serde_json::Value as JsonValue;
