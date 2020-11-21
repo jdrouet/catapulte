@@ -146,8 +146,7 @@ mod tests {
     use crate::tests::{create_email, execute_request, get_latest_inbox};
     use actix_web::http::{Method, StatusCode};
     use actix_web::test;
-    use actix_web::web::BytesMut;
-    use bytes::buf::BufMut;
+    use actix_web::web::{BufMut, BytesMut};
     use common_multipart_rfc7578 as cmultipart;
     use futures::TryStreamExt;
     use serde_json::json;
