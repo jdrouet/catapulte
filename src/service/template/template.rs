@@ -170,8 +170,7 @@ impl Template {
         let mut builder = opts
             .to_builder()
             .subject(email.subject)
-            .text(email.text)
-            .html(email.html);
+            .alternative(email.html, email.text);
         for item in opts.attachments.iter() {
             builder = builder.attachment_from_file(
                 item.filepath.as_path(),
