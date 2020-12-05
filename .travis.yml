@@ -2,6 +2,10 @@ language: rust
 
 rust: stable
 
+branches:
+  except:
+    - /^dependabot\/.*/
+
 env:
   global:
     - RUST_LOG=info
