@@ -23,6 +23,7 @@ test-coverage:
   image: xd009642/tarpaulin
   variables:
     RUST_LOG: info
+    INBOX_HOSTNAME: smtp-server
     SMTP_HOSTNAME: smtp-server
     SMTP_PORT: 1025
     TEMPLATE_PROVIDER: local
