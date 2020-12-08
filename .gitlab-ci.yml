@@ -1,0 +1,34 @@
+stages:
+  - lint
+  - test
+
+lint-clippy:
+  stage: lint
+  image: rust:latest
+  before_script:
+    - rustup component add clippy
+  script:
+    - make clippy
+
+lint-format:
+  stage: lint
+  image: rust:latest
+  before_script:
+    - rustup component add rustfmt
+  script:
+    - make ci-lint
+
+test-coverage:
+  stage: test
+  image: xd009642/tarpaulin
+  variables:
+    RUST_LOG: info
+    SMTP_HOSTNAME: smtp-server
+    SMTP_PORT: 1025
+    TEMPLATE_PROVIDER: local
+    TEMPLATE_ROOT: ./template
+  services:
+    - name: reachfive/fake-smtp-server
+      alias: smtp-server
+  script:
+    - make ci-coverage
