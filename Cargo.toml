@@ -18,7 +18,7 @@ actix-web = "3.3.2"
 actix-rt = "1.1.1"
 async-trait = "0.1.42"
 env_logger = "0.8.2"
-futures = "0.3.11"
+futures = "0.3.12"
 handlebars = "3.5.2"
 lettre = { features = ["connection-pool", "r2d2", "smtp-transport"], version = "0.9.5" }
 lettre_email = "0.9.4"
