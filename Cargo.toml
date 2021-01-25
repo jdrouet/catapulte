@@ -28,7 +28,7 @@ mrml = "0.4.0"
 native-tls = "0.2.7"
 r2d2 = "0.8.9"
 reqwest = { version = "0.10.10", features = ["json"], optional = true }
-serde = { features = ["derive"], version = "1.0.120" }
+serde = { features = ["derive"], version = "1.0.122" }
 serde_json = { version = "1.0.61" }
 tempfile = "3.2.0"
 url = "2.1.1"
