@@ -544,7 +544,7 @@ checksum = "631ae5198c9be5e753e5cc215e1bd73c2b466a3565173db433f52bb9d3e66dba"
 
 [[package]]
 name = "catapulte"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "actix-http",
  "actix-multipart",
@@ -1710,13 +1710,13 @@ dependencies = [
 
 [[package]]
 name = "mrml"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46cb626081ac38e28d96dbb7aa7dc5666b3979c1ca3a68611ba962c138c278b4"
+checksum = "40ddf1312d34b46266caf60ace56fb24470a9ec271df27ada5384933b7a609e9"
 dependencies = [
  "lazy_static",
  "log",
- "rand 0.7.3",
+ "rand 0.8.1",
  "regex",
  "xmlparser",
 ]
