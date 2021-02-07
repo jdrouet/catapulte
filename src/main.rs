@@ -19,7 +19,7 @@ struct Config {
 impl Config {
     pub fn from_env() -> Self {
         Self {
-            address: std::env::var("ADDRESS").unwrap_or_else(|_| String::from("localhost")),
+            address: std::env::var("ADDRESS").unwrap_or_else(|_| String::from("127.0.0.1")),
             port: std::env::var("PORT").unwrap_or_else(|_| String::from("3000")),
         }
     }
@@ -99,7 +99,7 @@ mod tests {
     }
 
     fn get_inbox_hostname() -> String {
-        std::env::var("INBOX_HOSTNAME").unwrap_or("localhost".into())
+        std::env::var("INBOX_HOSTNAME").unwrap_or("127.0.0.1".into())
     }
 
     fn get_inbox_port() -> String {
@@ -144,7 +144,7 @@ mod tests {
 
     fn test_get_address() {
         let _address = env_test_util::TempEnvVar::new("ADDRESS");
-        assert_eq!(Config::from_env().address, "localhost");
+        assert_eq!(Config::from_env().address, "127.0.0.1");
         let _address = _address.with("something");
         assert_eq!(Config::from_env().address, "something");
     }
@@ -164,7 +164,7 @@ mod tests {
     fn test_bind() {
         let _address = env_test_util::TempEnvVar::new("ADDRESS");
         let _port = env_test_util::TempEnvVar::new("PORT");
-        assert_eq!(Config::from_env().to_bind(), "localhost:3000");
+        assert_eq!(Config::from_env().to_bind(), "127.0.0.1:3000");
         let _address = _address.with("something");
         let _port = _port.with("1234");
         assert_eq!(Config::from_env().to_bind(), "something:1234");
