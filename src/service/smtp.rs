@@ -25,7 +25,7 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Self {
         Self {
-            hostname: env::var("SMTP_HOSTNAME").unwrap_or_else(|_| String::from("localhost")),
+            hostname: env::var("SMTP_HOSTNAME").unwrap_or_else(|_| String::from("127.0.0.1")),
             port: env::var("SMTP_PORT")
                 .ok()
                 .and_then(|value| value.parse().ok())
@@ -161,7 +161,7 @@ mod tests {
         let _max_pool_size = env_test_util::TempEnvVar::new("SMTP_MAX_POOL_SIZE");
         let _timeout = env_test_util::TempEnvVar::new("SMTP_TIMEOUT");
         let cfg = Config::from_env();
-        assert_eq!(cfg.hostname, "localhost");
+        assert_eq!(cfg.hostname, "127.0.0.1");
         assert_eq!(cfg.port, 25);
         assert_eq!(cfg.username, None);
         assert_eq!(cfg.password, None);

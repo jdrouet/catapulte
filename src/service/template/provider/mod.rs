@@ -86,7 +86,7 @@ mod tests {
     #[serial]
     fn template_provider_from_env_jolimail() {
         let _env_provider = TempEnvVar::new(CONFIG_TEMPLATE_PROVIDER).with("jolimail");
-        let _env_base_url = TempEnvVar::new(jolimail::CONFIG_BASE_URL).with("http://localhost");
+        let _env_base_url = TempEnvVar::new(jolimail::CONFIG_BASE_URL).with("http://127.0.0.1");
         let provider = TemplateProvider::from_env();
         assert!(provider.is_ok());
         assert!(provider.unwrap().is_jolimail());

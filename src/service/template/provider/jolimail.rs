@@ -60,7 +60,7 @@ mod tests {
     #[test]
     #[serial]
     fn from_env_with_variable() {
-        let _env_base_url = TempEnvVar::new(CONFIG_BASE_URL).with("http://localhost:1234");
+        let _env_base_url = TempEnvVar::new(CONFIG_BASE_URL).with("http://127.0.0.1:1234");
         let result = JolimailTemplateProvider::from_env();
         assert!(result.is_ok());
     }
