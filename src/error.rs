@@ -52,10 +52,11 @@ impl ServerError {
 
 impl ResponseError for ServerError {
     fn error_response(&self) -> HttpResponse {
-        self.response().json(ServerErrorResponse {
+        let response = ServerErrorResponse {
             name: self.name(),
             message: self.message(),
-        })
+        };
+        self.response().json(&response)
     }
 }
 
