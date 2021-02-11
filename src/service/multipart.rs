@@ -1,7 +1,6 @@
 use actix_multipart::Field;
 use actix_web::web;
-use actix_web::web::BytesMut;
-use actix_web::web::{Buf, BufMut, Bytes};
+use actix_web::web::{BufMut, Bytes, BytesMut};
 use futures::TryStreamExt;
 use mime::Mime;
 use serde_json::Value as JsonValue;
@@ -16,7 +15,7 @@ pub async fn field_to_bytes(mut field: Field) -> Bytes {
     while let Ok(Some(field)) = field.try_next().await {
         bytes.put(field);
     }
-    bytes.to_bytes()
+    Bytes::from(bytes)
 }
 
 pub async fn field_to_string(field: Field) -> Result<String, FromUtf8Error> {
@@ -63,12 +62,15 @@ impl MultipartFile {
 pub async fn field_to_file(root: &Path, mut field: Field) -> Result<MultipartFile, IoError> {
     let multipart_file = MultipartFile::from_field(root, &field);
     let filepath = multipart_file.filepath.clone();
+    // TODO find a better way than unwraping twice
     let mut file = web::block(|| std::fs::File::create(filepath))
         .await
+        .unwrap()
         .unwrap();
     while let Ok(Some(chunk)) = field.try_next().await {
         file = web::block(move || file.write_all(&chunk).map(|_| file))
             .await
+            .unwrap()
             .unwrap();
     }
     Ok(multipart_file)
