@@ -1,4 +1,4 @@
-version: "2"
+version: "2.4"
 
 services:
   smtp:
@@ -10,7 +10,7 @@ services:
 
   catapulte:
     # if you want to use the last version
-    image: jdrouet/catapulte:master
+    image: jdrouet/catapulte:canary
     # if you want to build it locally
     # build: .
     environment:
