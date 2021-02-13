@@ -1,8 +1,4 @@
-FROM rust:1-slim-buster AS base
-
-RUN apt-get update \
-  && apt-get install -y libssl-dev pkg-config \
-  && rm -rf /var/lib/apt/lists/*
+FROM rust:1-buster AS base
 
 ENV USER=root
 
@@ -28,10 +24,6 @@ LABEL org.label-schema.vcs-url="https://jolimail.io"
 LABEL org.label-schema.url="https://github.com/jdrouet/catapulte"
 LABEL org.label-schema.description="Service to convert mrml to html and send it by email"
 LABEL maintaner="Jeremie Drouet <jeremie.drouet@gmail.com>"
-
-RUN apt-get update \
-  && apt-get install -y ca-certificates libssl1.1 \
-  && rm -rf /var/lib/apt/lists/*
 
 ENV ADDRESS=0.0.0.0
 ENV PORT=3000

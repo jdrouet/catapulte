@@ -20,14 +20,13 @@ async-trait = "0.1.42"
 env_logger = "0.8.3"
 futures = "0.3.12"
 handlebars = "3.5.2"
-lettre = { features = ["r2d2", "smtp-transport", "tokio1-rustls-tls"], version = "0.10.0-alpha.5" }
+lettre = { default-features = false, features = ["builder", "r2d2", "rustls-tls", "smtp-transport", "tokio1-rustls-tls"], version = "0.10.0-alpha.5" }
 lettre_email = "0.9.4"
 log = "0.4.14"
 mime = "0.3.16"
 mrml = "0.5.0"
-native-tls = "0.2.7"
 r2d2 = "0.8.9"
-reqwest = { version = "0.11.0", features = ["json"], optional = true }
+reqwest = { version = "0.11.0", default-features = false, features = ["json", "rustls-tls"], optional = true }
 serde = { features = ["derive"], version = "1.0.123" }
 serde_json = { version = "1.0.62" }
 tempfile = "3.2.0"
@@ -40,6 +39,6 @@ funty = "=1.1.0"
 [dev-dependencies]
 common-multipart-rfc7578 = "0.2.0-rc"
 env-test-util = "1.0.1"
-reqwest = { version = "0.11.0", features = ["json"] }
+reqwest = { version = "0.11.0", default-features = false, features = ["json", "rustls-tls"] }
 serial_test = "0.5.1"
 wiremock = "0.4.9"

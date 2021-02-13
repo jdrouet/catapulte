@@ -11,6 +11,10 @@ pub struct JolimailTemplateProvider {
 }
 
 impl JolimailTemplateProvider {
+    fn get_client() -> reqwest::Client {
+        reqwest::Client::builder().use_rustls_tls().build().unwrap()
+    }
+
     fn get_base_url_from_env() -> Result<String, TemplateProviderError> {
         match std::env::var(CONFIG_BASE_URL) {
             Ok(value) => Ok(value),
@@ -34,7 +38,7 @@ impl JolimailTemplateProvider {
 impl TemplateManager for JolimailTemplateProvider {
     async fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError> {
         let url = format!("{}/api/templates/{}/content", self.base_url, name);
-        let request = reqwest::get(url.as_str()).await?;
+        let request = Self::get_client().get(url.as_str()).send().await?;
         let result = request.json::<Template>().await?;
         Ok(result)
     }
