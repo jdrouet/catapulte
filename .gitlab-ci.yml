@@ -47,6 +47,8 @@ test-integration:
   services:
     - name: reachfive/fake-smtp-server
       alias: smtp-server
+  before_script:
+    - cargo install hyperfine
   script:
     - cargo build
     - cargo run &
