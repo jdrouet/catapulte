@@ -132,8 +132,7 @@ impl TemplateOptions {
         let builder = Message::builder().from(from);
         let builder = self.apply_to(builder);
         let builder = self.apply_cc(builder);
-        let builder = self.apply_bcc(builder);
-        builder
+        self.apply_bcc(builder)
     }
 
     fn apply_to(&self, builder: MessageBuilder) -> MessageBuilder {
