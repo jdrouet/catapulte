@@ -34,6 +34,9 @@ tempfile = "3.2.0"
 url = "2.1.1"
 uuid = { version = "0.8.2", features = ["v4"] }
 
+# Fix build in docker
+funty = "=1.1.0"
+
 [dev-dependencies]
 common-multipart-rfc7578 = "0.2.0-rc"
 env-test-util = "1.0.1"
