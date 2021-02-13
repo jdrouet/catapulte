@@ -33,3 +33,22 @@ test-coverage:
       alias: smtp-server
   script:
     - make ci-coverage
+
+test-integration:
+  stage: test
+  image: rust:1-buster
+  variables:
+    RUST_LOG: info
+    INBOX_HOSTNAME: smtp-server
+    SMTP_HOSTNAME: smtp-server
+    SMTP_PORT: 1025
+    TEMPLATE_PROVIDER: local
+    TEMPLATE_ROOT: ./template
+  services:
+    - name: reachfive/fake-smtp-server
+      alias: smtp-server
+  script:
+    - cargo build
+    - cargo run &
+    - sleep 5
+    - sh script/integration.sh http://localhost:3000
