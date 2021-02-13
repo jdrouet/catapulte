@@ -41,11 +41,11 @@ impl ServerError {
         }
     }
 
-    fn message(&self) -> Option<String> {
+    fn message(&self) -> String {
         match *self {
-            ServerError::BadRequest(ref msg) => Some(msg.clone()),
-            ServerError::NotFound(ref msg) => Some(msg.clone()),
-            ServerError::InternalServerError(ref msg) => Some(msg.clone()),
+            ServerError::BadRequest(ref msg) => msg.clone(),
+            ServerError::NotFound(ref msg) => msg.clone(),
+            ServerError::InternalServerError(ref msg) => msg.clone(),
         }
     }
 }
@@ -54,7 +54,7 @@ impl ResponseError for ServerError {
     fn error_response(&self) -> HttpResponse {
         let response = ServerErrorResponse {
             name: self.name(),
-            message: self.message(),
+            message: Some(self.message()),
         };
         self.response().json(&response)
     }

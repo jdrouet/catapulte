@@ -66,8 +66,8 @@ impl Config {
         PoolConfig::default().max_size(self.max_pool_size)
     }
 
-    fn get_timeout(&self) -> Option<Duration> {
-        Some(Duration::from_millis(self.timeout))
+    fn get_timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout)
     }
 
     // TODO allow to add root certificate
@@ -82,7 +82,7 @@ impl Config {
     fn get_transport(&self) -> Result<SmtpTransportBuilder, SmtpError> {
         let result = SmtpTransport::builder_dangerous(self.hostname.as_str())
             .port(self.port)
-            .timeout(self.get_timeout())
+            .timeout(Some(self.get_timeout()))
             .pool_config(self.get_pool_config());
         let result = if self.tls_enabled {
             result.tls(self.get_tls()?)
