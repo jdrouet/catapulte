@@ -17,7 +17,7 @@ actix-multipart = "0.4.0-beta.2"
 actix-web = "4.0.0-beta.3"
 actix-rt = "2.0.2"
 async-trait = "0.1.42"
-env_logger = "0.8.2"
+env_logger = "0.8.3"
 futures = "0.3.12"
 handlebars = "3.5.2"
 lettre = { features = ["r2d2", "smtp-transport", "tokio1-rustls-tls"], version = "0.10.0-alpha.5" }
