@@ -479,7 +479,7 @@ checksum = "631ae5198c9be5e753e5cc215e1bd73c2b466a3565173db433f52bb9d3e66dba"
 
 [[package]]
 name = "catapulte"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "actix-http",
  "actix-multipart",
@@ -489,6 +489,7 @@ dependencies = [
  "common-multipart-rfc7578",
  "env-test-util",
  "env_logger",
+ "funty",
  "futures",
  "handlebars",
  "lettre 0.10.0-alpha.5",

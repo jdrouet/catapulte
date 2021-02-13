@@ -1,5 +1,5 @@
 # fetch the vendor with the builder platform to avoid qemu issues
-FROM --platform=$BUILDPLATFORM rust:1-slim-buster AS vendor
+FROM --platform=$BUILDPLATFORM rust:1-buster AS vendor
 
 ENV USER=root
 
@@ -9,7 +9,7 @@ COPY Cargo.toml /code/Cargo.toml
 RUN mkdir -p /code/.cargo \
   && cargo vendor > /code/.cargo/config
 
-FROM rust:1-slim-buster AS base
+FROM rust:1-buster AS base
 
 RUN apt-get update \
   && apt-get install -y libssl-dev pkg-config \
