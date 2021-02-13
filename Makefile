@@ -12,6 +12,9 @@ ci-coverage:
 	cargo tarpaulin --out Xml
 	curl -s https://codecov.io/bash | bash
 
+build-image:
+	docker build --tag catapulte:local .
+
 release:
 	docker buildx build --push \
 		--file multiarch.Dockerfile \
