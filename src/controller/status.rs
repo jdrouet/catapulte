@@ -1,12 +1,8 @@
-use crate::service::smtp::SmtpPool;
-use actix_web::{get, web, HttpResponse};
+use actix_web::{get, HttpResponse};
 
 #[get("/status")]
-pub async fn handler(smtp_pool: web::Data<SmtpPool>) -> HttpResponse {
-    match smtp_pool.get() {
-        Ok(_) => HttpResponse::NoContent().finish(),
-        Err(_) => HttpResponse::InternalServerError().json("Internal Server Error"),
-    }
+pub async fn handler() -> HttpResponse {
+    HttpResponse::NoContent().finish()
 }
 
 // LCOV_EXCL_START

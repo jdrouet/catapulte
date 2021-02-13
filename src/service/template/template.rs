@@ -1,9 +1,9 @@
 use crate::error::ServerError;
 use crate::service::multipart::MultipartFile;
 use handlebars::{Handlebars, TemplateRenderError as HandlebarTemplateRenderError};
-use lettre::SendableEmail;
-use lettre_email::{error::Error as LetterError, EmailBuilder};
+use lettre::message::{Mailbox, Message, MessageBuilder, MultiPart, SinglePart};
 use mrml::util::size::Size;
+use mrml::Email;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::str::FromStr;
@@ -34,18 +34,17 @@ pub enum TemplateError {
     InterpolationError(String),
     InvalidOptions(String),
     RenderingError(String),
-    SendingError(String),
+}
+
+impl From<lettre::error::Error> for TemplateError {
+    fn from(err: lettre::error::Error) -> Self {
+        Self::InvalidOptions(err.to_string())
+    }
 }
 
 impl From<HandlebarTemplateRenderError> for TemplateError {
     fn from(err: HandlebarTemplateRenderError) -> Self {
         TemplateError::InterpolationError(err.to_string())
-    }
-}
-
-impl From<LetterError> for TemplateError {
-    fn from(err: LetterError) -> Self {
-        TemplateError::SendingError(err.to_string())
     }
 }
 
@@ -55,7 +54,6 @@ impl From<TemplateError> for ServerError {
             TemplateError::InterpolationError(msg) => ServerError::BadRequest(msg),
             TemplateError::InvalidOptions(msg) => ServerError::BadRequest(msg),
             TemplateError::RenderingError(msg) => ServerError::InternalServerError(msg),
-            TemplateError::SendingError(msg) => ServerError::InternalServerError(msg),
         }
     }
 }
@@ -129,30 +127,34 @@ impl TemplateOptions {
 }
 
 impl TemplateOptions {
-    pub fn to_builder(&self) -> EmailBuilder {
-        let mut builder = EmailBuilder::new().from(self.from.as_str());
-        builder = self.apply_to(builder);
-        builder = self.apply_cc(builder);
-        builder = self.apply_bcc(builder);
+    pub fn to_builder(&self) -> MessageBuilder {
+        let from: Mailbox = self.from.parse().unwrap();
+        let builder = Message::builder().from(from);
+        let builder = self.apply_to(builder);
+        let builder = self.apply_cc(builder);
+        let builder = self.apply_bcc(builder);
         builder
     }
 
-    fn apply_to(&self, builder: EmailBuilder) -> EmailBuilder {
+    fn apply_to(&self, builder: MessageBuilder) -> MessageBuilder {
         self.to
             .iter()
-            .fold(builder, |b, address| b.to(address.as_str()))
+            .filter_map(|address| address.parse::<Mailbox>().ok())
+            .fold(builder, |b, address| b.to(address))
     }
 
-    fn apply_cc(&self, builder: EmailBuilder) -> EmailBuilder {
+    fn apply_cc(&self, builder: MessageBuilder) -> MessageBuilder {
         self.cc
             .iter()
-            .fold(builder, |b, address| b.cc(address.as_str()))
+            .filter_map(|address| address.parse::<Mailbox>().ok())
+            .fold(builder, |b, address| b.cc(address))
     }
 
-    fn apply_bcc(&self, builder: EmailBuilder) -> EmailBuilder {
+    fn apply_bcc(&self, builder: MessageBuilder) -> MessageBuilder {
         self.bcc
             .iter()
-            .fold(builder, |b, address| b.bcc(address.as_str()))
+            .filter_map(|address| address.parse::<Mailbox>().ok())
+            .fold(builder, |b, address| b.bcc(address))
     }
 }
 
@@ -164,22 +166,61 @@ impl Template {
         Ok(email)
     }
 
-    pub fn to_email(&self, opts: &TemplateOptions) -> Result<SendableEmail, TemplateError> {
+    fn get_body(email: &Email) -> MultiPart {
+        MultiPart::alternative()
+            .singlepart(
+                SinglePart::builder()
+                    .header(lettre::message::header::ContentType(
+                        "text/plain; charset=utf8".parse().unwrap(),
+                    ))
+                    .body(email.text.to_string()),
+            )
+            .singlepart(
+                SinglePart::builder()
+                    .header(lettre::message::header::ContentType(
+                        "text/html; charset=utf8".parse().unwrap(),
+                    ))
+                    .body(email.html.to_string()),
+            )
+    }
+
+    fn add_attachment(builder: MultiPart, file: &MultipartFile) -> MultiPart {
+        let mut parameters = vec![];
+        if let Some(fname) = file.filename.as_ref() {
+            parameters.push(lettre::message::header::DispositionParam::Filename(
+                lettre::message::header::Charset::Ext("utf-8".into()),
+                None,
+                fname.as_bytes().to_vec(),
+            ));
+        }
+        let body = lettre::message::Body::new(std::fs::read(file.filepath.clone()).unwrap());
+        let part = SinglePart::builder()
+            .header(lettre::message::header::ContentType(
+                file.content_type.clone(),
+            ))
+            .header(lettre::message::header::ContentDisposition {
+                disposition: lettre::message::header::DispositionType::Attachment,
+                parameters,
+            })
+            .body(body);
+        builder.singlepart(part)
+    }
+
+    fn get_multipart(&self, email: &Email, opts: &TemplateOptions) -> MultiPart {
+        let builder = MultiPart::mixed();
+        let builder = builder.multipart(Self::get_body(email));
+        opts.attachments
+            .iter()
+            .fold(builder, |res, item| Self::add_attachment(res, item))
+    }
+
+    pub fn to_email(&self, opts: &TemplateOptions) -> Result<Message, TemplateError> {
         debug!("rendering template: {} ({})", self.name, self.description);
         let email = self.render(opts)?;
-        let mut builder = opts
-            .to_builder()
-            .subject(email.subject)
-            .alternative(email.html, email.text);
-        for item in opts.attachments.iter() {
-            builder = builder.attachment_from_file(
-                item.filepath.as_path(),
-                item.filename.as_deref(),
-                &item.content_type,
-            )?;
-        }
-        let email = builder.build()?;
-        Ok(email.into())
+        let builder = opts.to_builder();
+        Ok(builder
+            .subject(email.subject.as_str())
+            .multipart(self.get_multipart(&email, opts))?)
     }
 }
 

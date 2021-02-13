@@ -135,8 +135,7 @@ pub async fn handler(
     let options: TemplateOptions = parser.into();
     options.validate()?;
     let email = template.to_email(&options)?;
-    let mut conn = smtp_pool.get()?;
-    conn.send(email)?;
+    smtp_pool.send(&email)?;
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -144,14 +143,23 @@ pub async fn handler(
 #[cfg(test)]
 mod tests {
     use crate::tests::{create_email, execute_request, get_latest_inbox};
-    use actix_web::http::{Method, StatusCode};
+    use actix_web::http::StatusCode;
     use actix_web::test;
-    use actix_web::web::{BufMut, BytesMut};
+    use actix_web::web::{BufMut, Bytes, BytesMut};
     use common_multipart_rfc7578 as cmultipart;
     use futures::TryStreamExt;
     use serde_json::json;
     use std::fs::File;
     use std::io::BufReader;
+
+    async fn to_bytes(form: cmultipart::client::multipart::Form<'_>) -> Bytes {
+        let mut body = cmultipart::client::multipart::Body::from(form);
+        let mut bytes = BytesMut::new();
+        while let Ok(Some(field)) = body.try_next().await {
+            bytes.put(field.to_vec().as_slice());
+        }
+        bytes.into()
+    }
 
     #[actix_rt::test]
     #[serial]
@@ -170,13 +178,9 @@ mod tests {
         form.add_text("params", payload.to_string());
         form.add_reader_file("attachments", reader, "cat.jpg");
         let content_type = form.content_type();
-        let mut body = cmultipart::client::multipart::Body::from(form);
-        let mut bytes = BytesMut::new();
-        while let Ok(Some(field)) = body.try_next().await {
-            bytes.put(field);
-        }
-        let req = test::TestRequest::with_header("content-type", content_type)
-            .method(Method::POST)
+        let bytes = to_bytes(form).await;
+        let req = test::TestRequest::post()
+            .insert_header(("content-type", content_type))
             .uri("/templates/user-login")
             .set_payload(bytes)
             .to_request();
@@ -213,13 +217,9 @@ mod tests {
         form.add_text("params", payload.to_string());
         form.add_reader_file("attachments", reader, "cat.jpg");
         let content_type = form.content_type();
-        let mut body = cmultipart::client::multipart::Body::from(form);
-        let mut bytes = BytesMut::new();
-        while let Ok(Some(field)) = body.try_next().await {
-            bytes.put(field);
-        }
-        let req = test::TestRequest::with_header("content-type", content_type)
-            .method(Method::POST)
+        let bytes = to_bytes(form).await;
+        let req = test::TestRequest::post()
+            .insert_header(("content-type", content_type))
             .uri("/templates/user-login")
             .set_payload(bytes)
             .to_request();

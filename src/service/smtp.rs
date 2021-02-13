@@ -1,15 +1,18 @@
 use crate::error::ServerError;
-use lettre::smtp::authentication::Credentials;
-use lettre::smtp::error::Error as LettreError;
-use lettre::smtp::r2d2::SmtpConnectionManager;
-use lettre::{ClientSecurity, ClientTlsParameters, SmtpClient};
-use native_tls::TlsConnector;
-use r2d2::Pool;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::client::{Tls, TlsParameters};
+use lettre::transport::smtp::{
+    Error as LettreError, PoolConfig, SmtpTransport, SmtpTransportBuilder,
+};
 use std::env;
 use std::string::ToString;
 use std::time::Duration;
 
-pub type SmtpPool = Pool<SmtpConnectionManager>;
+pub type SmtpPool = SmtpTransport;
+
+fn env_var_u64(key: &str) -> Option<u64> {
+    env::var(key).ok().and_then(|value| value.parse().ok())
+}
 
 #[derive(Debug)]
 pub struct Config {
@@ -19,7 +22,7 @@ pub struct Config {
     pub password: Option<String>,
     pub max_pool_size: u32,
     pub tls_enabled: bool,
-    pub timeout: u32,
+    pub timeout: u64,
 }
 
 impl Config {
@@ -40,25 +43,10 @@ impl Config {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(false),
-            timeout: env::var("SMTP_TIMEOUT")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(5),
-        }
-    }
-
-    fn get_security(&self) -> Result<ClientSecurity, SmtpError> {
-        if self.tls_enabled {
-            let tls_builder = TlsConnector::builder();
-            // TODO customize TlsConnector min version
-            let tls_builder = match tls_builder.build() {
-                Ok(value) => value,
-                Err(err) => return Err(SmtpError::TlsConnector(err.to_string())),
-            };
-            let tls_parameters = ClientTlsParameters::new(self.hostname.to_string(), tls_builder);
-            Ok(ClientSecurity::Wrapper(tls_parameters))
-        } else {
-            Ok(ClientSecurity::None)
+            timeout: env_var_u64("SMTP_TIMEOUT")
+                .map(|value| value * 1000)
+                .or_else(|| env_var_u64("SMTP_TIMEOUT_MS"))
+                .unwrap_or(5000),
         }
     }
 
@@ -74,63 +62,65 @@ impl Config {
         }
     }
 
-    fn get_client(&self) -> Result<SmtpClient, SmtpError> {
-        let security = self.get_security()?;
-        let client = match SmtpClient::new((self.hostname.as_str(), self.port), security) {
-            Ok(client) => client,
-            Err(err) => {
-                return Err(SmtpError::PreconditionFailed(format!(
-                    "couldn't create client: {}",
-                    err
-                )))
-            }
-        };
-        // TODO customize timeout
-        let client = client.timeout(Some(Duration::from_secs(5)));
-        if let Some(creds) = self.get_credentials() {
-            Ok(client.credentials(creds))
+    fn get_pool_config(&self) -> PoolConfig {
+        PoolConfig::default().max_size(self.max_pool_size)
+    }
+
+    fn get_timeout(&self) -> Option<Duration> {
+        Some(Duration::from_millis(self.timeout))
+    }
+
+    // TODO allow to add root certificate
+    // TODO allow to accept invalid hostnames
+    // TODO allow to accept invalid certs
+    fn get_tls(&self) -> Result<Tls, SmtpError> {
+        let parameteres = TlsParameters::builder(self.hostname.to_string()).build()?;
+        Ok(Tls::Required(parameteres))
+    }
+
+    // TODO allow to specify authentication mechanism
+    fn get_transport(&self) -> Result<SmtpTransportBuilder, SmtpError> {
+        let result = SmtpTransport::builder_dangerous(self.hostname.as_str())
+            .port(self.port)
+            .timeout(self.get_timeout())
+            .pool_config(self.get_pool_config());
+        let result = if self.tls_enabled {
+            result.tls(self.get_tls()?)
         } else {
-            Ok(client)
-        }
+            result
+        };
+        let result = if let Some(creds) = self.get_credentials() {
+            result.credentials(creds)
+        } else {
+            result
+        };
+        Ok(result)
     }
 
-    fn get_connection_manager(&self) -> Result<SmtpConnectionManager, SmtpError> {
-        match SmtpConnectionManager::new(self.get_client()?) {
-            Ok(manager) => Ok(manager),
-            Err(_) => Err(SmtpError::PreconditionFailed(
-                "couldn't create connection manager".into(),
-            )),
-        }
-    }
-
-    pub fn get_pool(&self) -> Result<SmtpPool, SmtpError> {
-        let manager = self.get_connection_manager()?;
-        match r2d2::Pool::builder()
-            .max_size(self.max_pool_size)
-            .build(manager)
-        {
-            Ok(pool) => Ok(pool),
-            Err(_) => Err(SmtpError::PreconditionFailed("couldn't create pool".into())),
-        }
+    pub fn get_pool(&self) -> Result<SmtpTransport, SmtpError> {
+        let mailer = self.get_transport()?;
+        Ok(mailer.build())
     }
 }
 
 #[derive(Debug)]
 pub enum SmtpError {
-    PreconditionFailed(String),
-    TlsConnector(String),
+    Configuration(String),
 }
 
 impl ToString for SmtpError {
     fn to_string(&self) -> String {
         match self {
-            SmtpError::PreconditionFailed(msg) => {
-                format!("Smtp Error: precondition failed ({})", msg)
-            }
-            SmtpError::TlsConnector(msg) => {
-                format!("Smtp Error: unable to build tls connector ({})", msg)
+            Self::Configuration(msg) => {
+                format!("Smtp Error: configuration failed ({})", msg)
             }
         }
+    }
+}
+
+impl From<LettreError> for SmtpError {
+    fn from(err: LettreError) -> Self {
+        Self::Configuration(err.to_string())
     }
 }
 
@@ -167,7 +157,7 @@ mod tests {
         assert_eq!(cfg.password, None);
         assert_eq!(cfg.tls_enabled, false);
         assert_eq!(cfg.max_pool_size, 10);
-        assert_eq!(cfg.timeout, 5);
+        assert_eq!(cfg.timeout, 5000);
     }
 
     #[test]
@@ -187,12 +177,9 @@ mod tests {
         assert_eq!(cfg.password, Some("password".into()));
         assert_eq!(cfg.tls_enabled, false);
         assert_eq!(cfg.max_pool_size, 2);
-        assert_eq!(cfg.timeout, 3);
+        assert_eq!(cfg.timeout, 3000);
         assert!(cfg.get_credentials().is_some());
-        let security = cfg.get_security();
-        assert!(security.is_ok());
-        assert!(matches!(security.unwrap(), ClientSecurity::None));
-        let client = cfg.get_client();
+        let client = cfg.get_transport();
         assert!(client.is_ok());
     }
 
@@ -213,10 +200,9 @@ mod tests {
         assert_eq!(cfg.password, Some("password".into()));
         assert_eq!(cfg.tls_enabled, true);
         assert_eq!(cfg.max_pool_size, 2);
-        assert_eq!(cfg.timeout, 3);
+        assert_eq!(cfg.timeout, 3000);
         assert!(cfg.get_credentials().is_some());
-        let security = cfg.get_security();
-        assert!(security.is_ok());
-        assert!(matches!(security.unwrap(), ClientSecurity::Wrapper(_)));
+        let client = cfg.get_pool();
+        assert!(client.is_ok());
     }
 }

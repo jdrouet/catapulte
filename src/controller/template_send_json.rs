@@ -70,8 +70,7 @@ pub async fn handler(
     let options: TemplateOptions = (&body).to_options();
     options.validate()?;
     let email = template.to_email(&options)?;
-    let mut conn = smtp_pool.get()?;
-    conn.send(email)?;
+    smtp_pool.send(&email)?;
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -124,6 +123,7 @@ mod tests {
                 "name": "bob"
             }
         });
+
         let req = test::TestRequest::post()
             .uri("/templates/user-login")
             .set_json(&payload)
