@@ -19,7 +19,7 @@ actix-rt = "2.0.2"
 async-trait = "0.1.42"
 env_logger = "0.8.3"
 futures = "0.3.12"
-handlebars = "3.5.2"
+handlebars = "3.5.3"
 lettre = { default-features = false, features = ["builder", "r2d2", "rustls-tls", "smtp-transport", "tokio1-rustls-tls"], version = "0.10.0-alpha.5" }
 log = "0.4.14"
 mime = "0.3.16"
