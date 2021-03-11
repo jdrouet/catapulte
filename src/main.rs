@@ -10,6 +10,7 @@ use actix_web::{guard, middleware, web, App, HttpServer};
 mod controller;
 mod error;
 mod service;
+mod splash;
 
 struct Config {
     pub address: String,
@@ -66,6 +67,8 @@ async fn main() -> std::io::Result<()> {
     let template_provider =
         service::template::provider::TemplateProvider::from_env().expect("template provider init");
     let smtp_pool = smtp_cfg.get_pool().expect("smtp service init");
+
+    splash::display();
 
     info!("starting server");
     HttpServer::new(move || {
