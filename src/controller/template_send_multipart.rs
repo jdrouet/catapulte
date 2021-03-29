@@ -109,15 +109,15 @@ impl TemplateOptionsParser {
     }
 }
 
-impl Into<TemplateOptions> for TemplateOptionsParser {
-    fn into(self) -> TemplateOptions {
-        TemplateOptions::new(
-            self.from,
-            self.to,
-            self.cc,
-            self.bcc,
-            self.params.unwrap(),
-            self.attachments,
+impl From<TemplateOptionsParser> for TemplateOptions {
+    fn from(value: TemplateOptionsParser) -> Self {
+        Self::new(
+            value.from,
+            value.to,
+            value.cc,
+            value.bcc,
+            value.params.unwrap(),
+            value.attachments,
         )
     }
 }
