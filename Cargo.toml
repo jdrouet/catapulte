@@ -23,7 +23,7 @@ handlebars = "3.5.4"
 lettre = { default-features = false, features = ["builder", "r2d2", "rustls-tls", "smtp-transport", "tokio1-rustls-tls"], version = "0.10.0-beta.3" }
 log = "0.4.14"
 mime = "0.3.16"
-mrml = "0.5.0"
+mrml = "1.0.0"
 r2d2 = "0.8.9"
 reqwest = { version = "0.11.2", default-features = false, features = ["json", "rustls-tls"], optional = true }
 serde = { features = ["derive"], version = "1.0.125" }

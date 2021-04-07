@@ -2,31 +2,25 @@ use crate::error::ServerError;
 use crate::service::multipart::MultipartFile;
 use handlebars::{Handlebars, TemplateRenderError as HandlebarTemplateRenderError};
 use lettre::message::{Mailbox, Message, MessageBuilder, MultiPart, SinglePart};
-use mrml::util::size::Size;
-use mrml::Email;
+use mrml::mjml::MJML;
+use mrml::prelude::parse::Error as ParserError;
+use mrml::prelude::render::{Error as RenderError, Options as RenderOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::str::FromStr;
 use std::string::ToString;
 
-fn build_mrml_options() -> mrml::Options {
-    let mut result = mrml::Options::default();
-    if let Some(value) = std::env::var("MRML_BREAKPOINT")
+fn build_mrml_options() -> RenderOptions {
+    let mut opts = RenderOptions::default();
+    if let Some(value) = std::env::var("MRML_DISABLE_COMMENTS")
         .ok()
-        .and_then(|breakpoint| Size::from_str(breakpoint.as_str()).ok())
+        .and_then(|disable_comments| disable_comments.to_lowercase().parse::<bool>().ok())
     {
-        result.breakpoint = value;
-    }
-    if let Some(value) = std::env::var("MRML_KEEP_COMMENTS")
-        .ok()
-        .and_then(|keep_comments| keep_comments.parse::<bool>().ok())
-    {
-        result.keep_comments = value;
+        opts.disable_comments = value;
     }
     if let Ok(value) = std::env::var("MRML_SOCIAL_ICON_ORIGIN") {
-        result.social_icon_origin = value;
+        opts.social_icon_origin = Some(value);
     }
-    result
+    opts
 }
 
 #[derive(Clone, Debug)]
@@ -34,6 +28,7 @@ pub enum TemplateError {
     InterpolationError(String),
     InvalidOptions(String),
     RenderingError(String),
+    ParsingError(String),
 }
 
 impl From<lettre::error::Error> for TemplateError {
@@ -54,17 +49,20 @@ impl From<TemplateError> for ServerError {
             TemplateError::InterpolationError(msg) => ServerError::BadRequest(msg),
             TemplateError::InvalidOptions(msg) => ServerError::BadRequest(msg),
             TemplateError::RenderingError(msg) => ServerError::InternalServerError(msg),
+            TemplateError::ParsingError(msg) => ServerError::InternalServerError(msg),
         }
     }
 }
 
-impl From<mrml::Error> for TemplateError {
-    fn from(err: mrml::Error) -> Self {
-        let msg = match err {
-            mrml::Error::MJMLError(mjml_error) => format!("MJML Error: {:?}", mjml_error),
-            mrml::Error::ParserError(parser_error) => format!("Parser Error: {:?}", parser_error),
-        };
-        TemplateError::RenderingError(msg)
+impl From<ParserError> for TemplateError {
+    fn from(err: ParserError) -> Self {
+        TemplateError::ParsingError(err.to_string())
+    }
+}
+
+impl From<RenderError> for TemplateError {
+    fn from(err: RenderError) -> Self {
+        TemplateError::RenderingError(err.to_string())
     }
 }
 
@@ -158,29 +156,28 @@ impl TemplateOptions {
 }
 
 impl Template {
-    fn render(&self, opts: &TemplateOptions) -> Result<mrml::Email, TemplateError> {
+    fn render(&self, opts: &TemplateOptions) -> Result<MJML, TemplateError> {
         let reg = Handlebars::new();
         let mjml = reg.render_template(self.content.as_str(), &opts.params)?;
-        let email = mrml::to_email(mjml.as_str(), build_mrml_options())?;
-        Ok(email)
+        Ok(mrml::parse(mjml.to_string())?)
     }
 
-    fn get_body(email: &Email) -> MultiPart {
-        MultiPart::alternative()
+    fn get_body(email: &MJML, opts: &RenderOptions) -> Result<MultiPart, TemplateError> {
+        Ok(MultiPart::alternative()
             .singlepart(
                 SinglePart::builder()
                     .header(lettre::message::header::ContentType(
                         "text/plain; charset=utf8".parse().unwrap(),
                     ))
-                    .body(email.text.to_string()),
+                    .body(email.get_preview().unwrap_or_default()),
             )
             .singlepart(
                 SinglePart::builder()
                     .header(lettre::message::header::ContentType(
                         "text/html; charset=utf8".parse().unwrap(),
                     ))
-                    .body(email.html.to_string()),
-            )
+                    .body(email.render(opts)?),
+            ))
     }
 
     fn add_attachment(builder: MultiPart, file: &MultipartFile) -> MultiPart {
@@ -205,21 +202,28 @@ impl Template {
         builder.singlepart(part)
     }
 
-    fn get_multipart(&self, email: &Email, opts: &TemplateOptions) -> MultiPart {
+    fn get_multipart(
+        &self,
+        template: &MJML,
+        template_opts: &TemplateOptions,
+        render_opts: &RenderOptions,
+    ) -> Result<MultiPart, TemplateError> {
         let builder = MultiPart::mixed();
-        let builder = builder.multipart(Self::get_body(email));
-        opts.attachments
+        let builder = builder.multipart(Self::get_body(template, &render_opts)?);
+        Ok(template_opts
+            .attachments
             .iter()
-            .fold(builder, |res, item| Self::add_attachment(res, item))
+            .fold(builder, |res, item| Self::add_attachment(res, item)))
     }
 
     pub fn to_email(&self, opts: &TemplateOptions) -> Result<Message, TemplateError> {
         debug!("rendering template: {} ({})", self.name, self.description);
+        let render_opts = build_mrml_options();
         let email = self.render(opts)?;
         let builder = opts.to_builder();
         Ok(builder
-            .subject(email.subject.as_str())
-            .multipart(self.get_multipart(&email, opts))?)
+            .subject(email.get_title().unwrap_or_default().as_str())
+            .multipart(self.get_multipart(&email, opts, &render_opts)?)?)
     }
 }
 
@@ -228,59 +232,36 @@ impl Template {
 mod tests {
     use super::*;
     use env_test_util::TempEnvVar;
-    use mrml::Options;
+    use mrml::prelude::render::Options as RenderOptions;
     use serde_json::json;
 
     #[test]
     #[serial]
-    fn building_mrml_options_breakpoint_unset() {
-        let _breakpoint = TempEnvVar::new("MRML_BREAKPOINT");
+    fn building_mrml_options_disable_comments_unset() {
+        let _breakpoint = TempEnvVar::new("MRML_DISABLE_COMMENTS");
         let result = build_mrml_options();
         assert_eq!(
-            result.breakpoint.to_string(),
-            Options::default().breakpoint.to_string()
+            result.disable_comments,
+            RenderOptions::default().disable_comments
         );
     }
     #[test]
     #[serial]
-    fn building_mrml_options_breakpoint_set() {
-        let _breakpoint = TempEnvVar::new("MRML_BREAKPOINT").with("800px");
+    fn building_mrml_options_disable_comments_set() {
+        let _breakpoint = TempEnvVar::new("MRML_DISABLE_COMMENTS").with("True");
         let result = build_mrml_options();
-        assert_eq!(result.breakpoint.to_string(), "800px");
+        assert_eq!(result.disable_comments, true);
     }
 
     #[test]
     #[serial]
-    fn building_mrml_options_breakpoint_invalid() {
-        let _breakpoint = TempEnvVar::new("MRML_BREAKPOINT").with("invalid");
+    fn building_mrml_options_disable_comments_invalid() {
+        let _breakpoint = TempEnvVar::new("MRML_DISABLE_COMMENTS").with("invalid");
         let result = build_mrml_options();
         assert_eq!(
-            result.breakpoint.to_string(),
-            Options::default().breakpoint.to_string()
+            result.disable_comments,
+            RenderOptions::default().disable_comments
         );
-    }
-
-    #[test]
-    #[serial]
-    fn building_mrml_options_keep_comments_unset() {
-        let _breakpoint = TempEnvVar::new("MRML_KEEP_COMMENTS");
-        let result = build_mrml_options();
-        assert_eq!(result.keep_comments, Options::default().keep_comments);
-    }
-    #[test]
-    #[serial]
-    fn building_mrml_options_keep_comments_set() {
-        let _breakpoint = TempEnvVar::new("MRML_KEEP_COMMENTS").with("TrUe");
-        let result = build_mrml_options();
-        assert_eq!(result.keep_comments, true);
-    }
-
-    #[test]
-    #[serial]
-    fn building_mrml_options_keep_comments_invalid() {
-        let _breakpoint = TempEnvVar::new("MRML_KEEP_COMMENTS").with("invalid");
-        let result = build_mrml_options();
-        assert_eq!(result.keep_comments, Options::default().keep_comments);
     }
 
     #[test]
@@ -290,7 +271,7 @@ mod tests {
         let result = build_mrml_options();
         assert_eq!(
             result.social_icon_origin,
-            Options::default().social_icon_origin
+            RenderOptions::default().social_icon_origin
         );
     }
     #[test]
@@ -298,7 +279,10 @@ mod tests {
     fn building_mrml_options_social_icon_origin_set() {
         let _breakpoint = TempEnvVar::new("MRML_SOCIAL_ICON_ORIGIN").with("http://wherever.com/");
         let result = build_mrml_options();
-        assert_eq!(result.social_icon_origin, "http://wherever.com/");
+        assert_eq!(
+            result.social_icon_origin,
+            Some("http://wherever.com/".to_string())
+        );
     }
 
     #[test]
