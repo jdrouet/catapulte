@@ -159,7 +159,7 @@ impl Template {
     fn render(&self, opts: &TemplateOptions) -> Result<MJML, TemplateError> {
         let reg = Handlebars::new();
         let mjml = reg.render_template(self.content.as_str(), &opts.params)?;
-        Ok(mrml::parse(mjml.to_string())?)
+        Ok(mrml::parse(mjml)?)
     }
 
     fn get_body(email: &MJML, opts: &RenderOptions) -> Result<MultiPart, TemplateError> {
