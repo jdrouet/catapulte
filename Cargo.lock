@@ -1231,9 +1231,9 @@ dependencies = [
 
 [[package]]
 name = "mrml"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0969461b0ded2f8b38be39a3c1ba8f1759546e098f85a27a69e0af8a7c37eb8d"
+checksum = "9b16224d9cce3b99c10a0b72380b00fa6ff0bd99f2ab0f27e43c211cbc720ee3"
 dependencies = [
  "rand 0.8.3",
  "serde",
