@@ -1,0 +1,25 @@
+version: 2
+updates:
+- package-ecosystem: cargo
+  directory: "/"
+  schedule:
+    interval: daily
+    time: "04:00"
+  open-pull-requests-limit: 10
+  ignore:
+  - dependency-name: mrml
+    versions:
+    - 1.0.0
+  - dependency-name: actix-rt
+    versions:
+    - 2.0.0
+    - 2.2.0
+  - dependency-name: actix-http
+    versions:
+    - 3.0.0-beta.4
+  - dependency-name: funty
+    versions:
+    - 1.2.0
+  - dependency-name: reqwest
+    versions:
+    - 0.11.0
