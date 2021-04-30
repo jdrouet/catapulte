@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: daily
+    labels:
+      - "dependencies"
+    ignore:
+      - dependency-name: funty
+        versions:
+          - 1.2.0
+
