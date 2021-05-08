@@ -32,3 +32,4 @@ When the provider `jolimail` is used
 - `SMTP_USERNAME` is the username used to authenticate with the SMTP server
 - `SMTP_PASSWORD` is the password used to authenticate with the SMTP server
 - `SMTP_MAX_POOL_SIZE` is the max number of connection to the SMTP server (default `10`)
+- `SMTP_TLS_ENABLED` enable TLS secure connection to the SMTP server (default `false`)
