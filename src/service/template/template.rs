@@ -100,10 +100,10 @@ impl TemplateOptions {
         attachments: Vec<MultipartFile>,
     ) -> Self {
         Self {
-            from,
             to,
             cc,
             bcc,
+            from,
             params,
             attachments,
         }
