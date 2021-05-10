@@ -77,6 +77,16 @@ If you some API specification, the [Open API specification](./openapi.yml) is al
 
 To use it in production, we prepared a documentation on how to use Catapulte with [Amazon Simple Email Service](./wiki/with-aws-ses.md).
 
+### Sending to multiple recipients
+You can send the same email to multiple recipients just by using an array in the `to` field, like this:
+
+```bash
+curl -X POST -v \
+  -H "Content-Type: application/json" \
+  --data '{"from":"alice@example.com","to":["bob@example.com","jon@example.com"],"params":{"some":"data"}}' \
+  http://localhost:3000/templates/the-name-of-your-template
+```
+
 ## Should you use it?
 
 If, like us, you didn't find any good way of doing transactionnal emails, then YES!
