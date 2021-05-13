@@ -17,6 +17,7 @@ types:
   - build
 
 scopes:
+  - version
   - deps
   - style
   - server
