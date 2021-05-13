@@ -1,6 +1,6 @@
 [package]
 name = "catapulte"
-version = "0.3.3"
+version = "0.3.4"
 authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
 edition = "2018"
 license-file = "license.md"
