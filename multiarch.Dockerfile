@@ -6,6 +6,7 @@ ENV USER=root
 WORKDIR /code
 RUN cargo init
 COPY Cargo.toml /code/Cargo.toml
+COPY Cargo.lock /code/Cargo.lock
 RUN mkdir -p /code/.cargo \
   && cargo vendor > /code/.cargo/config
 
@@ -16,6 +17,7 @@ ENV USER=root
 WORKDIR /code
 
 COPY Cargo.toml /code/Cargo.toml
+COPY Cargo.lock /code/Cargo.lock
 COPY src /code/src
 COPY --from=vendor /code/.cargo /code/.cargo
 COPY --from=vendor /code/vendor /code/vendor
@@ -26,6 +28,11 @@ COPY template /code/template
 CMD [ "cargo", "test", "--offline" ]
 
 FROM base AS builder
+
+# this is a fix to be able to build for arm64
+RUN apt-get update \
+  && apt-get install -y apt-utils \
+  && apt-get install -y librust-futures-core-dev
 
 RUN cargo build --release --offline
 

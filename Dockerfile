@@ -15,6 +15,11 @@ CMD [ "cargo", "test", "--offline" ]
 
 FROM base AS builder
 
+# this is a fix to be able to build for arm64
+RUN apt-get update \
+  && apt-get install -y apt-utils \
+  && apt-get install -y librust-futures-core-dev
+
 RUN cargo build --release --offline
 
 FROM debian:buster-slim
