@@ -39,7 +39,10 @@ macro_rules! create_app {
 
 macro_rules! bind_services {
     ($app: expr) => {
-        $app.service(controller::status::handler)
+        $app.service(controller::swagger::handle_root)
+            .service(controller::swagger::handle_index)
+            .service(controller::swagger::handle_openapi)
+            .service(controller::status::handler)
             .route(
                 "/templates/{name}",
                 web::route()
