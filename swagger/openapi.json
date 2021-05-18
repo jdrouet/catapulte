@@ -1,0 +1,181 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Catapulte",
+    "description": "Endpoint of the catapulte service",
+    "version": "0.3.4",
+    "contact": {
+      "name": "Jeremie Drouet",
+      "email": "jeremie.drouet@gmail.com"
+    },
+    "license": {
+      "name": "Jolimail Source Available License (JSAL) Agreement",
+      "url": "https://github.com/jdrouet/catapulte/blob/main/license.md"
+    }
+  },
+  "paths": {
+    "/status": {
+      "get": {
+        "summary": "get service status",
+        "operationId": "getStatus",
+        "description": "Checks if server is running",
+        "responses": {
+          "200": {
+            "description": "Everything works fine",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "uptime": {
+                      "type": "number",
+                      "description": "number of seconds since the service started"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "curl",
+            "source": "curl https://catapulte.jolimail.io/status"
+          }
+        ]
+      }
+    },
+    "/templates/{name}": {
+      "post": {
+        "operationId": "send-template",
+        "summary": "send template",
+        "description": "Find the template referenced with the given name, interpolates the variables, convert it to HTML and then send it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["to", "from", "params"],
+                "properties": {
+                  "to": {
+                    "$ref": "#/components/schemas/recipients"
+                  },
+                  "from": {
+                    "$ref": "#/components/schemas/sender"
+                  },
+                  "params": {
+                    "$ref": "#/components/schemas/templateParams"
+                  }
+                }
+              },
+              "examples": {
+                "single recipient": {
+                  "summary": "single recipient",
+                  "value": {
+                    "to": "Bob <bob@example.com>",
+                    "from": "Alice <alice@example.com>",
+                    "params": {
+                      "name": "Bob",
+                      "phone": "+331234567890"
+                    }
+                  }
+                },
+                "multiple recipient": {
+                  "summary": "multiple recipient",
+                  "value": {
+                    "to": ["Bob <bob@example.com>"],
+                    "from": "Alice <alice@example.com>",
+                    "params": {
+                      "name": "Bob",
+                      "phone": "+331234567890"
+                    }
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["to", "from", "params"],
+                "properties": {
+                  "to": {
+                    "$ref": "#/components/schemas/recipients"
+                  },
+                  "from": {
+                    "$ref": "#/components/schemas/sender"
+                  },
+                  "params": {
+                    "$ref": "#/components/schemas/templateParams"
+                  },
+                  "attachments": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "binary"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "description": "Name of the template",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "204": { "description": "email was properly sent" },
+          "400": { "description": "invalid input, object invalid" }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "curl json",
+            "source": "curl \\\n\t-H \"Content-Type: application/json\" \\\n\t-X POST \\\n\t--data \"{\\\"from\\\":\\\"alice@example.com\\\",\\\"to\\\":\\\"bob@example.com\\\",\\\"params\\\":{\\\"name\\\":\\\"bob\\\",\\\"token\\\":\\\"abcdefgh\\\"}}\" \\\n\thttps://catapulte.jolimail.io/templates/template-name"
+          },
+          {
+            "lang": "curl multipart",
+            "source": "curl \\\n\t-H \"Content-Type: multipart/form-data\" \\\n\t-X POST \\\n\t-F from=alice@example.com \\\n\t-F to=bob@example.com \\\n\t -F params=\"{\\\"name\\\":\\\"bob\\\",\\\"token\\\":\\\"abcdefgh\\\"}\" \\\n\thttps://catapulte.jolimail.io/templates/template-name"
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "sender": {
+        "type": "string",
+        "format": "email",
+        "description": "email address of the sender",
+        "example": "Alice <alice@example.com>"
+      },
+      "recipient": {
+        "type": "string",
+        "format": "email",
+        "description": "email address of the recipient",
+        "example": "Bob <bob@example.com>"
+      },
+      "recipients": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/recipient" },
+          {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/recipient" }
+          }
+        ]
+      },
+      "templateParams": {
+        "type": "object",
+        "example": {
+          "name": "Bob",
+          "phone": "+331234567890"
+        }
+      }
+    }
+  }
+}
