@@ -20,6 +20,7 @@ RUN apt-get update \
   && apt-get install -y apt-utils \
   && apt-get install -y librust-futures-core-dev
 
+COPY swagger /code/swagger
 RUN cargo build --release --offline
 
 FROM debian:buster-slim
