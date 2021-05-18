@@ -68,10 +68,13 @@ impl TemplateOptionsParser {
     }
 
     async fn parse_attachment(&mut self, root: &Path, field: Field) -> Result<(), ServerError> {
-        if let Ok(file) = field_to_file(root, field).await {
-            self.attachments.push(file);
+        match field_to_file(root, field).await {
+            Ok(file) => {
+                self.attachments.push(file);
+                Ok(())
+            }
+            Err(err) => Err(ServerError::BadRequest(err.to_string())),
         }
-        Ok(())
     }
 
     async fn parse_field(&mut self, root: &Path, field: Field) -> Result<(), ServerError> {

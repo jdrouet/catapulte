@@ -1,7 +1,7 @@
 use crate::error::ServerError;
 use crate::service::multipart::MultipartFile;
 use handlebars::{Handlebars, TemplateRenderError as HandlebarTemplateRenderError};
-use lettre::message::{Mailbox, Message, MessageBuilder, MultiPart, SinglePart};
+use lettre::message::{Attachment, Body, Mailbox, Message, MessageBuilder, MultiPart, SinglePart};
 use mrml::mjml::MJML;
 use mrml::prelude::parse::Error as ParserError;
 use mrml::prelude::render::{Error as RenderError, Options as RenderOptions};
@@ -164,42 +164,22 @@ impl Template {
 
     fn get_body(email: &MJML, opts: &RenderOptions) -> Result<MultiPart, TemplateError> {
         Ok(MultiPart::alternative()
-            .singlepart(
-                SinglePart::builder()
-                    .header(lettre::message::header::ContentType(
-                        "text/plain; charset=utf8".parse().unwrap(),
-                    ))
-                    .body(email.get_preview().unwrap_or_default()),
-            )
-            .singlepart(
-                SinglePart::builder()
-                    .header(lettre::message::header::ContentType(
-                        "text/html; charset=utf8".parse().unwrap(),
-                    ))
-                    .body(email.render(opts)?),
-            ))
+            .singlepart(Self::get_body_plain(email))
+            .multipart(Self::get_body_html(email, opts)?))
     }
 
-    fn add_attachment(builder: MultiPart, file: &MultipartFile) -> MultiPart {
-        let mut parameters = vec![];
-        if let Some(fname) = file.filename.as_ref() {
-            parameters.push(lettre::message::header::DispositionParam::Filename(
-                lettre::message::header::Charset::Ext("utf-8".into()),
-                None,
-                fname.as_bytes().to_vec(),
-            ));
-        }
-        let body = lettre::message::Body::new(std::fs::read(file.filepath.clone()).unwrap());
-        let part = SinglePart::builder()
-            .header(lettre::message::header::ContentType(
-                file.content_type.clone(),
-            ))
-            .header(lettre::message::header::ContentDisposition {
-                disposition: lettre::message::header::DispositionType::Attachment,
-                parameters,
-            })
-            .body(body);
-        builder.singlepart(part)
+    fn get_body_plain(email: &MJML) -> SinglePart {
+        SinglePart::plain(email.get_preview().unwrap_or_default())
+    }
+
+    fn get_body_html(email: &MJML, opts: &RenderOptions) -> Result<MultiPart, TemplateError> {
+        Ok(MultiPart::related().singlepart(SinglePart::html(email.render(opts)?)))
+    }
+
+    fn build_attachment(file: &MultipartFile) -> SinglePart {
+        let body = Body::new(std::fs::read(file.filepath.clone()).unwrap());
+        Attachment::new(file.filename.clone())
+            .body(body, file.content_type.to_string().parse().unwrap())
     }
 
     fn get_multipart(
@@ -210,10 +190,9 @@ impl Template {
     ) -> Result<MultiPart, TemplateError> {
         let builder = MultiPart::mixed();
         let builder = builder.multipart(Self::get_body(template, &render_opts)?);
-        Ok(template_opts
-            .attachments
-            .iter()
-            .fold(builder, |res, item| Self::add_attachment(res, item)))
+        Ok(template_opts.attachments.iter().fold(builder, |res, item| {
+            res.singlepart(Self::build_attachment(item))
+        }))
     }
 
     pub fn to_email(&self, opts: &TemplateOptions) -> Result<Message, TemplateError> {
