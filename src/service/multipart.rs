@@ -5,10 +5,22 @@ use futures::TryStreamExt;
 use mime::Mime;
 use serde_json::Value as JsonValue;
 use serde_json::{from_slice, Error as JsonError};
-use std::io::{Error as IoError, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::string::FromUtf8Error;
-use uuid::Uuid;
+
+#[derive(Debug)]
+pub enum MultipartError {
+    Parse(String),
+}
+
+impl ToString for MultipartError {
+    fn to_string(&self) -> String {
+        match self {
+            Self::Parse(inner) => inner.clone(),
+        }
+    }
+}
 
 pub async fn field_to_bytes(mut field: Field) -> Bytes {
     let mut bytes = BytesMut::new();
@@ -38,29 +50,29 @@ fn get_filename(field: &Field) -> Option<String> {
 
 #[derive(Debug)]
 pub struct MultipartFile {
-    pub filename: Option<String>,
+    pub filename: String,
     pub filepath: PathBuf,
     pub content_type: Mime,
 }
 
 impl MultipartFile {
-    fn from_field(root: &Path, field: &Field) -> Self {
-        let filename = get_filename(&field);
-        let filepath = match filename.clone() {
-            Some(value) => root.join(value),
-            None => root.join(Uuid::new_v4().to_string()),
+    fn from_field(root: &Path, field: &Field) -> Result<Self, MultipartError> {
+        let filename = match get_filename(&field) {
+            Some(value) => value,
+            None => return Err(MultipartError::Parse("unable to get filename".into())),
         };
+        let filepath = root.join(&filename);
         let content_type = field.content_type().clone();
-        Self {
+        Ok(Self {
             filename,
             filepath,
             content_type,
-        }
+        })
     }
 }
 
-pub async fn field_to_file(root: &Path, mut field: Field) -> Result<MultipartFile, IoError> {
-    let multipart_file = MultipartFile::from_field(root, &field);
+pub async fn field_to_file(root: &Path, mut field: Field) -> Result<MultipartFile, MultipartError> {
+    let multipart_file = MultipartFile::from_field(root, &field)?;
     let filepath = multipart_file.filepath.clone();
     // TODO find a better way than unwraping twice
     let mut file = web::block(|| std::fs::File::create(filepath))
