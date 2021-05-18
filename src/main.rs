@@ -3,6 +3,8 @@
 extern crate serial_test;
 
 #[macro_use]
+extern crate lazy_static;
+#[macro_use]
 extern crate log;
 
 use actix_web::{guard, middleware, web, App, HttpServer};
