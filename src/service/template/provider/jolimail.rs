@@ -39,8 +39,10 @@ impl TemplateManager for JolimailTemplateProvider {
     async fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError> {
         let url = format!("{}/api/templates/{}/content", self.base_url, name);
         let request = Self::get_client().get(url.as_str()).send().await?;
-        let result = request.json::<Template>().await?;
-        Ok(result)
+        match request.status() {
+            reqwest::StatusCode::NOT_FOUND => Err(TemplateManagerError::TemplateNotFound),
+            _ => Ok(request.json::<Template>().await?),
+        }
     }
 }
 

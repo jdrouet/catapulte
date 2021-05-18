@@ -25,7 +25,10 @@ impl From<JsonError> for TemplateManagerError {
 
 impl From<reqwest::Error> for TemplateManagerError {
     fn from(err: reqwest::Error) -> Self {
-        TemplateManagerError::InternalError(format!("network error {:?}", err))
+        match err.status() {
+            Some(reqwest::StatusCode::NOT_FOUND) => Self::TemplateNotFound,
+            _ => Self::InternalError(format!("network error {:?}", err)),
+        }
     }
 }
 

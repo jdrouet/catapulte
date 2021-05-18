@@ -119,7 +119,7 @@ impl From<TemplateOptionsParser> for TemplateOptions {
             value.to,
             value.cc,
             value.bcc,
-            value.params.unwrap(),
+            value.params.unwrap_or_default(),
             value.attachments,
         )
     }
