@@ -201,6 +201,33 @@ mod tests {
 
     #[actix_rt::test]
     #[serial]
+    async fn error_with_file_without_filename() {
+        let from = create_email();
+        let to = create_email();
+        let payload = json!({
+            "name": "bob",
+            "token": "this_is_a_token"
+        });
+        let file = File::open("asset/cat.jpg").unwrap();
+        let reader = BufReader::new(file);
+        let mut form = cmultipart::client::multipart::Form::default();
+        form.add_text("from", from.clone());
+        form.add_text("to", to.clone());
+        form.add_text("params", payload.to_string());
+        form.add_reader("attachments", reader);
+        let content_type = form.content_type();
+        let bytes = to_bytes(form).await;
+        let req = test::TestRequest::post()
+            .insert_header(("content-type", content_type))
+            .uri("/templates/user-login")
+            .set_payload(bytes)
+            .to_request();
+        let res = execute_request(req).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_rt::test]
+    #[serial]
     async fn success_with_multiple_recipients() {
         let from = create_email();
         let to_first = create_email();
