@@ -428,6 +428,7 @@ dependencies = [
  "funty",
  "futures",
  "handlebars",
+ "lazy_static",
  "lettre",
  "log",
  "mime",

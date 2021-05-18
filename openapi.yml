@@ -17,12 +17,17 @@ paths:
     get:
       summary: get service status
       operationId: getStatus
-      description: Checks if the SMTP server is reachable
+      description: Checks if server is running
       responses:
-        204:
+        200:
           description: Everything works fine
-        500:
-          description: The SMTP server is not reachable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uptime:
+                    type: number
 
   /templates/{name}:
     post:
