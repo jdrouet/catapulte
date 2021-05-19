@@ -61,6 +61,12 @@
                   "to": {
                     "$ref": "#/components/schemas/recipients"
                   },
+                  "cc": {
+                    "$ref": "#/components/schemas/recipients"
+                  },
+                  "bcc": {
+                    "$ref": "#/components/schemas/recipients"
+                  },
                   "from": {
                     "$ref": "#/components/schemas/sender"
                   },
@@ -102,6 +108,12 @@
                   "to": {
                     "$ref": "#/components/schemas/recipients"
                   },
+                  "cc": {
+                    "$ref": "#/components/schemas/recipients"
+                  },
+                  "bcc": {
+                    "$ref": "#/components/schemas/recipients"
+                  },
                   "from": {
                     "$ref": "#/components/schemas/sender"
                   },
@@ -140,7 +152,7 @@
           },
           {
             "lang": "curl multipart",
-            "source": "curl \\\n\t-H \"Content-Type: multipart/form-data\" \\\n\t-X POST \\\n\t-F from=alice@example.com \\\n\t-F to=bob@example.com \\\n\t -F params=\"{\\\"name\\\":\\\"bob\\\",\\\"token\\\":\\\"abcdefgh\\\"}\" \\\n\thttps://catapulte.jolimail.io/templates/template-name"
+            "source": "curl \\\n\t-H \"Content-Type: multipart/form-data\" \\\n\t-X POST \\\n\t-F from=alice@example.com \\\n\t-F to=bob@example.com \\\n\t -F params=\"{\\\"name\\\":\\\"bob\\\",\\\"token\\\":\\\"abcdefgh\\\"}\" \\\n\t-F attachments=@path/to/file.jpg \\\n\thttps://catapulte.jolimail.io/templates/template-name"
           }
         ]
       }
