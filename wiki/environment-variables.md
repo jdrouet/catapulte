@@ -6,6 +6,7 @@ Catapulte use several environment variables to be configured.
 
 - `ADDRESS` is where the server will listen to, default to `0.0.0.0` in container otherwise `localhost`
 - `PORT` is the port on white the server will listen to, default to `3000`
+- `SWAGGER_ENABLED` enables the swagger-ui (default `false`)
 
 ## Template relative
 
