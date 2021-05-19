@@ -15,8 +15,18 @@ ci-coverage:
 build-image:
 	docker build --tag catapulte:local .
 
-release:
-	docker buildx build --push \
+release-alpine:
+	docker buildx build ${BUILD_ARG} \
+		--file multiarch-alpine.Dockerfile \
+		--platform linux/amd64,linux/arm64 \
+		--tag jdrouet/catapulte:alpine \
+		--tag jdrouet/catapulte:${VERSION}-alpine \
+		--label org.label-schema.version=${VERSION} \
+		--label org.label-schema.vcs-ref=${shell git rev-parse --short HEAD} \
+		.
+
+release-debian:
+	docker buildx build ${BUILD_ARG} \
 		--file multiarch.Dockerfile \
 		--platform linux/amd64,linux/i386,linux/arm/v7,linux/arm64 \
 		--tag jdrouet/catapulte:latest \
@@ -24,6 +34,8 @@ release:
 		--label org.label-schema.version=${VERSION} \
 		--label org.label-schema.vcs-ref=${shell git rev-parse --short HEAD} \
 		.
+
+release: release-debian
 
 dev-env:
 	docker-compose -f docker-compose.dev.yml up -d
