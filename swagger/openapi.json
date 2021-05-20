@@ -139,6 +139,12 @@
             "description": "Name of the template",
             "required": true,
             "schema": { "type": "string" }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "description": "Authorization token, is required only when jwt authentication is enabled. The header name may vary depending on the configuration.",
+            "schema": { "type": "string" }
           }
         ],
         "responses": {
@@ -152,7 +158,7 @@
           },
           {
             "lang": "curl multipart",
-            "source": "curl \\\n\t-H \"Content-Type: multipart/form-data\" \\\n\t-X POST \\\n\t-F from=alice@example.com \\\n\t-F to=bob@example.com \\\n\t -F params=\"{\\\"name\\\":\\\"bob\\\",\\\"token\\\":\\\"abcdefgh\\\"}\" \\\n\t-F attachments=@path/to/file.jpg \\\n\thttps://catapulte.jolimail.io/templates/template-name"
+            "source": "curl \\\n\t-H \"Content-Type: multipart/form-data\" \\\n\t-H \"Authorization: this-is-my-token\" \\\n\t-X POST \\\n\t-F from=alice@example.com \\\n\t-F to=bob@example.com \\\n\t-F params=\"{\\\"name\\\":\\\"bob\\\",\\\"token\\\":\\\"abcdefgh\\\"}\" \\\n\t-F attachments=@path/to/file.jpg \\\n\thttps://catapulte.jolimail.io/templates/template-name"
           }
         ]
       }
