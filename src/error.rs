@@ -16,6 +16,7 @@ pub enum ServerError {
     BadRequest(String),
     NotFound(String),
     InternalServerError(String),
+    Unauthorized(String),
 }
 
 impl Display for ServerError {
@@ -30,6 +31,7 @@ impl ServerError {
             ServerError::BadRequest(_) => HttpResponse::BadRequest(),
             ServerError::NotFound(_) => HttpResponse::NotFound(),
             ServerError::InternalServerError(_) => HttpResponse::InternalServerError(),
+            ServerError::Unauthorized(_) => HttpResponse::Unauthorized(),
         }
     }
 
@@ -38,6 +40,7 @@ impl ServerError {
             ServerError::BadRequest(_) => "Bad Request".into(),
             ServerError::NotFound(_) => "Not Found".into(),
             ServerError::InternalServerError(_) => "Internal Server Error".into(),
+            ServerError::Unauthorized(_) => "Unauthorized".into(),
         }
     }
 
@@ -46,6 +49,7 @@ impl ServerError {
             ServerError::BadRequest(ref msg) => msg.clone(),
             ServerError::NotFound(ref msg) => msg.clone(),
             ServerError::InternalServerError(ref msg) => msg.clone(),
+            ServerError::Unauthorized(ref msg) => msg.clone(),
         }
     }
 }

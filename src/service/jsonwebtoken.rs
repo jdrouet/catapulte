@@ -57,12 +57,12 @@ pub struct Claims {
 }
 
 #[derive(Clone, Debug)]
-pub struct Authenticator {
+pub struct Decoder {
     key: Option<DecodingKey<'static>>,
     validation: Validation,
 }
 
-impl Authenticator {
+impl Decoder {
     pub fn from_env() -> Result<Self, ParserError> {
         Ok(Self {
             key: parse_decoding_key()?,
@@ -118,18 +118,14 @@ pub mod tests {
         let token = create_token();
         let _value = TempEnvVar::new("JWT_ALGORITHM");
         let _secret = TempEnvVar::new("JWT_SECRET");
-        let result = super::Authenticator::from_env().unwrap().decode(None);
+        let result = super::Decoder::from_env().unwrap().decode(None);
         assert!(result.unwrap().is_none());
         let _secret = TempEnvVar::new("JWT_SECRET").with("secret");
-        let result = super::Authenticator::from_env()
-            .unwrap()
-            .decode(Some(&token));
+        let result = super::Decoder::from_env().unwrap().decode(Some(&token));
         assert!(result.unwrap().is_some());
-        let result = super::Authenticator::from_env()
-            .unwrap()
-            .decode(Some("abcd"));
+        let result = super::Decoder::from_env().unwrap().decode(Some("abcd"));
         assert!(result.is_err());
-        let result = super::Authenticator::from_env().unwrap().decode(None);
+        let result = super::Decoder::from_env().unwrap().decode(None);
         assert!(result.is_err());
     }
 

@@ -12,6 +12,7 @@ use actix_web::{web, App, HttpServer};
 
 mod controller;
 mod error;
+mod middleware;
 mod service;
 
 struct Config {
@@ -79,6 +80,7 @@ mod tests {
     use actix_http::Request;
     use actix_web::dev::ServiceResponse;
     use actix_web::{test, App};
+    use env_test_util::TempEnvVar;
     use reqwest;
     use serde::Deserialize;
     use uuid::Uuid;
@@ -115,6 +117,20 @@ mod tests {
 
     pub fn create_email() -> String {
         format!("{}@example.com", Uuid::new_v4())
+    }
+
+    pub async fn execute_auth_request(req: Request) -> ServiceResponse {
+        let _secret = TempEnvVar::new("JWT_SECRET").with("secret");
+        let template_provider = service::template::provider::TemplateProvider::from_env()
+            .expect("template provider init");
+        let smtp_pool = service::smtp::Config::from_env()
+            .get_pool()
+            .expect("smtp service init");
+        let mut app = test::init_service(bind_services!(create_app!()
+            .data(template_provider.clone())
+            .data(smtp_pool.clone())))
+        .await;
+        test::call_service(&mut app, req).await
     }
 
     pub async fn execute_request(req: Request) -> ServiceResponse {
