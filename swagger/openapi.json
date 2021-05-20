@@ -158,7 +158,7 @@
           },
           {
             "lang": "curl multipart",
-            "source": "curl \\\n\t-H \"Content-Type: multipart/form-data\" \\\n\t-H \"Authorization: this-is-my-token\" \\\n\t-X POST \\\n\t-F from=alice@example.com \\\n\t-F to=bob@example.com \\\n\t-F params=\"{\\\"name\\\":\\\"bob\\\",\\\"token\\\":\\\"abcdefgh\\\"}\" \\\n\t-F attachments=@path/to/file.jpg \\\n\thttps://catapulte.jolimail.io/templates/template-name"
+            "source": "curl \\\n\t-H \"Content-Type: multipart/form-data\" \\\n\t-H \"Authorization: Bearer this-is-my-token\" \\\n\t-X POST \\\n\t-F from=alice@example.com \\\n\t-F to=bob@example.com \\\n\t-F params=\"{\\\"name\\\":\\\"bob\\\",\\\"token\\\":\\\"abcdefgh\\\"}\" \\\n\t-F attachments=@path/to/file.jpg \\\n\thttps://catapulte.jolimail.io/templates/template-name"
           }
         ]
       }
