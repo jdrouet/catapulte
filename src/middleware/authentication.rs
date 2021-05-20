@@ -69,7 +69,8 @@ where
         let token = req
             .headers()
             .get(&self.header)
-            .and_then(|header| header.to_str().ok());
+            .and_then(|header| header.to_str().ok())
+            .map(|header| header.trim_start_matches("Bearer "));
         if let Err(error) = self.decoder.decode(token) {
             log::debug!("unauthorized {:?}", error);
             let inner_error = ServerError::Unauthorized("invalid authorization token".into());

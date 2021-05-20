@@ -113,7 +113,7 @@ mod tests {
 
     #[actix_rt::test]
     #[serial]
-    async fn success_anonymous() {
+    async fn failure_anonymous() {
         let from = create_email();
         let to = create_email();
         let payload = json!({
@@ -126,6 +126,28 @@ mod tests {
         });
         let req = test::TestRequest::post()
             .uri("/templates/user-login")
+            .set_json(&payload)
+            .to_request();
+        let res = execute_auth_request(req).await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_rt::test]
+    #[serial]
+    async fn failure_invalid_token() {
+        let from = create_email();
+        let to = create_email();
+        let payload = json!({
+            "from": from.clone(),
+            "to": to.clone(),
+            "params": {
+                "name": "bob",
+                "token": "this_is_a_token"
+            }
+        });
+        let req = test::TestRequest::post()
+            .uri("/templates/user-login")
+            .append_header(("authorization", "Bearer hello-world"))
             .set_json(&payload)
             .to_request();
         let res = execute_auth_request(req).await;
@@ -148,7 +170,7 @@ mod tests {
         });
         let req = test::TestRequest::post()
             .uri("/templates/user-login")
-            .append_header(("authorization", token))
+            .append_header(("authorization", format!("Bearer {}", token)))
             .set_json(&payload)
             .to_request();
         let res = execute_auth_request(req).await;
