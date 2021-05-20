@@ -148,7 +148,7 @@ mod tests {
         });
         let req = test::TestRequest::post()
             .uri("/templates/user-login")
-            .append_header(("authentication", token))
+            .append_header(("authorization", token))
             .set_json(&payload)
             .to_request();
         let res = execute_auth_request(req).await;
