@@ -34,3 +34,19 @@ When the provider `jolimail` is used
 - `SMTP_PASSWORD` is the password used to authenticate with the SMTP server
 - `SMTP_MAX_POOL_SIZE` is the max number of connection to the SMTP server (default `10`)
 - `SMTP_TLS_ENABLED` enables TLS secure connection to the SMTP server (default `false`)
+
+## Authentication
+
+- `AUTHENTICATION_HEADER` is the name of the header containing the token (default `authorization`)
+- `JWT_ALGORITHM` is the algorithm used for the encription (default `HS256`)
+
+### Json Web Token configuration
+
+_if none is provided, the authentication is disabled_
+
+- `JWT_SECRET` is the decoding key if you are using HMAC
+- `JWT_SECRET_BASE64` is the decoding key if you are using HMAC with a base64 encoded
+- `JWT_RSA_PEM` is the decoding key if you are loading a public RSA key in a PEM format
+- `JWT_EC_PEM` is the decoding key if you have a ECDSA public key in a PEM format
+- `JWT_RSA_DER` is the decoding key if you have a RSA DER encoded public key
+- `JWT_EC_DER` is the decoding key if you have a RSA EC encoded public key
