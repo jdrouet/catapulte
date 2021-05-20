@@ -77,7 +77,7 @@ pub async fn handler(
 // LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
-    use crate::tests::{create_email, execute_request, get_latest_inbox};
+    use crate::tests::{create_email, execute_auth_request, execute_request, get_latest_inbox};
     use actix_web::http::StatusCode;
     use actix_web::test;
     use serde_json::json;
@@ -100,6 +100,58 @@ mod tests {
             .set_json(&payload)
             .to_request();
         let res = execute_request(req).await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let list = get_latest_inbox(&from, &to).await;
+        assert!(list.len() > 0);
+        let last = list.first().unwrap();
+        assert!(last.text.contains("Hello bob!"));
+        assert!(last.html.contains("Hello bob!"));
+        assert!(last
+            .html
+            .contains("\"http://example.com/login?token=this_is_a_token\""));
+    }
+
+    #[actix_rt::test]
+    #[serial]
+    async fn success_anonymous() {
+        let from = create_email();
+        let to = create_email();
+        let payload = json!({
+            "from": from.clone(),
+            "to": to.clone(),
+            "params": {
+                "name": "bob",
+                "token": "this_is_a_token"
+            }
+        });
+        let req = test::TestRequest::post()
+            .uri("/templates/user-login")
+            .set_json(&payload)
+            .to_request();
+        let res = execute_auth_request(req).await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[actix_rt::test]
+    #[serial]
+    async fn success_authenticated() {
+        let token = crate::service::jsonwebtoken::tests::create_token();
+        let from = create_email();
+        let to = create_email();
+        let payload = json!({
+            "from": from.clone(),
+            "to": to.clone(),
+            "params": {
+                "name": "bob",
+                "token": "this_is_a_token"
+            }
+        });
+        let req = test::TestRequest::post()
+            .uri("/templates/user-login")
+            .append_header(("authentication", token))
+            .set_json(&payload)
+            .to_request();
+        let res = execute_auth_request(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to).await;
         assert!(list.len() > 0);

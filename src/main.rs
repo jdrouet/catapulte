@@ -7,7 +7,8 @@ extern crate lazy_static;
 #[macro_use]
 extern crate log;
 
-use actix_web::{guard, middleware, web, App, HttpServer};
+use actix_web::middleware::{Compress, DefaultHeaders, Logger};
+use actix_web::{web, App, HttpServer};
 
 mod controller;
 mod error;
@@ -40,21 +41,8 @@ macro_rules! create_app {
 macro_rules! bind_services {
     ($app: expr) => {
         $app.configure(controller::swagger::config)
+            .configure(controller::templates::config)
             .service(controller::status::handler)
-            .route(
-                "/templates/{name}",
-                web::route()
-                    .guard(guard::Post())
-                    .guard(guard::fn_guard(controller::template_send_multipart::filter))
-                    .to(controller::template_send_multipart::handler),
-            )
-            .route(
-                "/templates/{name}",
-                web::route()
-                    .guard(guard::Post())
-                    .guard(guard::fn_guard(controller::template_send_json::filter))
-                    .to(controller::template_send_json::handler),
-            )
     };
 }
 
@@ -75,9 +63,9 @@ async fn main() -> std::io::Result<()> {
         bind_services!(create_app!()
             .data(template_provider.clone())
             .data(smtp_pool.clone())
-            .wrap(middleware::DefaultHeaders::new().header("X-Version", env!("CARGO_PKG_VERSION")))
-            .wrap(middleware::Logger::default())
-            .wrap(middleware::Compress::default()))
+            .wrap(DefaultHeaders::new().header("X-Version", env!("CARGO_PKG_VERSION")))
+            .wrap(Logger::default())
+            .wrap(Compress::default()))
     })
     .bind(server_cfg.to_bind())?
     .run()
