@@ -120,7 +120,7 @@ mod tests {
     }
 
     pub async fn execute_auth_request(req: Request) -> ServiceResponse {
-        let _secret = TempEnvVar::new("JWT_SECRET").with("secret");
+        let _secret = TempEnvVar::new("AUTHENTICATION_ENABLED").with("true");
         let template_provider = service::template::provider::TemplateProvider::from_env()
             .expect("template provider init");
         let smtp_pool = service::smtp::Config::from_env()

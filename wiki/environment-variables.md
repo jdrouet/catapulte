@@ -37,12 +37,14 @@ When the provider `jolimail` is used
 
 ## Authentication
 
+- `AUTHENTICATION_ENABLED` enables the JWT authentication (default `false`)
 - `AUTHENTICATION_HEADER` is the name of the header containing the token (default `authorization`)
-- `JWT_ALGORITHM` is the algorithm used for the encription (default `HS256`)
 
 ### Json Web Token configuration
 
-_if none is provided, the authentication is disabled_
+- `JWT_ALGORITHM` is the algorithm used for the encription (default `HS256`)
+
+_if none is provided and the authentication is enabled, the secret is "I LOVE CATAPULTE"_
 
 - `JWT_SECRET` is the decoding key if you are using HMAC
 - `JWT_SECRET_BASE64` is the decoding key if you are using HMAC with a base64 encoded

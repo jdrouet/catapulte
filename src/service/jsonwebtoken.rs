@@ -2,6 +2,8 @@ use jsonwebtoken::{decode, errors::Error as JwtError, Algorithm, DecodingKey, Va
 use std::env;
 use std::str::FromStr;
 
+const DEFAULT_SECRET: &str = "I LOVE CATAPULTE";
+
 #[derive(Debug)]
 pub enum ParserError {
     Jwt(JwtError),
@@ -22,32 +24,26 @@ fn parse_algorithm() -> Result<Algorithm, ParserError> {
     }
 }
 
-fn parse_decoding_key() -> Result<Option<DecodingKey<'static>>, ParserError> {
+fn parse_decoding_key() -> Result<DecodingKey<'static>, ParserError> {
     if let Ok(secret) = env::var("JWT_SECRET") {
-        Ok(Some(
-            DecodingKey::from_secret(secret.as_bytes()).into_static(),
-        ))
+        Ok(DecodingKey::from_secret(secret.as_bytes()).into_static())
     } else if let Ok(secret) = env::var("JWT_SECRET_BASE64") {
-        Ok(DecodingKey::from_base64_secret(secret.as_str()).map(Some)?)
+        Ok(DecodingKey::from_base64_secret(secret.as_str())?)
     } else if let Ok(key) = env::var("JWT_RSA_PEM") {
-        Ok(DecodingKey::from_rsa_pem(key.as_bytes()).map(|value| Some(value.into_static()))?)
+        Ok(DecodingKey::from_rsa_pem(key.as_bytes()).map(|value| value.into_static())?)
     } else if let Ok(key) = env::var("JWT_EC_PEM") {
-        Ok(DecodingKey::from_ec_pem(key.as_bytes()).map(|value| Some(value.into_static()))?)
+        Ok(DecodingKey::from_ec_pem(key.as_bytes()).map(|value| value.into_static())?)
     } else if let Ok(der) = env::var("JWT_RSA_DER") {
-        Ok(Some(
-            DecodingKey::from_rsa_der(der.as_bytes()).into_static(),
-        ))
+        Ok(DecodingKey::from_rsa_der(der.as_bytes()).into_static())
     } else if let Ok(der) = env::var("JWT_EC_DER") {
-        Ok(Some(DecodingKey::from_ec_der(der.as_bytes()).into_static()))
+        Ok(DecodingKey::from_ec_der(der.as_bytes()).into_static())
     } else {
-        Ok(None)
+        log::warn!(
+            "no JWT decoding key provided, using the default \"{}\"",
+            DEFAULT_SECRET
+        );
+        Ok(DecodingKey::from_secret(DEFAULT_SECRET.as_bytes()).into_static())
     }
-}
-
-#[derive(Debug)]
-pub enum DecoderError {
-    Jwt(JwtError),
-    TokenNotFound,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -58,7 +54,7 @@ pub struct Claims {
 
 #[derive(Clone, Debug)]
 pub struct Decoder {
-    key: Option<DecodingKey<'static>>,
+    key: DecodingKey<'static>,
     validation: Validation,
 }
 
@@ -70,18 +66,8 @@ impl Decoder {
         })
     }
 
-    pub fn decode(&self, token: Option<&str>) -> Result<Option<Claims>, DecoderError> {
-        if let Some(ref key) = self.key {
-            if let Some(token) = token {
-                decode::<Claims>(token, &key, &self.validation)
-                    .map(|result| Some(result.claims))
-                    .map_err(DecoderError::Jwt)
-            } else {
-                Err(DecoderError::TokenNotFound)
-            }
-        } else {
-            Ok(None)
-        }
+    pub fn decode(&self, token: &str) -> Result<Claims, JwtError> {
+        decode::<Claims>(token, &self.key, &self.validation).map(|result| result.claims)
     }
 }
 
@@ -106,7 +92,7 @@ pub mod tests {
         jsonwebtoken::encode(
             &jsonwebtoken::Header::default(),
             &payload,
-            &jsonwebtoken::EncodingKey::from_secret("secret".as_ref()),
+            &jsonwebtoken::EncodingKey::from_secret(super::DEFAULT_SECRET.as_ref()),
         )
         .unwrap()
         .to_string()
@@ -118,14 +104,12 @@ pub mod tests {
         let token = create_token();
         let _value = TempEnvVar::new("JWT_ALGORITHM");
         let _secret = TempEnvVar::new("JWT_SECRET");
-        let result = super::Decoder::from_env().unwrap().decode(None);
-        assert!(result.unwrap().is_none());
+        let result = super::Decoder::from_env().unwrap().decode(&token);
+        assert!(result.is_ok());
         let _secret = TempEnvVar::new("JWT_SECRET").with("secret");
-        let result = super::Decoder::from_env().unwrap().decode(Some(&token));
-        assert!(result.unwrap().is_some());
-        let result = super::Decoder::from_env().unwrap().decode(Some("abcd"));
+        let result = super::Decoder::from_env().unwrap().decode(&token);
         assert!(result.is_err());
-        let result = super::Decoder::from_env().unwrap().decode(None);
+        let result = super::Decoder::from_env().unwrap().decode("abcd");
         assert!(result.is_err());
     }
 
@@ -147,7 +131,7 @@ pub mod tests {
         let _ec_der = TempEnvVar::new("JWT_EC_DER");
         let _rsa_pem = TempEnvVar::new("JWT_RSA_PEM");
         let _rsa_der = TempEnvVar::new("JWT_RSA_DER");
-        assert!(parse_decoding_key().unwrap().is_none());
+        assert!(parse_decoding_key().is_ok());
     }
 
     #[test]
@@ -159,7 +143,7 @@ pub mod tests {
         let _ec_der = TempEnvVar::new("JWT_EC_DER");
         let _rsa_pem = TempEnvVar::new("JWT_RSA_PEM");
         let _rsa_der = TempEnvVar::new("JWT_RSA_DER");
-        assert!(parse_decoding_key().unwrap().is_some());
+        assert!(parse_decoding_key().is_ok());
     }
 
     #[test]
@@ -171,7 +155,7 @@ pub mod tests {
         let _ec_der = TempEnvVar::new("JWT_EC_DER");
         let _rsa_pem = TempEnvVar::new("JWT_RSA_PEM");
         let _rsa_der = TempEnvVar::new("JWT_RSA_DER");
-        assert!(parse_decoding_key().unwrap().is_some());
+        assert!(parse_decoding_key().is_ok());
     }
 }
 // LCOV_EXCL_END
