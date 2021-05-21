@@ -44,7 +44,13 @@ dev-test:
 	SMTP_PORT=1025 cargo test
 
 dev-coverage:
-	SMTP_PORT=1025 cargo tarpaulin --out Html
+	docker run --rm \
+		--privileged \
+		--network host \
+		--user $(shell id -u):$(shell id -g) \
+		-e SMTP_PORT=1025 \
+		-v $(shell pwd):/code -w /code \
+		xd009642/tarpaulin
 
 install-clippy:
 	rustup component add clippy
