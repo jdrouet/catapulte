@@ -41,9 +41,9 @@ macro_rules! create_app {
 
 macro_rules! bind_services {
     ($app: expr) => {
-        $app.configure(controller::swagger::config)
+        $app.service(controller::status::handler)
+            .configure(controller::swagger::config)
             .configure(controller::templates::config)
-            .service(controller::status::handler)
     };
 }
 
