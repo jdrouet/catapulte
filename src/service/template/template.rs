@@ -1,6 +1,6 @@
 use crate::error::ServerError;
 use crate::service::multipart::MultipartFile;
-use handlebars::{Handlebars, TemplateRenderError as HandlebarTemplateRenderError};
+use handlebars::{Handlebars, RenderError as HandlebarTemplateRenderError};
 use lettre::message::{Attachment, Body, Mailbox, Message, MessageBuilder, MultiPart, SinglePart};
 use mrml::mjml::MJML;
 use mrml::prelude::parse::Error as ParserError;
