@@ -18,9 +18,27 @@ lint-format:
   script:
     - make ci-lint
 
+test-regular:
+  stage: test
+  image: rust:latest
+  variables:
+    RUST_LOG: info
+    INBOX_HOSTNAME: smtp-server
+    SMTP_HOSTNAME: smtp-server
+    SMTP_PORT: 1025
+    TEMPLATE_PROVIDER: local
+    TEMPLATE_ROOT: ./template
+  services:
+    - name: reachfive/fake-smtp-server
+      alias: smtp-server
+  script:
+    - make ci-test
+
 test-coverage:
   stage: test
   image: xd009642/tarpaulin
+  # tarpaulin if broken for now
+  allow_failure: true
   variables:
     RUST_LOG: info
     INBOX_HOSTNAME: smtp-server
