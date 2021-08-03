@@ -28,7 +28,7 @@ mime = "0.3.16"
 mrml = "1.2.4"
 r2d2 = "0.8.9"
 reqwest = { version = "0.11.4", default-features = false, features = ["json", "rustls-tls"], optional = true }
-serde = { features = ["derive"], version = "1.0.126" }
+serde = { features = ["derive"], version = "1.0.127" }
 serde_json = { version = "1.0.66" }
 tempfile = "3.2.0"
 uuid = { version = "0.8.2", features = ["v4"] }
