@@ -57,7 +57,7 @@ pub struct MultipartFile {
 
 impl MultipartFile {
     fn from_field(root: &Path, field: &Field) -> Result<Self, MultipartError> {
-        let filename = match get_filename(&field) {
+        let filename = match get_filename(field) {
             Some(value) => value,
             None => return Err(MultipartError::Parse("unable to get filename".into())),
         };
