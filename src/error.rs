@@ -1,3 +1,5 @@
+#![allow(clippy::enum_variant_names)]
+
 use actix_http::ResponseBuilder;
 use actix_web::error::ResponseError;
 use actix_web::{HttpRequest, HttpResponse};

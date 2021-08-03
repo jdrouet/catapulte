@@ -189,7 +189,7 @@ impl Template {
         render_opts: &RenderOptions,
     ) -> Result<MultiPart, TemplateError> {
         let builder = MultiPart::mixed();
-        let builder = builder.multipart(Self::get_body(template, &render_opts)?);
+        let builder = builder.multipart(Self::get_body(template, render_opts)?);
         Ok(template_opts.attachments.iter().fold(builder, |res, item| {
             res.singlepart(Self::build_attachment(item))
         }))
