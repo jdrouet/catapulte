@@ -2,7 +2,7 @@ use actix_http::http::header;
 use actix_web::{web, HttpResponse, Responder};
 use std::env;
 
-const SWAGGER_ENABLED: &str = "SWAGGER_ENABLED";
+pub const SWAGGER_ENABLED: &str = "SWAGGER_ENABLED";
 
 pub fn config(app: &mut web::ServiceConfig) {
     let enabled = env::var(SWAGGER_ENABLED)
@@ -52,6 +52,9 @@ mod tests {
         let req = test::TestRequest::get().uri("/openapi.json").to_request();
         let res = execute_request(req).await;
         assert_eq!(res.status(), StatusCode::OK);
+        let req = test::TestRequest::get().uri("/status").to_request();
+        let res = execute_request(req).await;
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[actix_rt::test]
@@ -67,5 +70,8 @@ mod tests {
         let req = test::TestRequest::get().uri("/openapi.json").to_request();
         let res = execute_request(req).await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let req = test::TestRequest::get().uri("/status").to_request();
+        let res = execute_request(req).await;
+        assert_eq!(res.status(), StatusCode::OK);
     }
 }
