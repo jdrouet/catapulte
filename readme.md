@@ -44,6 +44,7 @@ docker run -d \
   -e SMTP_USERNAME=optional \
   -e SMTP_PASSWORD=optional \
   -e SMTP_TLS_ENABLED=true \
+  -e SMTP_ACCEPT_INVALID_CERT=false \
   -e SWAGGER_ENABLED=true \
   -e TEMPLATE_PROVIDER=local \
   -e TEMPLATE_ROOT=/templates \

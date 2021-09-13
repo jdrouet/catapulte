@@ -83,6 +83,8 @@ mod tests {
     use actix_web::test;
     use env_test_util::TempEnvVar;
     use serde_json::json;
+    use std::thread::sleep;
+    use std::time::Duration;
 
     #[actix_rt::test]
     #[serial]
@@ -104,6 +106,45 @@ mod tests {
             .to_request();
         let res = execute_request(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let list = get_latest_inbox(&from, &to).await;
+        assert!(list.len() > 0);
+        let last = list.first().unwrap();
+        assert!(last.text.contains("Hello bob!"));
+        assert!(last.html.contains("Hello bob!"));
+        assert!(last
+            .html
+            .contains("\"http://example.com/login?token=this_is_a_token\""));
+    }
+
+    #[actix_rt::test]
+    #[serial]
+    async fn success_ssl() {
+        let _swagger = TempEnvVar::new("SMTP_ACCEPT_INVALID_CERT").with("true");
+        let _smtp_port = TempEnvVar::new("SMTP_PORT").with("1026");
+        let _smtp_enabled = TempEnvVar::new("SMTP_TLS_ENABLED").with("true");
+        let from = create_email();
+        let to = create_email();
+        let payload = json!({
+            "from": from.clone(),
+            "to": to.clone(),
+            "params": {
+                "name": "bob",
+                "token": "this_is_a_token"
+            }
+        });
+        let req = test::TestRequest::post()
+            .uri("/templates/user-login")
+            .set_json(&payload)
+            .to_request();
+        let res = execute_request(req).await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        for _ in 0..10 {
+            sleep(Duration::from_secs(1));
+            let list = get_latest_inbox(&from, &to).await;
+            if list.len() > 0 {
+                break;
+            }
+        }
         let list = get_latest_inbox(&from, &to).await;
         assert!(list.len() > 0);
         let last = list.first().unwrap();

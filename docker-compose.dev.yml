@@ -15,6 +15,8 @@ services:
       - CERTIFICATE_PATH=/selfsigned.crt
       - KEY_PATH=/selfsigned.key
       - PORT=1026
+      - SMARTHOST_ADDRESS=smtp
+      - SMARTHOST_PORT=1025
     networks:
       - backend
     ports: 
