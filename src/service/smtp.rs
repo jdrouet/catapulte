@@ -47,10 +47,7 @@ impl Config {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(10),
-            tls_enabled: env::var("SMTP_TLS_ENABLED")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(false),
+            tls_enabled: env_var_bool("SMTP_TLS_ENABLED", false),
             timeout: env_var_u64("SMTP_TIMEOUT")
                 .map(|value| value * 1000)
                 .or_else(|| env_var_u64("SMTP_TIMEOUT_MS"))
