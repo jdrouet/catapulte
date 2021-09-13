@@ -78,7 +78,7 @@ pub async fn handler(
 #[cfg(test)]
 mod tests {
     use crate::controller::swagger::SWAGGER_ENABLED;
-    use crate::tests::{create_email, execute_auth_request, execute_request, get_latest_inbox};
+    use crate::tests::{create_email, get_latest_inbox, ServerBuilder};
     use actix_web::http::StatusCode;
     use actix_web::test;
     use env_test_util::TempEnvVar;
@@ -104,7 +104,7 @@ mod tests {
             .uri("/templates/user-login")
             .set_json(&payload)
             .to_request();
-        let res = execute_request(req).await;
+        let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to).await;
         assert!(list.len() > 0);
@@ -119,9 +119,6 @@ mod tests {
     #[actix_rt::test]
     #[serial]
     async fn success_ssl() {
-        let _swagger = TempEnvVar::new("SMTP_ACCEPT_INVALID_CERT").with("true");
-        let _smtp_port = TempEnvVar::new("SMTP_PORT").with("1026");
-        let _smtp_enabled = TempEnvVar::new("SMTP_TLS_ENABLED").with("true");
         let from = create_email();
         let to = create_email();
         let payload = json!({
@@ -136,7 +133,11 @@ mod tests {
             .uri("/templates/user-login")
             .set_json(&payload)
             .to_request();
-        let res = execute_request(req).await;
+        let res = ServerBuilder::default()
+            .secure(true)
+            .invalid_cert(true)
+            .execute(req)
+            .await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         for _ in 0..10 {
             sleep(Duration::from_secs(1));
@@ -172,7 +173,10 @@ mod tests {
             .uri("/templates/user-login")
             .set_json(&payload)
             .to_request();
-        let res = execute_auth_request(req).await;
+        let res = ServerBuilder::default()
+            .authenticated(true)
+            .execute(req)
+            .await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -194,7 +198,10 @@ mod tests {
             .append_header(("authorization", "Bearer hello-world"))
             .set_json(&payload)
             .to_request();
-        let res = execute_auth_request(req).await;
+        let res = ServerBuilder::default()
+            .authenticated(true)
+            .execute(req)
+            .await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -217,7 +224,10 @@ mod tests {
             .append_header(("authorization", format!("Bearer {}", token)))
             .set_json(&payload)
             .to_request();
-        let res = execute_auth_request(req).await;
+        let res = ServerBuilder::default()
+            .authenticated(true)
+            .execute(req)
+            .await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to).await;
         assert!(list.len() > 0);
@@ -246,7 +256,7 @@ mod tests {
             .uri("/templates/user-login")
             .set_json(&payload)
             .to_request();
-        let res = execute_request(req).await;
+        let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to).await;
         assert!(list.len() > 0);
@@ -276,7 +286,7 @@ mod tests {
             .uri("/templates/user-login")
             .set_json(&payload)
             .to_request();
-        let res = execute_request(req).await;
+        let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to[0]).await;
         assert!(list.len() > 0);
@@ -303,7 +313,7 @@ mod tests {
             .uri("/templates/not-found")
             .set_json(&payload)
             .to_request();
-        let res = execute_request(req).await;
+        let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
@@ -322,7 +332,7 @@ mod tests {
             .uri("/templates/user-login")
             .set_json(&payload)
             .to_request();
-        let res = execute_request(req).await;
+        let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 }

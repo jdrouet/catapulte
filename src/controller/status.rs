@@ -16,7 +16,7 @@ pub async fn handler() -> HttpResponse {
 // LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
-    use crate::tests::execute_request;
+    use crate::tests::ServerBuilder;
     use actix_web::http::StatusCode;
     use actix_web::test;
 
@@ -24,7 +24,7 @@ mod tests {
     #[serial]
     async fn status_success() {
         let req = test::TestRequest::get().uri("/status").to_request();
-        let res = execute_request(req).await;
+        let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::OK);
     }
 }
