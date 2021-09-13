@@ -20,19 +20,15 @@ lint-format:
 
 test-regular:
   stage: test
-  image: rust:latest
-  variables:
-    RUST_LOG: info
-    INBOX_HOSTNAME: smtp-server
-    SMTP_HOSTNAME: smtp-server
-    SMTP_PORT: 1025
-    TEMPLATE_PROVIDER: local
-    TEMPLATE_ROOT: ./template
+  image: jdrouet/docker-with-compose:19.03
   services:
-    - name: reachfive/fake-smtp-server
-      alias: smtp-server
+    - docker:19.03.12-dind
+  before_script:
+    - docker info
+  after_script:
+    - docker-compose -f docker-compose.test.yml rm -sf
   script:
-    - make ci-test
+    - docker-compose -f docker-compose.test.yml run runner
 
 test-coverage:
   stage: test

@@ -145,7 +145,7 @@ pub async fn handler(
 // LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
-    use crate::tests::{create_email, execute_request, get_latest_inbox};
+    use crate::tests::{create_email, get_latest_inbox, ServerBuilder};
     use actix_web::http::StatusCode;
     use actix_web::test;
     use actix_web::web::{BufMut, Bytes, BytesMut};
@@ -187,7 +187,7 @@ mod tests {
             .uri("/templates/user-login")
             .set_payload(bytes)
             .to_request();
-        let res = execute_request(req).await;
+        let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to).await;
         assert!(list.len() > 0);
@@ -222,7 +222,7 @@ mod tests {
             .uri("/templates/user-login")
             .set_payload(bytes)
             .to_request();
-        let res = execute_request(req).await;
+        let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -253,7 +253,7 @@ mod tests {
             .uri("/templates/user-login")
             .set_payload(bytes)
             .to_request();
-        let res = execute_request(req).await;
+        let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to_first).await;
         assert!(list.len() > 0);
