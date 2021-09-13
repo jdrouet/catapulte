@@ -3,6 +3,25 @@ version: "2"
 services:
   smtp:
     image: reachfive/fake-smtp-server
+    networks:
+      - backend
     ports:
       - 1025:1025
       - 1080:1080
+
+  smtp-tls:
+    image: namshi/smtp
+    environment:
+      - CERTIFICATE_PATH=/selfsigned.crt
+      - KEY_PATH=/selfsigned.key
+      - PORT=1026
+    networks:
+      - backend
+    ports: 
+      - 1026:1026
+    volumes:
+      - ./asset/selfsigned.key:/selfsigned.key:ro
+      - ./asset/selfsigned.crt:/selfsigned.crt:ro
+
+networks:
+  backend: {}

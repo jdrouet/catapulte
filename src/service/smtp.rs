@@ -14,6 +14,13 @@ fn env_var_u64(key: &str) -> Option<u64> {
     env::var(key).ok().and_then(|value| value.parse().ok())
 }
 
+fn env_var_bool(key: &str, default_value: bool) -> bool {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default_value)
+}
+
 #[derive(Debug)]
 pub struct Config {
     pub hostname: String,
@@ -23,6 +30,7 @@ pub struct Config {
     pub max_pool_size: u32,
     pub tls_enabled: bool,
     pub timeout: u64,
+    pub accept_invalid_cert: bool,
 }
 
 impl Config {
@@ -47,6 +55,7 @@ impl Config {
                 .map(|value| value * 1000)
                 .or_else(|| env_var_u64("SMTP_TIMEOUT_MS"))
                 .unwrap_or(5000),
+            accept_invalid_cert: env_var_bool("SMTP_ACCEPT_INVALID_CERT", false),
         }
     }
 
@@ -72,10 +81,15 @@ impl Config {
 
     // TODO allow to add root certificate
     // TODO allow to accept invalid hostnames
-    // TODO allow to accept invalid certs
     fn get_tls(&self) -> Result<Tls, SmtpError> {
-        let parameteres = TlsParameters::builder(self.hostname.to_string()).build()?;
-        Ok(Tls::Required(parameteres))
+        if self.tls_enabled {
+            let parameteres = TlsParameters::builder(self.hostname.to_string())
+                .dangerous_accept_invalid_certs(self.accept_invalid_cert)
+                .build_rustls()?;
+            Ok(Tls::Required(parameteres))
+        } else {
+            Ok(Tls::None)
+        }
     }
 
     // TODO allow to specify authentication mechanism
@@ -83,12 +97,8 @@ impl Config {
         let result = SmtpTransport::builder_dangerous(self.hostname.as_str())
             .port(self.port)
             .timeout(Some(self.get_timeout()))
-            .pool_config(self.get_pool_config());
-        let result = if self.tls_enabled {
-            result.tls(self.get_tls()?)
-        } else {
-            result
-        };
+            .pool_config(self.get_pool_config())
+            .tls(self.get_tls()?);
         let result = if let Some(creds) = self.get_credentials() {
             result.credentials(creds)
         } else {
