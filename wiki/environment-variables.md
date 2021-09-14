@@ -34,6 +34,7 @@ When the provider `jolimail` is used
 - `SMTP_PASSWORD` is the password used to authenticate with the SMTP server
 - `SMTP_MAX_POOL_SIZE` is the max number of connection to the SMTP server (default `10`)
 - `SMTP_TLS_ENABLED` enables TLS secure connection to the SMTP server (default `false`)
+- `SMTP_ACCEPT_INVALID_CERT` allow the smtp client to accept invalid certificates (default `false`)
 
 ## Authentication
 
