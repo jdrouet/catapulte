@@ -20,14 +20,15 @@ lint-format:
 
 test-regular:
   stage: test
-  image: jdrouet/docker-with-compose:19.03
+  image: jdrouet/docker-with-compose:20.10.8
   services:
-    - docker:19.03.12-dind
+    - docker:20.10.8-dind
   before_script:
     - docker info
   after_script:
     - docker-compose -f docker-compose.test.yml rm -sf
   script:
+    - docker-compose -f docker-compose.test.yml build
     - docker-compose -f docker-compose.test.yml run runner
 
 test-coverage:
