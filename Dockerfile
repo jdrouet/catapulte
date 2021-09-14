@@ -10,6 +10,11 @@ RUN cargo fetch
 
 COPY src /code/src
 COPY template /code/template
+COPY swagger /code/swagger
+
+FROM base AS test
+
+COPY asset /code/asset
 
 CMD [ "cargo", "test", "--offline" ]
 

@@ -7,7 +7,9 @@ services:
       - backend
 
   smtp-tls:
-    image: namshi/smtp
+    build:
+      context: .
+      dockerfile: script/smtp-tls.Dockerfile
     depends_on:
       - smtp
     environment:
@@ -18,14 +20,11 @@ services:
       - SMARTHOST_PORT=1025
     networks:
       - backend
-    volumes:
-      - ./asset/selfsigned.key:/selfsigned.key:ro
-      - ./asset/selfsigned.crt:/selfsigned.crt:ro
 
   runner:
-    image: rust:buster
-    command: ["cargo", "test"]
-    working_dir: /code
+    build:
+      context: .
+      target: test
     depends_on:
       - smtp
       - smtp-tls
@@ -40,8 +39,6 @@ services:
       - TEMPLATE_ROOT=/code/template
     networks:
       - backend
-    volumes:
-      - ./:/code
 
 networks:
   backend: {}
