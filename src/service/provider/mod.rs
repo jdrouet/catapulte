@@ -45,17 +45,11 @@ impl TemplateProvider {
 impl TemplateProvider {
     #[cfg(feature = "provider-jolimail")]
     fn is_jolimail(&self) -> bool {
-        match self {
-            Self::Jolimail(_) => true,
-            _ => false,
-        }
+        matches!(self, Self::Jolimail(_))
     }
 
     fn is_local(&self) -> bool {
-        match self {
-            Self::Local(_) => true,
-            _ => false,
-        }
+        matches!(self, Self::Local(_))
     }
 }
 

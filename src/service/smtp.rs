@@ -143,7 +143,7 @@ mod tests {
         assert!(!cfg.smtp_tls_enabled);
         assert_eq!(cfg.smtp_max_pool_size, 2);
         assert_eq!(cfg.smtp_timeout, 3000);
-        let cfg = super::Config(cfg.clone());
+        let cfg = super::Config(cfg);
         assert!(cfg.get_credentials().is_some());
         let client = cfg.get_transport();
         assert!(client.is_ok());
@@ -167,7 +167,7 @@ mod tests {
         assert!(cfg.smtp_tls_enabled);
         assert_eq!(cfg.smtp_max_pool_size, 2);
         assert_eq!(cfg.smtp_timeout, 3000);
-        let cfg = super::Config(cfg.clone());
+        let cfg = super::Config(cfg);
         assert!(cfg.get_credentials().is_some());
         let client = cfg.get_pool();
         assert!(client.is_ok());

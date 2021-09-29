@@ -108,7 +108,7 @@ mod tests {
         let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to).await;
-        assert!(list.len() > 0);
+        assert!(!list.is_empty());
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello bob!"));
         assert!(last.html.contains("Hello bob!"));
@@ -143,12 +143,12 @@ mod tests {
         for _ in 0..10 {
             sleep(Duration::from_secs(1));
             let list = get_latest_inbox(&from, &to).await;
-            if list.len() > 0 {
+            if !list.is_empty() {
                 break;
             }
         }
         let list = get_latest_inbox(&from, &to).await;
-        assert!(list.len() > 0);
+        assert!(!list.is_empty());
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello bob!"));
         assert!(last.html.contains("Hello bob!"));
@@ -231,7 +231,7 @@ mod tests {
             .await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to).await;
-        assert!(list.len() > 0);
+        assert!(!list.is_empty());
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello bob!"));
         assert!(last.html.contains("Hello bob!"));
@@ -260,7 +260,7 @@ mod tests {
         let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to).await;
-        assert!(list.len() > 0);
+        assert!(!list.is_empty());
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello bob!"));
         assert!(last.html.contains("Hello bob!"));
@@ -290,7 +290,7 @@ mod tests {
         let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to[0]).await;
-        assert!(list.len() > 0);
+        assert!(!list.is_empty());
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello bob!"));
         assert!(last.html.contains("Hello bob!"));

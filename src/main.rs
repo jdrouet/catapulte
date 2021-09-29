@@ -124,8 +124,8 @@ mod tests {
             if self.authenticated {
                 opts.push("--authentication-enabled".to_string());
             }
+            opts.push("--smtp-hostname".to_string());
             if self.secure {
-                opts.push("--smtp-hostname".to_string());
                 opts.push(SMTPS_HOSTNAME.to_string());
                 opts.push("--smtp-port".to_string());
                 opts.push(SMTPS_PORT.to_string());
@@ -134,7 +134,6 @@ mod tests {
                     opts.push("--smtp-accept-invalid-cert".to_string());
                 }
             } else {
-                opts.push("--smtp-hostname".to_string());
                 opts.push(SMTP_HOSTNAME.to_string());
                 opts.push("--smtp-port".to_string());
                 opts.push(SMTP_PORT.to_string());
@@ -148,7 +147,7 @@ mod tests {
             let smtp_config = crate::service::smtp::Config(cfg.clone());
             let render_opts = cfg.render_options();
             let smtp_pool = smtp_config.get_pool().expect("smtp service init");
-            let mut app = test::init_service(bind_services!(
+            let app = test::init_service(bind_services!(
                 cfg.clone(),
                 create_app!()
                     .data(render_opts)
@@ -156,7 +155,7 @@ mod tests {
                     .data(smtp_pool.clone())
             ))
             .await;
-            test::call_service(&mut app, req).await
+            test::call_service(&app, req).await
         }
     }
 
@@ -166,7 +165,7 @@ mod tests {
         pub text: String,
     }
 
-    pub async fn get_latest_inbox(from: &String, to: &String) -> Vec<Email> {
+    pub async fn get_latest_inbox(from: &str, to: &str) -> Vec<Email> {
         let url = format!(
             "http://{}:{}/api/emails?from={}&to={}",
             INBOX_HOSTNAME.as_str(),

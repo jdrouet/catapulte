@@ -85,10 +85,10 @@ mod tests {
     async fn local_find_by_name_not_found() {
         let cfg = Config::build();
         let manager = LocalTemplateProvider::from(cfg);
-        assert!(match manager.find_by_name("not_found").await.unwrap_err() {
-            TemplateProviderError::TemplateNotFound => true,
-            _ => false,
-        });
+        assert!(matches!(
+            manager.find_by_name("not_found").await.unwrap_err(),
+            TemplateProviderError::TemplateNotFound
+        ));
     }
 
     #[actix_rt::test]

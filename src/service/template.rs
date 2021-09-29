@@ -216,7 +216,7 @@ mod tests {
     fn building_mrml_options_disable_comments_set() {
         let cfg = Config::from_args(vec!["--mrml-disable-comments".to_string()]);
         let result = cfg.render_options();
-        assert_eq!(result.disable_comments, true);
+        assert!(result.disable_comments);
     }
 
     #[test]

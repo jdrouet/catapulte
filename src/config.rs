@@ -2,11 +2,12 @@ use clap::Clap;
 use mrml::prelude::render::Options as RenderOptions;
 use std::sync::Arc;
 
-#[derive(Clap, Debug)]
+#[derive(Clap)]
+#[clap(about = clap::crate_description!(), author = clap::crate_authors!(), version = clap::crate_version!())]
 pub struct Config {
     #[clap(long, env = "AUTHENTICATION_ENABLED")]
     pub authentication_enabled: bool,
-    #[clap(long, env = "AUTHENTICATION_HEAD", default_value = "Authorization")]
+    #[clap(long, env = "AUTHENTICATION_HEADER", default_value = "Authorization")]
     pub authentication_header: String,
     #[clap(long, env = "JOLIMAIL_PROVIDER_URL")]
     pub jolimail_provider_url: Option<String>,

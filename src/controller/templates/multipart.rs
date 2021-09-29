@@ -192,7 +192,7 @@ mod tests {
         let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to).await;
-        assert!(list.len() > 0);
+        assert!(!list.is_empty());
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello bob!"));
         assert!(last.html.contains("Hello bob!"));
@@ -258,7 +258,7 @@ mod tests {
         let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let list = get_latest_inbox(&from, &to_first).await;
-        assert!(list.len() > 0);
+        assert!(!list.is_empty());
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello bob!"));
         assert!(last.html.contains("Hello bob!"));

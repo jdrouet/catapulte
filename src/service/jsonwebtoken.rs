@@ -88,7 +88,6 @@ pub mod tests {
             &jsonwebtoken::EncodingKey::from_secret(super::DEFAULT_SECRET.as_ref()),
         )
         .unwrap()
-        .to_string()
     }
 
     #[test]
