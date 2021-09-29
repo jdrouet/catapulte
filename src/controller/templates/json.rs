@@ -1,10 +1,11 @@
 use crate::error::ServerError;
+use crate::service::provider::TemplateProvider;
 use crate::service::smtp::SmtpPool;
-use crate::service::template::provider::TemplateProvider;
-use crate::service::template::template::TemplateOptions;
+use crate::service::template::TemplateOptions;
 use actix_http::RequestHead;
 use actix_web::{web, HttpResponse};
 use lettre::Transport;
+use mrml::prelude::render::Options as RenderOptions;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
@@ -61,6 +62,7 @@ pub fn filter(req: &RequestHead) -> bool {
 }
 
 pub async fn handler(
+    render_opts: web::Data<RenderOptions>,
     smtp_pool: web::Data<SmtpPool>,
     template_provider: web::Data<TemplateProvider>,
     name: web::Path<String>,
@@ -69,7 +71,7 @@ pub async fn handler(
     let template = template_provider.find_by_name(name.as_str()).await?;
     let options: TemplateOptions = (&body).to_options();
     options.validate()?;
-    let email = template.to_email(&options)?;
+    let email = template.to_email(&options, render_opts.as_ref())?;
     smtp_pool.send(&email)?;
     Ok(HttpResponse::NoContent().finish())
 }

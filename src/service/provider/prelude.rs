@@ -1,29 +1,29 @@
-use super::template::Template;
 use crate::error::ServerError;
+use crate::service::template::Template;
 use async_trait::async_trait;
 use serde_json::error::Error as JsonError;
 use std::io::Error as IoError;
 
 #[derive(Clone, Debug)]
-pub enum TemplateManagerError {
+pub enum TemplateProviderError {
     MetadataInvalid,
     InternalError(String),
     TemplateNotFound,
 }
 
-impl From<IoError> for TemplateManagerError {
+impl From<IoError> for TemplateProviderError {
     fn from(_err: IoError) -> Self {
-        TemplateManagerError::TemplateNotFound
+        Self::TemplateNotFound
     }
 }
 
-impl From<JsonError> for TemplateManagerError {
+impl From<JsonError> for TemplateProviderError {
     fn from(_err: JsonError) -> Self {
-        TemplateManagerError::MetadataInvalid
+        Self::MetadataInvalid
     }
 }
 
-impl From<reqwest::Error> for TemplateManagerError {
+impl From<reqwest::Error> for TemplateProviderError {
     fn from(err: reqwest::Error) -> Self {
         match err.status() {
             Some(reqwest::StatusCode::NOT_FOUND) => Self::TemplateNotFound,
@@ -32,21 +32,21 @@ impl From<reqwest::Error> for TemplateManagerError {
     }
 }
 
-impl From<TemplateManagerError> for ServerError {
-    fn from(err: TemplateManagerError) -> Self {
+impl From<TemplateProviderError> for ServerError {
+    fn from(err: TemplateProviderError) -> Self {
         match err {
-            TemplateManagerError::TemplateNotFound => {
+            TemplateProviderError::TemplateNotFound => {
                 ServerError::NotFound("unable to find template".into())
             }
-            TemplateManagerError::MetadataInvalid => {
+            TemplateProviderError::MetadataInvalid => {
                 ServerError::InternalServerError("unable to load metadata".into())
             }
-            TemplateManagerError::InternalError(msg) => ServerError::InternalServerError(msg),
+            TemplateProviderError::InternalError(msg) => ServerError::InternalServerError(msg),
         }
     }
 }
 
 #[async_trait]
-pub trait TemplateManager {
-    async fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError>;
+pub trait TemplateProvider {
+    async fn find_by_name(&self, name: &str) -> Result<Template, TemplateProviderError>;
 }

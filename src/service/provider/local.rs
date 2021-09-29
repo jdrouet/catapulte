@@ -1,6 +1,6 @@
+use super::prelude::{TemplateProvider, TemplateProviderError};
 use crate::config::Config;
-use crate::service::template::manager::{TemplateManager, TemplateManagerError};
-use crate::service::template::template::Template;
+use crate::service::template::Template;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -36,8 +36,8 @@ impl From<Arc<Config>> for LocalTemplateProvider {
 }
 
 #[async_trait]
-impl TemplateManager for LocalTemplateProvider {
-    async fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError> {
+impl TemplateProvider for LocalTemplateProvider {
+    async fn find_by_name(&self, name: &str) -> Result<Template, TemplateProviderError> {
         info!("find_by_name: {}", name);
         let path = Path::new(self.root.as_str())
             .join(name)
@@ -60,9 +60,9 @@ impl TemplateManager for LocalTemplateProvider {
 #[cfg(test)]
 mod tests {
     use super::LocalTemplateProvider;
-    use super::TemplateManagerError;
+    use super::TemplateProvider;
+    use super::TemplateProviderError;
     use crate::config::Config;
-    use crate::service::template::manager::TemplateManager;
 
     #[test]
     fn without_template_root() {
@@ -86,7 +86,7 @@ mod tests {
         let cfg = Config::build();
         let manager = LocalTemplateProvider::from(cfg);
         assert!(match manager.find_by_name("not_found").await.unwrap_err() {
-            TemplateManagerError::TemplateNotFound => true,
+            TemplateProviderError::TemplateNotFound => true,
             _ => false,
         });
     }

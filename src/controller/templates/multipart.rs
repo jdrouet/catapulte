@@ -2,14 +2,15 @@ use crate::error::ServerError;
 use crate::service::multipart::{
     field_to_file, field_to_json_value, field_to_string, MultipartFile,
 };
+use crate::service::provider::TemplateProvider;
 use crate::service::smtp::SmtpPool;
-use crate::service::template::provider::TemplateProvider;
-use crate::service::template::template::TemplateOptions;
+use crate::service::template::TemplateOptions;
 use actix_http::RequestHead;
 use actix_multipart::{Field, Multipart};
 use actix_web::{web, HttpResponse};
 use futures::TryStreamExt;
 use lettre::Transport;
+use mrml::prelude::render::Options as RenderOptions;
 use serde_json::Value as JsonValue;
 use std::default::Default;
 use std::path::Path;
@@ -126,6 +127,7 @@ impl From<TemplateOptionsParser> for TemplateOptions {
 }
 
 pub async fn handler(
+    render_opts: web::Data<RenderOptions>,
     smtp_pool: web::Data<SmtpPool>,
     template_provider: web::Data<TemplateProvider>,
     name: web::Path<String>,
@@ -137,7 +139,7 @@ pub async fn handler(
     let parser = TemplateOptionsParser::from_multipart(&tmp_path, body).await?;
     let options: TemplateOptions = parser.into();
     options.validate()?;
-    let email = template.to_email(&options)?;
+    let email = template.to_email(&options, render_opts.as_ref())?;
     smtp_pool.send(&email)?;
     Ok(HttpResponse::NoContent().finish())
 }

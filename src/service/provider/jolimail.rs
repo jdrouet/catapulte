@@ -1,6 +1,6 @@
+use super::prelude::{TemplateProvider, TemplateProviderError};
 use crate::config::Config;
-use crate::service::template::manager::{TemplateManager, TemplateManagerError};
-use crate::service::template::template::Template;
+use crate::service::template::Template;
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -31,12 +31,12 @@ impl JolimailTemplateProvider {
 }
 
 #[async_trait]
-impl TemplateManager for JolimailTemplateProvider {
-    async fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError> {
+impl TemplateProvider for JolimailTemplateProvider {
+    async fn find_by_name(&self, name: &str) -> Result<Template, TemplateProviderError> {
         let url = format!("{}/api/templates/{}/content", self.base_url, name);
         let request = Self::get_client().get(url.as_str()).send().await?;
         match request.status() {
-            reqwest::StatusCode::NOT_FOUND => Err(TemplateManagerError::TemplateNotFound),
+            reqwest::StatusCode::NOT_FOUND => Err(TemplateProviderError::TemplateNotFound),
             _ => Ok(request.json::<Template>().await?),
         }
     }
@@ -46,7 +46,7 @@ impl TemplateManager for JolimailTemplateProvider {
 #[cfg(test)]
 mod tests {
     use super::JolimailTemplateProvider;
-    use super::TemplateManager;
+    use super::TemplateProvider;
     use crate::config::Config;
     use serde_json::json;
     use wiremock::matchers::{method, path};

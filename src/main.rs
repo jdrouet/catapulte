@@ -41,7 +41,7 @@ async fn main() -> std::io::Result<()> {
     let server_config = service::server::Config(cfg.clone());
     let smtp_config = service::smtp::Config(cfg.clone());
 
-    let template_provider = service::template::provider::TemplateProvider::from(cfg.clone());
+    let provider = service::provider::TemplateProvider::from(cfg.clone());
     let smtp_pool = smtp_config.get_pool().expect("smtp service init");
 
     info!("starting server");
@@ -49,8 +49,9 @@ async fn main() -> std::io::Result<()> {
         bind_services!(
             cfg.clone(),
             create_app!()
-                .data(template_provider.clone())
+                .data(provider.clone())
                 .data(smtp_pool.clone())
+                .data(cfg.clone().render_options())
                 .wrap(DefaultHeaders::new().header("X-Version", env!("CARGO_PKG_VERSION")))
                 .wrap(Logger::default())
                 .wrap(Compress::default())
@@ -64,7 +65,7 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 #[cfg(not(tarpaulin_include))]
 mod tests {
-    use super::service::template::provider::TemplateProvider;
+    use super::service::provider::TemplateProvider;
     use crate::config::Config;
     use actix_http::Request;
     use actix_web::dev::ServiceResponse;
@@ -145,10 +146,12 @@ mod tests {
             let cfg = self.build_config();
             let template_provider = TemplateProvider::from(cfg.clone());
             let smtp_config = crate::service::smtp::Config(cfg.clone());
+            let render_opts = cfg.render_options();
             let smtp_pool = smtp_config.get_pool().expect("smtp service init");
             let mut app = test::init_service(bind_services!(
                 cfg.clone(),
                 create_app!()
+                    .data(render_opts)
                     .data(template_provider.clone())
                     .data(smtp_pool.clone())
             ))

@@ -1,4 +1,5 @@
 use clap::Clap;
+use mrml::prelude::render::Options as RenderOptions;
 use std::sync::Arc;
 
 #[derive(Clap, Debug)]
@@ -25,6 +26,10 @@ pub struct Config {
     pub jwt_ec_der: Option<String>,
     #[clap(long, env = "LOCAL_PROVIDER_ROOT", default_value = "./template")]
     pub local_provider_root: String,
+    #[clap(long, env = "MRML_DISABLE_COMMENTS")]
+    pub mrml_disable_comments: bool,
+    #[clap(long, env = "MRML_SOCIAL_ICON_ORIGIN")]
+    pub mrml_social_icon_origin: Option<String>,
     #[clap(long = "address", env = "ADDRESS", default_value = "127.0.0.1")]
     pub server_address: String,
     #[clap(long = "port", env = "PORT", default_value = "3000")]
@@ -62,5 +67,16 @@ impl Config {
         args.extend(inputs);
         let res = Self::parse_from(args);
         Arc::new(res)
+    }
+
+    pub fn render_options(&self) -> RenderOptions {
+        let mut opts = RenderOptions {
+            disable_comments: self.mrml_disable_comments,
+            ..Default::default()
+        };
+        if let Some(ref value) = self.mrml_social_icon_origin {
+            opts.social_icon_origin = Some(value.clone());
+        }
+        opts
     }
 }

@@ -1,11 +1,12 @@
-use super::manager::{TemplateManager, TemplateManagerError};
-use super::template::Template;
-use crate::config::Config;
-use std::sync::Arc;
-
 #[cfg(feature = "provider-jolimail")]
 pub mod jolimail;
 pub mod local;
+pub mod prelude;
+
+use crate::config::Config;
+use crate::service::template::Template;
+use prelude::{TemplateProvider as TemplateManager, TemplateProviderError};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub enum TemplateProvider {
@@ -34,7 +35,7 @@ impl TemplateProvider {
         }
     }
 
-    pub async fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError> {
+    pub async fn find_by_name(&self, name: &str) -> Result<Template, TemplateProviderError> {
         self.inner().find_by_name(name).await
     }
 }
