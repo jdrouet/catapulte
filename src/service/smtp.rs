@@ -1,25 +1,15 @@
+use crate::config::{env_bool, env_number, env_str, parse_number};
 use crate::error::ServerError;
+use clap::{App, Arg, ArgMatches};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::transport::smtp::{
     Error as LettreError, PoolConfig, SmtpTransport, SmtpTransportBuilder,
 };
-use std::env;
 use std::string::ToString;
 use std::time::Duration;
 
 pub type SmtpPool = SmtpTransport;
-
-fn env_var_u64(key: &str) -> Option<u64> {
-    env::var(key).ok().and_then(|value| value.parse().ok())
-}
-
-fn env_var_bool(key: &str, default_value: bool) -> bool {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default_value)
-}
 
 #[derive(Debug)]
 pub struct Config {
@@ -33,29 +23,116 @@ pub struct Config {
     pub accept_invalid_cert: bool,
 }
 
-impl Config {
-    pub fn from_env() -> Self {
+impl Default for Config {
+    fn default() -> Self {
         Self {
-            hostname: env::var("SMTP_HOSTNAME").unwrap_or_else(|_| String::from("127.0.0.1")),
-            port: env::var("SMTP_PORT")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(25),
-            username: env::var("SMTP_USERNAME").ok(),
-            password: env::var("SMTP_PASSWORD").ok(),
-            max_pool_size: env::var("SMTP_MAX_POOL_SIZE")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(10),
-            tls_enabled: env_var_bool("SMTP_TLS_ENABLED", false),
-            timeout: env_var_u64("SMTP_TIMEOUT")
-                .map(|value| value * 1000)
-                .or_else(|| env_var_u64("SMTP_TIMEOUT_MS"))
-                .unwrap_or(5000),
-            accept_invalid_cert: env_var_bool("SMTP_ACCEPT_INVALID_CERT", false),
+            hostname: "127.0.0.1".into(),
+            port: 25,
+            username: None,
+            password: None,
+            max_pool_size: 10,
+            tls_enabled: false,
+            timeout: 5000,
+            accept_invalid_cert: false,
         }
     }
+}
 
+impl Config {
+    pub fn with_args(app: App) -> App {
+        app.arg(
+            Arg::new("smtp_hostname")
+                .long("smtp-hostname")
+                .about("Hostname of the SMTP server"),
+        )
+        .arg(
+            Arg::new("smtp_port")
+                .long("smtp-port")
+                .about("Port of the SMTP server"),
+        )
+        .arg(
+            Arg::new("smtp_username")
+                .long("smtp-username")
+                .about("Username to authenticated with the SMTP server"),
+        )
+        .arg(
+            Arg::new("smtp_password")
+                .long("smtp-password")
+                .about("Password to authenticated with the SMTP server"),
+        )
+        .arg(
+            Arg::new("smtp_max_pool_size")
+                .long("smtp-max-pool-size")
+                .about("Max pool size for the SMTP connections"),
+        )
+        .arg(
+            Arg::new("smtp_tls_enabled")
+                .long("smtp-tls-enabled")
+                .about("Enable TLS with the SMTP server"),
+        )
+        .arg(
+            Arg::new("smtp_timeout")
+                .long("smtp-timeout")
+                .about("Enable TLS with the SMTP server"),
+        )
+        .arg(
+            Arg::new("smtp_accept_invalid_cert")
+                .long("smtp-accept-invalid-cert")
+                .about("Accept invalid certificates for TLS connection with the SMTP server"),
+        )
+    }
+}
+
+impl From<&ArgMatches> for Config {
+    fn from(matches: &ArgMatches) -> Self {
+        let default = Self::default();
+        let hostname = matches
+            .value_of("smtp_hostname")
+            .map(String::from)
+            .or_else(|| env_str("SMTP_HOSTNAME"))
+            .unwrap_or(default.hostname);
+        let port = matches
+            .value_of("smtp_port")
+            .map(|value| parse_number("smtp-port", value))
+            .or_else(|| env_number("SMTP_PORT"))
+            .unwrap_or(default.port);
+        let username = matches
+            .value_of("smtp_username")
+            .map(String::from)
+            .or_else(|| env_str("SMTP_USERNAME"));
+        let password = matches
+            .value_of("smtp_password")
+            .map(String::from)
+            .or_else(|| env_str("SMTP_PASSWORD"));
+        let max_pool_size = matches
+            .value_of("smtp_max_pool_size")
+            .map(|value| parse_number("smtp-max-pool-size", value))
+            .or_else(|| env_number("SMTP_MAX_POOL_SIZE"))
+            .unwrap_or(default.max_pool_size);
+        let tls_enabled =
+            matches.is_present("smtp_tls_enabled") || env_bool("SMTP_TLS_ENABLED").unwrap_or(false);
+        let timeout = matches
+            .value_of("smtp_timeout")
+            .map(|value| parse_number("smtp-timeout", value))
+            .or_else(|| env_number("SMTP_TIMEOUT"))
+            .unwrap_or(default.timeout);
+        let accept_invalid_cert = matches.is_present("smtp_accept_invalid_cert")
+            || env_bool("SMTP_ACCEPT_INVALID_CERT").unwrap_or(false);
+
+        Self {
+            hostname,
+            port,
+            username,
+            password,
+            max_pool_size,
+            tls_enabled,
+            timeout,
+            accept_invalid_cert,
+        }
+    }
+}
+
+impl Config {
     fn get_credentials(&self) -> Option<Credentials> {
         if let Some(username) = self.username.as_ref() {
             if let Some(password) = self.password.as_ref() {
@@ -145,7 +222,7 @@ impl From<SmtpError> for ServerError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::config::Config;
 
     #[test]
     #[serial]
@@ -157,7 +234,7 @@ mod tests {
         let _tls_enabled = env_test_util::TempEnvVar::new("SMTP_TLS_ENABLED");
         let _max_pool_size = env_test_util::TempEnvVar::new("SMTP_MAX_POOL_SIZE");
         let _timeout = env_test_util::TempEnvVar::new("SMTP_TIMEOUT");
-        let cfg = Config::from_env();
+        let cfg = Config::from_args(vec![]).smtp;
         assert_eq!(cfg.hostname, "127.0.0.1");
         assert_eq!(cfg.port, 25);
         assert_eq!(cfg.username, None);
@@ -176,8 +253,8 @@ mod tests {
         let _password = env_test_util::TempEnvVar::new("SMTP_PASSWORD").with("password");
         let _tls_enabled = env_test_util::TempEnvVar::new("SMTP_TLS_ENABLED").with("false");
         let _max_pool_size = env_test_util::TempEnvVar::new("SMTP_MAX_POOL_SIZE").with("2");
-        let _timeout = env_test_util::TempEnvVar::new("SMTP_TIMEOUT").with("3");
-        let cfg = Config::from_env();
+        let _timeout = env_test_util::TempEnvVar::new("SMTP_TIMEOUT").with("3000");
+        let cfg = Config::from_args(vec![]).smtp;
         assert_eq!(cfg.hostname, "mail.jolimail.io");
         assert_eq!(cfg.port, 1234);
         assert_eq!(cfg.username, Some("username".into()));
@@ -199,8 +276,8 @@ mod tests {
         let _password = env_test_util::TempEnvVar::new("SMTP_PASSWORD").with("password");
         let _tls_enabled = env_test_util::TempEnvVar::new("SMTP_TLS_ENABLED").with("true");
         let _max_pool_size = env_test_util::TempEnvVar::new("SMTP_MAX_POOL_SIZE").with("2");
-        let _timeout = env_test_util::TempEnvVar::new("SMTP_TIMEOUT").with("3");
-        let cfg = Config::from_env();
+        let _timeout = env_test_util::TempEnvVar::new("SMTP_TIMEOUT").with("3000");
+        let cfg = Config::from_args(vec![]).smtp;
         assert_eq!(cfg.hostname, "mail.jolimail.io");
         assert_eq!(cfg.port, 1234);
         assert_eq!(cfg.username, Some("username".into()));

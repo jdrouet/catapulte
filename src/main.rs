@@ -8,42 +8,27 @@ extern crate lazy_static;
 extern crate log;
 
 use actix_web::middleware::{Compress, DefaultHeaders, Logger};
-use actix_web::{web, App, HttpServer};
+use actix_web::{App, HttpServer};
 
+mod config;
 mod controller;
 mod error;
 mod middleware;
 mod service;
 
-struct Config {
-    pub address: String,
-    pub port: String,
-}
-
-impl Config {
-    pub fn from_env() -> Self {
-        Self {
-            address: std::env::var("ADDRESS").unwrap_or_else(|_| String::from("127.0.0.1")),
-            port: std::env::var("PORT").unwrap_or_else(|_| String::from("3000")),
-        }
-    }
-
-    fn to_bind(&self) -> String {
-        format!("{}:{}", self.address, self.port)
-    }
-}
-
 macro_rules! create_app {
     () => {
-        App::new().app_data(web::JsonConfig::default().error_handler(error::json_error_handler))
+        App::new().app_data(
+            actix_web::web::JsonConfig::default().error_handler(crate::error::json_error_handler),
+        )
     };
 }
 
 macro_rules! bind_services {
     ($app: expr) => {
-        $app.service(controller::status::handler)
-            .configure(controller::templates::config)
-            .configure(controller::swagger::config)
+        $app.service(crate::controller::status::handler)
+            .configure(crate::controller::templates::config)
+            .configure(crate::controller::swagger::config)
     };
 }
 
@@ -52,12 +37,11 @@ macro_rules! bind_services {
 async fn main() -> std::io::Result<()> {
     env_logger::init();
 
-    let server_cfg = Config::from_env();
-    let smtp_cfg = service::smtp::Config::from_env();
+    let cfg = config::Config::parse();
 
     let template_provider =
         service::template::provider::TemplateProvider::from_env().expect("template provider init");
-    let smtp_pool = smtp_cfg.get_pool().expect("smtp service init");
+    let smtp_pool = cfg.smtp.get_pool().expect("smtp service init");
 
     info!("starting server");
     HttpServer::new(move || {
@@ -68,7 +52,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             .wrap(Compress::default()))
     })
-    .bind(server_cfg.to_bind())?
+    .bind(cfg.server.to_bind())?
     .run()
     .await
 }
@@ -76,30 +60,25 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 #[cfg(not(tarpaulin_include))]
 mod tests {
-    use super::service::smtp::Config;
     use super::service::template::provider::TemplateProvider;
-    use super::*;
+    use crate::config::{env_number, env_str, Config};
     use actix_http::Request;
     use actix_web::dev::ServiceResponse;
     use actix_web::{test, App};
-    use env_test_util::TempEnvVar;
     use reqwest;
     use serde::Deserialize;
     use uuid::Uuid;
 
-    pub fn env_str(key: &str, default_value: &str) -> String {
-        std::env::var(key)
-            .ok()
-            .unwrap_or_else(|| default_value.into())
-    }
-
     lazy_static! {
-        pub static ref INBOX_HOSTNAME: String = env_str("TEST_INBOX_HOSTNAME", "localhost");
-        pub static ref INBOX_PORT: String = env_str("TEST_INBOX_PORT", "1080");
-        pub static ref SMTP_HOSTNAME: String = env_str("TEST_SMTP_HOSTNAME", "localhost");
-        pub static ref SMTP_PORT: String = env_str("TEST_SMTP_PORT", "1025");
-        pub static ref SMTPS_HOSTNAME: String = env_str("TEST_SMTPS_HOSTNAME", "localhost");
-        pub static ref SMTPS_PORT: String = env_str("TEST_SMTPS_PORT", "1025");
+        pub static ref INBOX_HOSTNAME: String =
+            env_str("TEST_INBOX_HOSTNAME").unwrap_or_else(|| "localhost".to_string());
+        pub static ref INBOX_PORT: u16 = env_number("TEST_INBOX_PORT").unwrap_or(1080);
+        pub static ref SMTP_HOSTNAME: String =
+            env_str("TEST_SMTP_HOSTNAME").unwrap_or_else(|| "localhost".to_string());
+        pub static ref SMTP_PORT: u16 = env_number("TEST_SMTP_PORT").unwrap_or(1025);
+        pub static ref SMTPS_HOSTNAME: String =
+            env_str("TEST_SMTPS_HOSTNAME").unwrap_or_else(|| "localhost".to_string());
+        pub static ref SMTPS_PORT: u16 = env_number("TEST_SMTPS_PORT").unwrap_or(1025);
     }
 
     #[derive(Debug, Default)]
@@ -125,29 +104,29 @@ mod tests {
             self
         }
 
-        fn set_variables(&self) -> Vec<TempEnvVar> {
-            let mut res = Vec::new();
+        fn build_config(&self) -> Config {
+            let mut cfg = Config::default();
             if self.authenticated {
-                res.push(TempEnvVar::new("AUTHENTICATION_ENABLED").with("true"));
+                // res.push(TempEnvVar::new("AUTHENTICATION_ENABLED").with("true"));
             }
             if self.secure {
-                res.push(TempEnvVar::new("SMTP_HOSTNAME").with(SMTPS_HOSTNAME.as_str()));
-                res.push(TempEnvVar::new("SMTP_PORT").with(SMTPS_PORT.as_str()));
-                res.push(TempEnvVar::new("SMTP_TLS_ENABLED").with("true"));
+                cfg.smtp.hostname = SMTPS_HOSTNAME.to_string();
+                cfg.smtp.port = *SMTPS_PORT;
+                cfg.smtp.tls_enabled = true;
                 if self.invalid_cert {
-                    res.push(TempEnvVar::new("SMTP_ACCEPT_INVALID_CERT").with("true"));
+                    cfg.smtp.accept_invalid_cert = true;
                 }
             } else {
-                res.push(TempEnvVar::new("SMTP_HOSTNAME").with(SMTP_HOSTNAME.as_str()));
-                res.push(TempEnvVar::new("SMTP_PORT").with(SMTP_PORT.as_str()));
+                cfg.smtp.hostname = SMTP_HOSTNAME.to_string();
+                cfg.smtp.port = *SMTP_PORT;
             }
-            res
+            cfg
         }
 
         pub async fn execute(&self, req: Request) -> ServiceResponse {
-            let _variables = self.set_variables();
+            let cfg = self.build_config();
             let template_provider = TemplateProvider::from_env().expect("template provider init");
-            let smtp_pool = Config::from_env().get_pool().expect("smtp service init");
+            let smtp_pool = cfg.smtp.get_pool().expect("smtp service init");
             let mut app = test::init_service(bind_services!(create_app!()
                 .data(template_provider.clone())
                 .data(smtp_pool.clone())))
@@ -166,7 +145,7 @@ mod tests {
         let url = format!(
             "http://{}:{}/api/emails?from={}&to={}",
             INBOX_HOSTNAME.as_str(),
-            INBOX_PORT.as_str(),
+            *INBOX_PORT,
             from,
             to
         );
@@ -180,34 +159,5 @@ mod tests {
 
     pub fn create_email() -> String {
         format!("{}@example.com", Uuid::new_v4())
-    }
-
-    #[test]
-    #[serial]
-    fn test_get_address() {
-        let _address = env_test_util::TempEnvVar::new("ADDRESS");
-        assert_eq!(super::Config::from_env().address, "127.0.0.1");
-        let _address = _address.with("something");
-        assert_eq!(super::Config::from_env().address, "something");
-    }
-
-    #[test]
-    #[serial]
-    fn test_get_port() {
-        let _port = env_test_util::TempEnvVar::new("PORT");
-        assert_eq!(super::Config::from_env().port, "3000");
-        let _port = _port.with("1234");
-        assert_eq!(super::Config::from_env().port, "1234");
-    }
-
-    #[test]
-    #[serial]
-    fn test_bind() {
-        let _address = env_test_util::TempEnvVar::new("ADDRESS");
-        let _port = env_test_util::TempEnvVar::new("PORT");
-        assert_eq!(super::Config::from_env().to_bind(), "127.0.0.1:3000");
-        let _address = _address.with("something");
-        let _port = _port.with("1234");
-        assert_eq!(super::Config::from_env().to_bind(), "something:1234");
     }
 }
