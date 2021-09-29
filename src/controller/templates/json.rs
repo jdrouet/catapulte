@@ -77,7 +77,6 @@ pub async fn handler(
 // LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
-    use crate::controller::swagger::SWAGGER_ENABLED;
     use crate::tests::{create_email, get_latest_inbox, ServerBuilder};
     use actix_web::http::StatusCode;
     use actix_web::test;
@@ -89,7 +88,7 @@ mod tests {
     #[actix_rt::test]
     #[serial]
     async fn success() {
-        let _swagger = TempEnvVar::new(SWAGGER_ENABLED).with("true");
+        let _swagger = TempEnvVar::new("SWAGGER_ENABLED").with("true");
         let from = create_email();
         let to = create_email();
         let payload = json!({

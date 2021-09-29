@@ -1,11 +1,12 @@
+use crate::config::Config as RootConfig;
 use crate::error::ServerError;
 use crate::service::jsonwebtoken::{Claims, Decoder};
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::Error as ActixError;
 use futures::future::{ok, Ready};
 use futures::Future;
-use std::env;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 #[derive(Debug)]
@@ -15,18 +16,12 @@ pub struct Authentication {
     header: String,
 }
 
-impl Authentication {
-    pub fn from_env() -> Self {
-        let enabled = env::var("AUTHENTICATION_ENABLED")
-            .map(|value| value == "true")
-            .unwrap_or(false);
-        if !enabled {
-            log::warn!("authentication middleware disabled");
-        }
+impl From<Arc<RootConfig>> for Authentication {
+    fn from(root: Arc<RootConfig>) -> Self {
         Self {
-            decoder: Decoder::from_env().expect("couldn't build jsonwebtoken decoder"),
-            enabled,
-            header: env::var("AUTHENTICATION_HEADER").unwrap_or_else(|_| "Authorization".into()),
+            enabled: root.authentication_enabled,
+            decoder: Decoder::from(root.clone()),
+            header: root.authentication_header.clone(),
         }
     }
 }

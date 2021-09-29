@@ -1,125 +1,60 @@
-use crate::service::smtp::Config as SmtpConfig;
-use clap::{crate_description, crate_name, crate_version, App, Arg, ArgMatches, Clap};
-use std::env;
-use std::str::FromStr;
+use clap::Clap;
+use std::sync::Arc;
 
-pub(crate) fn env_bool<T: FromStr>(key: &str) -> Option<T> {
-    env_str(key).map(|value| {
-        value
-            .parse::<T>()
-            .map_err(|_err| format!("{} should be a boolean (got {})", key, value))
-            .unwrap()
-    })
-}
-
-pub(crate) fn parse_number<T: FromStr>(key: &str, value: &str) -> T {
-    value
-        .parse::<T>()
-        .map_err(|_err| format!("{} should be a number (got {})", key, value))
-        .unwrap()
-}
-
-pub(crate) fn env_number<T: FromStr>(key: &str) -> Option<T> {
-    env_str(key).map(|value| parse_number(key, &value))
-}
-
-pub(crate) fn env_str(key: &str) -> Option<String> {
-    env::var(key).ok()
-}
-
-#[derive(Clap)]
-pub struct ServerConfig {
-    address: String,
-    port: u16,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            address: "localhost".into(),
-            port: 3000,
-        }
-    }
-}
-
-impl From<&ArgMatches> for ServerConfig {
-    fn from(matches: &ArgMatches) -> Self {
-        let default = Self::default();
-
-        Self {
-            address: matches
-                .value_of("server_address")
-                .map(String::from)
-                .or_else(|| env_str("ADDRESS"))
-                .unwrap_or(default.address),
-            port: matches
-                .value_of("server_port")
-                .map(|value| parse_number("port", value))
-                .or_else(|| env_number("PORT"))
-                .unwrap_or(default.port),
-        }
-    }
-}
-
-impl ServerConfig {
-    pub fn to_bind(&self) -> String {
-        format!("{}:{}", self.address, self.port)
-    }
-
-    pub fn with_args(app: App) -> App {
-        app.arg(
-            Arg::new("server_address")
-                .long("address")
-                .about("Address to bind the server"),
-        )
-        .arg(
-            Arg::new("server_port")
-                .long("port")
-                .about("Port to bind the server"),
-        )
-    }
-}
-
+#[derive(Clap, Debug)]
 pub struct Config {
-    pub server: ServerConfig,
-    pub smtp: SmtpConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            smtp: SmtpConfig::default(),
-        }
-    }
-}
-
-impl From<ArgMatches> for Config {
-    fn from(matches: ArgMatches) -> Self {
-        Self {
-            server: ServerConfig::from(&matches),
-            smtp: SmtpConfig::from(&matches),
-        }
-    }
+    #[clap(long, env = "AUTHENTICATION_ENABLED")]
+    pub authentication_enabled: bool,
+    #[clap(long, env = "AUTHENTICATION_HEAD", default_value = "Authorization")]
+    pub authentication_header: String,
+    #[clap(long, env = "JWT_ALGORITHM")]
+    pub jwt_algorithm: Option<String>,
+    #[clap(long, env = "JWT_SECRET")]
+    pub jwt_secret: Option<String>,
+    #[clap(long, env = "JWT_SECRET_BASE64")]
+    pub jwt_secret_base64: Option<String>,
+    #[clap(long, env = "JWT_RSA_PEM")]
+    pub jwt_rsa_pem: Option<String>,
+    #[clap(long, env = "JWT_EC_PEM")]
+    pub jwt_ec_pem: Option<String>,
+    #[clap(long, env = "JWT_RSA_DER")]
+    pub jwt_rsa_der: Option<String>,
+    #[clap(long, env = "JWT_EC_DER")]
+    pub jwt_ec_der: Option<String>,
+    #[clap(long = "address", env = "ADDRESS", default_value = "127.0.0.1")]
+    pub server_address: String,
+    #[clap(long = "port", env = "PORT", default_value = "3000")]
+    pub server_port: u16,
+    #[clap(long, env = "SMTP_HOSTNAME", default_value = "127.0.0.1")]
+    pub smtp_hostname: String,
+    #[clap(long, env = "SMTP_PORT", default_value = "25")]
+    pub smtp_port: u16,
+    #[clap(long, env = "SMTP_USERNAME")]
+    pub smtp_username: Option<String>,
+    #[clap(long, env = "SMTP_PASSWORD")]
+    pub smtp_password: Option<String>,
+    #[clap(long, env = "SMTP_MAX_POOL_SIZE", default_value = "10")]
+    pub smtp_max_pool_size: u32,
+    #[clap(long, env = "SMTP_TLS_ENABLED")]
+    pub smtp_tls_enabled: bool,
+    #[clap(long, env = "SMTP_TIMEOUT", default_value = "5000")]
+    pub smtp_timeout: u64,
+    #[clap(long, env = "SMTP_ACCEPT_INVALID_CERT")]
+    pub smtp_accept_invalid_cert: bool,
+    #[clap(long, env = "SWAGGER_ENABLED")]
+    pub swagger_enabled: bool,
 }
 
 impl Config {
-    pub fn build_app<'a>() -> App<'a> {
-        let app = App::new(crate_name!())
-            .version(crate_version!())
-            .about(crate_description!());
-        let app = ServerConfig::with_args(app);
-        SmtpConfig::with_args(app)
-    }
-
-    pub fn parse() -> Self {
-        let app = Self::build_app();
-        let matches = app.get_matches();
-        Self::from(matches)
+    pub fn build() -> Arc<Self> {
+        Arc::new(Self::parse())
     }
 
     #[cfg(test)]
-    pub(crate) fn from_args(values: Vec<&str>) -> Self {
-        Self::from(Self::build_app().get_matches_from(values))
+    pub fn from_args(inputs: Vec<String>) -> Arc<Self> {
+        let mut args = vec!["catapulte".to_string()];
+        args.extend(inputs);
+        let res = Self::parse_from(args);
+        Arc::new(res)
     }
 }

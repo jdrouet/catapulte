@@ -25,10 +25,10 @@ macro_rules! create_app {
 }
 
 macro_rules! bind_services {
-    ($app: expr) => {
+    ($cfg: expr, $app: expr) => {
         $app.service(crate::controller::status::handler)
-            .configure(crate::controller::templates::config)
-            .configure(crate::controller::swagger::config)
+            .configure(|app| crate::controller::templates::config($cfg, app))
+            .configure(|app| crate::controller::swagger::config($cfg, app))
     };
 }
 
@@ -37,22 +37,27 @@ macro_rules! bind_services {
 async fn main() -> std::io::Result<()> {
     env_logger::init();
 
-    let cfg = config::Config::parse();
+    let cfg = config::Config::build();
+    let server_config = service::server::Config(cfg.clone());
+    let smtp_config = service::smtp::Config(cfg.clone());
 
     let template_provider =
         service::template::provider::TemplateProvider::from_env().expect("template provider init");
-    let smtp_pool = cfg.smtp.get_pool().expect("smtp service init");
+    let smtp_pool = smtp_config.get_pool().expect("smtp service init");
 
     info!("starting server");
     HttpServer::new(move || {
-        bind_services!(create_app!()
-            .data(template_provider.clone())
-            .data(smtp_pool.clone())
-            .wrap(DefaultHeaders::new().header("X-Version", env!("CARGO_PKG_VERSION")))
-            .wrap(Logger::default())
-            .wrap(Compress::default()))
+        bind_services!(
+            cfg.clone(),
+            create_app!()
+                .data(template_provider.clone())
+                .data(smtp_pool.clone())
+                .wrap(DefaultHeaders::new().header("X-Version", env!("CARGO_PKG_VERSION")))
+                .wrap(Logger::default())
+                .wrap(Compress::default())
+        )
     })
-    .bind(cfg.server.to_bind())?
+    .bind(server_config.to_bind())?
     .run()
     .await
 }
@@ -61,13 +66,23 @@ async fn main() -> std::io::Result<()> {
 #[cfg(not(tarpaulin_include))]
 mod tests {
     use super::service::template::provider::TemplateProvider;
-    use crate::config::{env_number, env_str, Config};
+    use crate::config::Config;
     use actix_http::Request;
     use actix_web::dev::ServiceResponse;
     use actix_web::{test, App};
-    use reqwest;
     use serde::Deserialize;
+    use std::sync::Arc;
     use uuid::Uuid;
+
+    fn env_str(key: &str) -> Option<String> {
+        std::env::var(key).ok()
+    }
+
+    fn env_number<T: std::str::FromStr>(key: &str) -> Option<T> {
+        std::env::var(key)
+            .ok()
+            .and_then(|value| value.parse::<T>().ok())
+    }
 
     lazy_static! {
         pub static ref INBOX_HOSTNAME: String =
@@ -104,32 +119,40 @@ mod tests {
             self
         }
 
-        fn build_config(&self) -> Config {
-            let mut cfg = Config::default();
+        fn build_config(&self) -> Arc<Config> {
+            let mut opts = vec![];
             if self.authenticated {
-                // res.push(TempEnvVar::new("AUTHENTICATION_ENABLED").with("true"));
+                opts.push("--authentication-enabled".to_string());
             }
             if self.secure {
-                cfg.smtp.hostname = SMTPS_HOSTNAME.to_string();
-                cfg.smtp.port = *SMTPS_PORT;
-                cfg.smtp.tls_enabled = true;
+                opts.push("--smtp-hostname".to_string());
+                opts.push(SMTPS_HOSTNAME.to_string());
+                opts.push("--smtp-port".to_string());
+                opts.push(SMTPS_PORT.to_string());
+                opts.push("--smtp-tls-enabled".to_string());
                 if self.invalid_cert {
-                    cfg.smtp.accept_invalid_cert = true;
+                    opts.push("--smtp-accept-invalid-cert".to_string());
                 }
             } else {
-                cfg.smtp.hostname = SMTP_HOSTNAME.to_string();
-                cfg.smtp.port = *SMTP_PORT;
+                opts.push("--smtp-hostname".to_string());
+                opts.push(SMTP_HOSTNAME.to_string());
+                opts.push("--smtp-port".to_string());
+                opts.push(SMTP_PORT.to_string());
             }
-            cfg
+            Config::from_args(opts)
         }
 
         pub async fn execute(&self, req: Request) -> ServiceResponse {
             let cfg = self.build_config();
             let template_provider = TemplateProvider::from_env().expect("template provider init");
-            let smtp_pool = cfg.smtp.get_pool().expect("smtp service init");
-            let mut app = test::init_service(bind_services!(create_app!()
-                .data(template_provider.clone())
-                .data(smtp_pool.clone())))
+            let smtp_config = crate::service::smtp::Config(cfg.clone());
+            let smtp_pool = smtp_config.get_pool().expect("smtp service init");
+            let mut app = test::init_service(bind_services!(
+                cfg.clone(),
+                create_app!()
+                    .data(template_provider.clone())
+                    .data(smtp_pool.clone())
+            ))
             .await;
             test::call_service(&mut app, req).await
         }

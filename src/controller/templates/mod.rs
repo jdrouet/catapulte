@@ -1,13 +1,15 @@
-use crate::middleware::Authentication;
+use crate::config::Config;
+use crate::middleware::authentication::Authentication;
 use actix_web::{guard, web};
+use std::sync::Arc;
 
 mod json;
 mod multipart;
 
-pub fn config(app: &mut web::ServiceConfig) {
+pub fn config(config: Arc<Config>, app: &mut web::ServiceConfig) {
     app.service(
         web::scope("/templates")
-            .wrap(Authentication::from_env())
+            .wrap(Authentication::from(config))
             .route(
                 "/{name}",
                 web::route()
