@@ -1,36 +1,32 @@
-use super::TemplateProviderError;
+use crate::config::Config;
 use crate::service::template::manager::{TemplateManager, TemplateManagerError};
 use crate::service::template::template::Template;
 use async_trait::async_trait;
-
-pub const CONFIG_BASE_URL: &str = "TEMPLATE_PROVIDER_JOLIMAIL_BASE_URL";
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct JolimailTemplateProvider {
     base_url: String,
 }
 
+impl From<Arc<Config>> for JolimailTemplateProvider {
+    fn from(root: Arc<Config>) -> Self {
+        let base_url = root
+            .jolimail_provider_url
+            .clone()
+            .expect("no jolimail url found");
+        Self { base_url }
+    }
+}
+
 impl JolimailTemplateProvider {
+    #[cfg(test)]
+    fn new(base_url: String) -> Self {
+        Self { base_url }
+    }
+
     fn get_client() -> reqwest::Client {
         reqwest::Client::builder().use_rustls_tls().build().unwrap()
-    }
-
-    fn get_base_url_from_env() -> Result<String, TemplateProviderError> {
-        match std::env::var(CONFIG_BASE_URL) {
-            Ok(value) => Ok(value),
-            Err(_) => Err(TemplateProviderError::ConfigurationInvalid(format!(
-                "variable {} not found",
-                CONFIG_BASE_URL
-            ))),
-        }
-    }
-
-    pub fn from_env() -> Result<Self, TemplateProviderError> {
-        Ok(Self::new(Self::get_base_url_from_env()?))
-    }
-
-    pub fn new(base_url: String) -> Self {
-        Self { base_url }
     }
 }
 
@@ -49,26 +45,27 @@ impl TemplateManager for JolimailTemplateProvider {
 // LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use env_test_util::TempEnvVar;
+    use super::JolimailTemplateProvider;
+    use super::TemplateManager;
+    use crate::config::Config;
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
-    #[serial]
+    #[should_panic]
     fn from_env_without_variable() {
-        let _env_base_url = TempEnvVar::new(CONFIG_BASE_URL);
-        let result = JolimailTemplateProvider::from_env();
-        assert!(result.is_err());
+        let cfg = Config::from_args(vec![]);
+        let _ = JolimailTemplateProvider::from(cfg);
     }
 
     #[test]
-    #[serial]
     fn from_env_with_variable() {
-        let _env_base_url = TempEnvVar::new(CONFIG_BASE_URL).with("http://127.0.0.1:1234");
-        let result = JolimailTemplateProvider::from_env();
-        assert!(result.is_ok());
+        let cfg = Config::from_args(vec![
+            "--jolimail-provider-url".to_string(),
+            "http://127.0.0.1:1234".to_string(),
+        ]);
+        let _ = JolimailTemplateProvider::from(cfg);
     }
 
     #[actix_rt::test]

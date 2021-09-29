@@ -7,6 +7,8 @@ pub struct Config {
     pub authentication_enabled: bool,
     #[clap(long, env = "AUTHENTICATION_HEAD", default_value = "Authorization")]
     pub authentication_header: String,
+    #[clap(long, env = "JOLIMAIL_PROVIDER_URL")]
+    pub jolimail_provider_url: Option<String>,
     #[clap(long, env = "JWT_ALGORITHM")]
     pub jwt_algorithm: Option<String>,
     #[clap(long, env = "JWT_SECRET")]
@@ -21,6 +23,8 @@ pub struct Config {
     pub jwt_rsa_der: Option<String>,
     #[clap(long, env = "JWT_EC_DER")]
     pub jwt_ec_der: Option<String>,
+    #[clap(long, env = "LOCAL_PROVIDER_ROOT", default_value = "./template")]
+    pub local_provider_root: String,
     #[clap(long = "address", env = "ADDRESS", default_value = "127.0.0.1")]
     pub server_address: String,
     #[clap(long = "port", env = "PORT", default_value = "3000")]
@@ -43,6 +47,8 @@ pub struct Config {
     pub smtp_accept_invalid_cert: bool,
     #[clap(long, env = "SWAGGER_ENABLED")]
     pub swagger_enabled: bool,
+    #[clap(long, env = "TEMPLATE_PROVIDER", default_value = "local")]
+    pub template_provider: String,
 }
 
 impl Config {

@@ -41,8 +41,7 @@ async fn main() -> std::io::Result<()> {
     let server_config = service::server::Config(cfg.clone());
     let smtp_config = service::smtp::Config(cfg.clone());
 
-    let template_provider =
-        service::template::provider::TemplateProvider::from_env().expect("template provider init");
+    let template_provider = service::template::provider::TemplateProvider::from(cfg.clone());
     let smtp_pool = smtp_config.get_pool().expect("smtp service init");
 
     info!("starting server");
@@ -144,7 +143,7 @@ mod tests {
 
         pub async fn execute(&self, req: Request) -> ServiceResponse {
             let cfg = self.build_config();
-            let template_provider = TemplateProvider::from_env().expect("template provider init");
+            let template_provider = TemplateProvider::from(cfg.clone());
             let smtp_config = crate::service::smtp::Config(cfg.clone());
             let smtp_pool = smtp_config.get_pool().expect("smtp service init");
             let mut app = test::init_service(bind_services!(

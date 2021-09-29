@@ -1,16 +1,11 @@
 use super::manager::{TemplateManager, TemplateManagerError};
 use super::template::Template;
+use crate::config::Config;
+use std::sync::Arc;
 
 #[cfg(feature = "provider-jolimail")]
 pub mod jolimail;
 pub mod local;
-
-const CONFIG_TEMPLATE_PROVIDER: &str = "TEMPLATE_PROVIDER";
-
-#[derive(Clone, Debug)]
-pub enum TemplateProviderError {
-    ConfigurationInvalid(String),
-}
 
 #[derive(Clone, Debug)]
 pub enum TemplateProvider {
@@ -19,20 +14,18 @@ pub enum TemplateProvider {
     Local(local::LocalTemplateProvider),
 }
 
-impl TemplateProvider {
-    pub fn from_env() -> Result<Self, TemplateProviderError> {
-        match std::env::var(CONFIG_TEMPLATE_PROVIDER)
-            .unwrap_or_else(|_| "local".into())
-            .as_str()
-        {
+impl From<Arc<Config>> for TemplateProvider {
+    fn from(root: Arc<Config>) -> Self {
+        match root.template_provider.as_str() {
             #[cfg(feature = "provider-jolimail")]
-            "jolimail" => Ok(Self::Jolimail(
-                jolimail::JolimailTemplateProvider::from_env()?,
-            )),
-            _ => Ok(Self::Local(local::LocalTemplateProvider::from_env()?)),
+            "jolimail" => Self::Jolimail(jolimail::JolimailTemplateProvider::from(root)),
+            "local" => Self::Local(local::LocalTemplateProvider::from(root)),
+            other => panic!("unknown template provider {}", other),
         }
     }
+}
 
+impl TemplateProvider {
     fn inner(&self) -> &dyn TemplateManager {
         match self {
             #[cfg(feature = "provider-jolimail")]
@@ -68,27 +61,31 @@ impl TemplateProvider {
 #[cfg(test)]
 #[cfg_attr(tarpaulin, ignore)]
 mod tests {
-    use super::*;
-    use env_test_util::TempEnvVar;
+    use super::TemplateProvider;
+    use crate::config::Config;
 
     #[test]
-    #[serial]
     fn template_provider_from_env_local() {
-        let _env_provider = TempEnvVar::new(CONFIG_TEMPLATE_PROVIDER).with("local");
-        let _env_root = TempEnvVar::new(local::CONFIG_PROVIDER_LOCAL_ROOT).with("./template");
-        let provider = TemplateProvider::from_env();
-        assert!(provider.is_ok());
-        assert!(provider.unwrap().is_local());
+        let cfg = Config::from_args(vec![
+            "--template-provider".to_string(),
+            "local".to_string(),
+            "--local-provider-root".to_string(),
+            "./template".to_string(),
+        ]);
+        let provider = TemplateProvider::from(cfg);
+        assert!(provider.is_local());
     }
 
     #[cfg(feature = "provider-jolimail")]
     #[test]
-    #[serial]
     fn template_provider_from_env_jolimail() {
-        let _env_provider = TempEnvVar::new(CONFIG_TEMPLATE_PROVIDER).with("jolimail");
-        let _env_base_url = TempEnvVar::new(jolimail::CONFIG_BASE_URL).with("http://127.0.0.1");
-        let provider = TemplateProvider::from_env();
-        assert!(provider.is_ok());
-        assert!(provider.unwrap().is_jolimail());
+        let cfg = Config::from_args(vec![
+            "--template-provider".to_string(),
+            "jolimail".to_string(),
+            "--jolimail-provider-url".to_string(),
+            "http://127.0.0.1".to_string(),
+        ]);
+        let provider = TemplateProvider::from(cfg);
+        assert!(provider.is_jolimail());
     }
 }
