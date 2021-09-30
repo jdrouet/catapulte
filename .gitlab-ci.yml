@@ -72,22 +72,7 @@ test-integration:
 build-alpine-canary:
   stage: build
   image: jdrouet/docker-with-buildx:20.10.8-0.6.3
-  only:
-    - main
-  services:
-    - docker:20.10.8-dind
-  before_script:
-    - docker buildx version
-    - docker buildx create --name catapulte-build-debian-canary --platform linux/amd64,linux/i386,linux/arm/v7,linux/arm64 --use
-  after_script:
-    - docker buildx rm catapulte-build-debian-canary
-  script:
-    - docker login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD
-    - docker buildx build --push --file multiarch.Dockerfile --platform linux/amd64,linux/i386,linux/arm/v7,linux/arm64 --tag jdrouet/catapulte:canary --tag jdrouet/catapulte:canary-debian .
-
-build-debian-canary:
-  stage: build
-  image: jdrouet/docker-with-buildx:20.10.8-0.6.3
+  timeout: 2h
   only:
     - main
   services:
@@ -100,4 +85,21 @@ build-debian-canary:
   script:
     - docker login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD
     - docker buildx build --push --file multiarch-alpine.Dockerfile --platform linux/amd64,linux/arm64 --tag jdrouet/catapulte:canary-alpine .
+
+build-debian-canary:
+  stage: build
+  image: jdrouet/docker-with-buildx:20.10.8-0.6.3
+  timeout: 3h
+  only:
+    - main
+  services:
+    - docker:20.10.8-dind
+  before_script:
+    - docker buildx version
+    - docker buildx create --name catapulte-build-debian-canary --platform linux/amd64,linux/i386,linux/arm/v7,linux/arm64 --use
+  after_script:
+    - docker buildx rm catapulte-build-debian-canary
+  script:
+    - docker login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD
+    - docker buildx build --push --file multiarch.Dockerfile --platform linux/amd64,linux/i386,linux/arm/v7,linux/arm64 --tag jdrouet/catapulte:canary --tag jdrouet/catapulte:canary-debian .
 
