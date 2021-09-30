@@ -1,6 +1,7 @@
 [package]
 name = "catapulte"
 version = "0.4.2"
+description = "Catapulte is an open source mailer you can host yourself. You can use it to quickly catapult your transactionnal emails to destination."
 authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
 edition = "2018"
 license-file = "license.md"
@@ -17,6 +18,7 @@ actix-multipart = "0.4.0-beta.2"
 actix-web = "4.0.0-beta.3"
 actix-rt = "2.2.0"
 async-trait = "0.1.51"
+clap = "3.0.0-beta.4"
 env_logger = "0.9.0"
 futures = "0.3.17"
 handlebars = "4.1.3"

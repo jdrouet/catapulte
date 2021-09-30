@@ -1,5 +1,5 @@
 clippy:
-	cargo clippy -- -D warnings
+	cargo clippy --tests -- -D warnings
 
 ci-lint:
 	rustfmt --edition 2018 --check src/*.rs

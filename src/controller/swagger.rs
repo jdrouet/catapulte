@@ -1,14 +1,10 @@
+use crate::config::Config;
 use actix_http::http::header;
 use actix_web::{web, HttpResponse, Responder};
-use std::env;
+use std::sync::Arc;
 
-pub const SWAGGER_ENABLED: &str = "SWAGGER_ENABLED";
-
-pub fn config(app: &mut web::ServiceConfig) {
-    let enabled = env::var(SWAGGER_ENABLED)
-        .map(|value| value == "true")
-        .unwrap_or(false);
-    if enabled {
+pub fn config(config: Arc<Config>, app: &mut web::ServiceConfig) {
+    if config.swagger_enabled {
         app.service(
             web::scope("")
                 .route("/", web::get().to(index))
@@ -33,7 +29,6 @@ async fn openapi() -> impl Responder {
 // LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
-    use super::SWAGGER_ENABLED;
     use crate::tests::ServerBuilder;
     use actix_web::http::StatusCode;
     use actix_web::test;
@@ -42,7 +37,7 @@ mod tests {
     #[actix_rt::test]
     #[serial]
     async fn success_enabled() {
-        let _swagger = TempEnvVar::new(SWAGGER_ENABLED).with("true");
+        let _swagger = TempEnvVar::new("SWAGGER_ENABLED").with("true");
         let req = test::TestRequest::get().uri("/").to_request();
         let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -60,7 +55,7 @@ mod tests {
     #[actix_rt::test]
     #[serial]
     async fn success_disabled() {
-        let _swagger = TempEnvVar::new(SWAGGER_ENABLED);
+        let _swagger = TempEnvVar::new("SWAGGER_ENABLED");
         let req = test::TestRequest::get().uri("/").to_request();
         let res = ServerBuilder::default().execute(req).await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);

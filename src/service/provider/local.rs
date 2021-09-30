@@ -1,14 +1,13 @@
-use super::TemplateProviderError;
-use crate::service::template::manager::{TemplateManager, TemplateManagerError};
-use crate::service::template::template::Template;
+use super::prelude::{TemplateProvider, TemplateProviderError};
+use crate::config::Config;
+use crate::service::template::Template;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::fs::{read_to_string, File};
 use std::io::BufReader;
 use std::path::Path;
-
-pub const CONFIG_PROVIDER_LOCAL_ROOT: &str = "TEMPLATE_ROOT";
+use std::sync::Arc;
 
 fn default_mjml_path() -> String {
     "template.mjml".into()
@@ -28,22 +27,17 @@ pub struct LocalTemplateProvider {
     root: String,
 }
 
-impl LocalTemplateProvider {
-    pub fn from_env() -> Result<Self, TemplateProviderError> {
-        Ok(Self::new(
-            std::env::var(CONFIG_PROVIDER_LOCAL_ROOT)
-                .unwrap_or_else(|_| String::from("./template")),
-        ))
-    }
-
-    pub fn new(root: String) -> Self {
-        Self { root }
+impl From<Arc<Config>> for LocalTemplateProvider {
+    fn from(root: Arc<Config>) -> Self {
+        Self {
+            root: root.local_provider_root.clone(),
+        }
     }
 }
 
 #[async_trait]
-impl TemplateManager for LocalTemplateProvider {
-    async fn find_by_name(&self, name: &str) -> Result<Template, TemplateManagerError> {
+impl TemplateProvider for LocalTemplateProvider {
+    async fn find_by_name(&self, name: &str) -> Result<Template, TemplateProviderError> {
         info!("find_by_name: {}", name);
         let path = Path::new(self.root.as_str())
             .join(name)
@@ -65,46 +59,42 @@ impl TemplateManager for LocalTemplateProvider {
 // LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use env_test_util::TempEnvVar;
-
-    fn get_root() -> String {
-        match std::env::var(CONFIG_PROVIDER_LOCAL_ROOT) {
-            Ok(value) => value,
-            Err(_) => String::from("template"),
-        }
-    }
+    use super::LocalTemplateProvider;
+    use super::TemplateProvider;
+    use super::TemplateProviderError;
+    use crate::config::Config;
 
     #[test]
-    #[serial]
     fn without_template_root() {
-        let _env_base_url = TempEnvVar::new(CONFIG_PROVIDER_LOCAL_ROOT);
-        let result = LocalTemplateProvider::from_env().unwrap();
+        let cfg = Config::from_args(vec![]);
+        let result = LocalTemplateProvider::from(cfg);
         assert_eq!(result.root, "./template");
     }
 
     #[test]
-    #[serial]
     fn with_template_root() {
-        let _env_base_url = TempEnvVar::new(CONFIG_PROVIDER_LOCAL_ROOT).with("./somewhere");
-        let result = LocalTemplateProvider::from_env().unwrap();
+        let cfg = Config::from_args(vec![
+            "--local-provider-root".to_string(),
+            "./somewhere".to_string(),
+        ]);
+        let result = LocalTemplateProvider::from(cfg);
         assert_eq!(result.root, "./somewhere");
     }
 
     #[actix_rt::test]
-    #[serial]
     async fn local_find_by_name_not_found() {
-        let manager = LocalTemplateProvider::new(get_root());
-        assert!(match manager.find_by_name("not_found").await.unwrap_err() {
-            TemplateManagerError::TemplateNotFound => true,
-            _ => false,
-        });
+        let cfg = Config::build();
+        let manager = LocalTemplateProvider::from(cfg);
+        assert!(matches!(
+            manager.find_by_name("not_found").await.unwrap_err(),
+            TemplateProviderError::TemplateNotFound
+        ));
     }
 
     #[actix_rt::test]
-    #[serial]
     async fn local_find_by_name_success() {
-        let manager = LocalTemplateProvider::new(get_root());
+        let cfg = Config::build();
+        let manager = LocalTemplateProvider::from(cfg);
         let result = manager.find_by_name("user-login").await.unwrap();
         assert_eq!(result.name, "user-login");
         assert_eq!(result.description, "Template for login with magic link");

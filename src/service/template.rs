@@ -9,20 +9,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::string::ToString;
 
-fn build_mrml_options() -> RenderOptions {
-    let mut opts = RenderOptions::default();
-    if let Some(value) = std::env::var("MRML_DISABLE_COMMENTS")
-        .ok()
-        .and_then(|disable_comments| disable_comments.to_lowercase().parse::<bool>().ok())
-    {
-        opts.disable_comments = value;
-    }
-    if let Ok(value) = std::env::var("MRML_SOCIAL_ICON_ORIGIN") {
-        opts.social_icon_origin = Some(value);
-    }
-    opts
-}
-
 #[derive(Clone, Debug)]
 pub enum TemplateError {
     InterpolationError(String),
@@ -195,59 +181,49 @@ impl Template {
         }))
     }
 
-    pub fn to_email(&self, opts: &TemplateOptions) -> Result<Message, TemplateError> {
+    pub fn to_email(
+        &self,
+        template_opts: &TemplateOptions,
+        render_opts: &RenderOptions,
+    ) -> Result<Message, TemplateError> {
         debug!("rendering template: {} ({})", self.name, self.description);
-        let render_opts = build_mrml_options();
-        let email = self.render(opts)?;
-        let builder = opts.to_builder();
+        let email = self.render(template_opts)?;
+        let builder = template_opts.to_builder();
         Ok(builder
             .subject(email.get_title().unwrap_or_default().as_str())
-            .multipart(self.get_multipart(&email, opts, &render_opts)?)?)
+            .multipart(self.get_multipart(&email, template_opts, render_opts)?)?)
     }
 }
 
 // LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use env_test_util::TempEnvVar;
+    use super::{Template, TemplateOptions};
+    use crate::config::Config;
     use mrml::prelude::render::Options as RenderOptions;
     use serde_json::json;
 
     #[test]
-    #[serial]
     fn building_mrml_options_disable_comments_unset() {
-        let _breakpoint = TempEnvVar::new("MRML_DISABLE_COMMENTS");
-        let result = build_mrml_options();
+        let cfg = Config::from_args(vec![]);
+        let result = cfg.render_options();
         assert_eq!(
             result.disable_comments,
             RenderOptions::default().disable_comments
         );
     }
     #[test]
-    #[serial]
     fn building_mrml_options_disable_comments_set() {
-        let _breakpoint = TempEnvVar::new("MRML_DISABLE_COMMENTS").with("True");
-        let result = build_mrml_options();
-        assert_eq!(result.disable_comments, true);
-    }
-
-    #[test]
-    #[serial]
-    fn building_mrml_options_disable_comments_invalid() {
-        let _breakpoint = TempEnvVar::new("MRML_DISABLE_COMMENTS").with("invalid");
-        let result = build_mrml_options();
-        assert_eq!(
-            result.disable_comments,
-            RenderOptions::default().disable_comments
-        );
+        let cfg = Config::from_args(vec!["--mrml-disable-comments".to_string()]);
+        let result = cfg.render_options();
+        assert!(result.disable_comments);
     }
 
     #[test]
     #[serial]
     fn building_mrml_options_social_icon_origin_unset() {
-        let _breakpoint = TempEnvVar::new("MRML_SOCIAL_ICON_ORIGIN");
-        let result = build_mrml_options();
+        let cfg = Config::from_args(vec![]);
+        let result = cfg.render_options();
         assert_eq!(
             result.social_icon_origin,
             RenderOptions::default().social_icon_origin
@@ -256,8 +232,11 @@ mod tests {
     #[test]
     #[serial]
     fn building_mrml_options_social_icon_origin_set() {
-        let _breakpoint = TempEnvVar::new("MRML_SOCIAL_ICON_ORIGIN").with("http://wherever.com/");
-        let result = build_mrml_options();
+        let cfg = Config::from_args(vec![
+            "--mrml-social-icon-origin".to_string(),
+            "http://wherever.com/".to_string(),
+        ]);
+        let result = cfg.render_options();
         assert_eq!(
             result.social_icon_origin,
             Some("http://wherever.com/".to_string())
@@ -293,6 +272,7 @@ mod tests {
 
     #[test]
     fn to_email_success() {
+        let cfg = Config::from_args(vec![]);
         let tmpl = Template {
             name: "hello".into(),
             description: "world".into(),
@@ -314,7 +294,7 @@ mod tests {
             json!({"name": "Alice"}),
             vec![],
         );
-        let result = tmpl.to_email(&opts);
+        let result = tmpl.to_email(&opts, &cfg.render_options());
         assert!(result.is_ok());
     }
 }
