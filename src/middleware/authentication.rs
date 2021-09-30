@@ -1,11 +1,11 @@
 use crate::config::Config as RootConfig;
 use crate::error::ServerError;
 use crate::service::jsonwebtoken::{Claims, Decoder};
+use actix_web::body::AnyBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::Error as ActixError;
 use futures::future::{ok, Ready};
-use futures::Future;
-use std::pin::Pin;
+use futures_core::future::LocalBoxFuture;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -26,13 +26,12 @@ impl From<Arc<RootConfig>> for Authentication {
     }
 }
 
-impl<S, B> Transform<S, ServiceRequest> for Authentication
+impl<S> Transform<S, ServiceRequest> for Authentication
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = ActixError>,
+    S: Service<ServiceRequest, Response = ServiceResponse<AnyBody>, Error = ActixError>,
     S::Future: 'static,
-    B: 'static,
 {
-    type Response = ServiceResponse<B>;
+    type Response = ServiceResponse<AnyBody>;
     type Error = ActixError;
     type InitError = ();
     type Transform = AuthenticationMiddleware<S>;
@@ -74,16 +73,14 @@ impl<S> AuthenticationMiddleware<S> {
     }
 }
 
-impl<S, B> Service<ServiceRequest> for AuthenticationMiddleware<S>
+impl<S> Service<ServiceRequest> for AuthenticationMiddleware<S>
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = ActixError>,
+    S: Service<ServiceRequest, Response = ServiceResponse<AnyBody>, Error = ActixError>,
     S::Future: 'static,
-    B: 'static,
 {
-    type Response = ServiceResponse<B>;
+    type Response = ServiceResponse<AnyBody>;
     type Error = ActixError;
-    #[allow(clippy::type_complexity)]
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.service.poll_ready(cx)
