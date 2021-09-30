@@ -1,6 +1,7 @@
-# Environment variables
+# Environment variables and arguments
 
-Catapulte use several environment variables to be configured.
+Catapulte can be configured using CLI arguments or environment variables.
+Those arguments/variables can be seen by running catapulte with `--help`.
 
 ## Server relative
 
@@ -14,15 +15,14 @@ Catapulte use several environment variables to be configured.
 
 When the provider `local` is used
 
-- `TEMPLATE_ROOT` is the path where the templates will be loaded. In the container, the default is `/templates`.
+- `LOCAL_PROVIDER_ROOT` is the path where the templates will be loaded. In the container, the default is `/templates` otherwise it's `./templates`.
 
 When the provider `jolimail` is used
 
-- `TEMPLATE_PROVIDER_JOLIMAIL_BASE_URL` is the base url where catapulte will fetch the templates. Something like `http://demo.jolimail.io`
+- `JOLIMAIL_PROVIDER_URL` is the base url where catapulte will fetch the templates. Something like `http://demo.jolimail.io`
 
 ## MRML relative
 
-- `MRML_BREAKPOINT` is the number of pixels to use as breakpoint. It's the default MRML breakpoint size (`480px`).
 - `MRML_KEEP_COMMENTS` is a flag defining if MRML should keep the comments.
 - `MRML_SOCIAL_ICON_ORIGIN` is the base URL to load the social icons for `mj-social-element`. It's the default MRML value (`https://www.mailjet.com/images/theme/v1/icons/ico-social/`).
 
