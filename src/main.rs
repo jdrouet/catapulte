@@ -8,7 +8,7 @@ extern crate lazy_static;
 extern crate log;
 
 use actix_web::middleware::{Compress, DefaultHeaders, Logger};
-use actix_web::{App, HttpServer};
+use actix_web::{web::Data, App, HttpServer};
 
 mod config;
 mod controller;
@@ -49,9 +49,9 @@ async fn main() -> std::io::Result<()> {
         bind_services!(
             cfg.clone(),
             create_app!()
-                .data(provider.clone())
-                .data(smtp_pool.clone())
-                .data(cfg.clone().render_options())
+                .app_data(Data::new(provider.clone()))
+                .app_data(Data::new(smtp_pool.clone()))
+                .app_data(Data::new(cfg.clone().render_options()))
                 .wrap(DefaultHeaders::new().header("X-Version", env!("CARGO_PKG_VERSION")))
                 .wrap(Logger::default())
                 .wrap(Compress::default())
@@ -69,7 +69,7 @@ mod tests {
     use crate::config::Config;
     use actix_http::Request;
     use actix_web::dev::ServiceResponse;
-    use actix_web::{test, App};
+    use actix_web::{test, web::Data, App};
     use serde::Deserialize;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -150,9 +150,9 @@ mod tests {
             let app = test::init_service(bind_services!(
                 cfg.clone(),
                 create_app!()
-                    .data(render_opts)
-                    .data(template_provider.clone())
-                    .data(smtp_pool.clone())
+                    .app_data(Data::new(render_opts))
+                    .app_data(Data::new(template_provider.clone()))
+                    .app_data(Data::new(smtp_pool.clone()))
             ))
             .await;
             test::call_service(&app, req).await

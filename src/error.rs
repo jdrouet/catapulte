@@ -1,8 +1,7 @@
 #![allow(clippy::enum_variant_names)]
 
-use actix_http::ResponseBuilder;
 use actix_web::error::ResponseError;
-use actix_web::{HttpRequest, HttpResponse};
+use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder};
 use serde::Serialize;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -28,7 +27,7 @@ impl Display for ServerError {
 }
 
 impl ServerError {
-    fn response(&self) -> ResponseBuilder {
+    fn response(&self) -> HttpResponseBuilder {
         match *self {
             ServerError::BadRequest(_) => HttpResponse::BadRequest(),
             ServerError::NotFound(_) => HttpResponse::NotFound(),
