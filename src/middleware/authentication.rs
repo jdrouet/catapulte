@@ -1,7 +1,7 @@
 use crate::config::Config as RootConfig;
 use crate::error::ServerError;
 use crate::service::jsonwebtoken::{Claims, Decoder};
-use actix_web::body::AnyBody;
+use actix_web::body::BoxBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::Error as ActixError;
 use futures::future::{ok, Ready};
@@ -28,10 +28,10 @@ impl From<Arc<RootConfig>> for Authentication {
 
 impl<S> Transform<S, ServiceRequest> for Authentication
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<AnyBody>, Error = ActixError>,
+    S: Service<ServiceRequest, Response = ServiceResponse<BoxBody>, Error = ActixError>,
     S::Future: 'static,
 {
-    type Response = ServiceResponse<AnyBody>;
+    type Response = ServiceResponse<BoxBody>;
     type Error = ActixError;
     type InitError = ();
     type Transform = AuthenticationMiddleware<S>;
@@ -75,10 +75,10 @@ impl<S> AuthenticationMiddleware<S> {
 
 impl<S> Service<ServiceRequest> for AuthenticationMiddleware<S>
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<AnyBody>, Error = ActixError>,
+    S: Service<ServiceRequest, Response = ServiceResponse<BoxBody>, Error = ActixError>,
     S::Future: 'static,
 {
-    type Response = ServiceResponse<AnyBody>;
+    type Response = ServiceResponse<BoxBody>;
     type Error = ActixError;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 

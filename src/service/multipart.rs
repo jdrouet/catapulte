@@ -40,10 +40,9 @@ pub async fn field_to_json_value(field: Field) -> Result<JsonValue, JsonError> {
 }
 
 fn get_filename(field: &Field) -> Option<String> {
-    if let Some(content) = field.content_disposition() {
-        if let Some(filename) = content.get_filename() {
-            return Some(filename.to_string());
-        }
+    let content = field.content_disposition();
+    if let Some(filename) = content.get_filename() {
+        return Some(filename.to_string());
     }
     None
 }
