@@ -79,21 +79,15 @@ impl TemplateOptionsParser {
     }
 
     async fn parse_field(&mut self, root: &Path, field: Field) -> Result<(), ServerError> {
-        let content = match field.content_disposition() {
-            Some(value) => value,
-            None => return Ok(()),
-        };
-        let field_name = match content.get_name() {
-            Some(name) => name,
-            None => return Ok(()),
-        };
+        let content = field.content_disposition();
+        let field_name = content.get_name();
         match field_name {
-            "from" => self.parse_from(field).await?,
-            "to" => self.parse_to(field).await?,
-            "cc" => self.parse_cc(field).await?,
-            "bcc" => self.parse_bcc(field).await?,
-            "params" => self.parse_params(field).await?,
-            "attachments" => self.parse_attachment(root, field).await?,
+            Some("from") => self.parse_from(field).await?,
+            Some("to") => self.parse_to(field).await?,
+            Some("cc") => self.parse_cc(field).await?,
+            Some("bcc") => self.parse_bcc(field).await?,
+            Some("params") => self.parse_params(field).await?,
+            Some("attachments") => self.parse_attachment(root, field).await?,
             _ => (),
         };
         Ok(())

@@ -1,5 +1,5 @@
 use crate::config::Config;
-use actix_http::http::header;
+use actix_http::header;
 use actix_web::{web, HttpResponse, Responder};
 use std::sync::Arc;
 

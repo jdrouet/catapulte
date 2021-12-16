@@ -8,6 +8,7 @@ const DEFAULT_SECRET: &str = "I LOVE CATAPULTE";
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Claims {
+    #[allow(dead_code)]
     exp: usize,
 }
 
