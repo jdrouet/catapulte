@@ -18,7 +18,7 @@ actix-multipart = "0.4.0-beta.10"
 actix-web = "4.0.0-beta.14"
 actix-rt = "2.5.0"
 async-trait = "0.1.52"
-clap = "=3.0.0-beta.5"
+clap = "=3.0.0-rc.11"
 env_logger = "0.9.0"
 futures = { version = "0.3.19", default-features = false }
 futures-core = { version = "0.3.17", default-features = false }
