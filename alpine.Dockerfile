@@ -1,7 +1,7 @@
 FROM rust:1-alpine AS base
 
 # replace default repository to avoid hangup on ci
-RUN sed -i 's/http\:\/\/dl-cdn.alpinelinux.org/https\:\/\/alpine.global.ssl.fastly.net/g' /etc/apk/repositories
+RUN sed -i 's/https\:\/\/dl-cdn.alpinelinux.org/https\:\/\/alpine.global.ssl.fastly.net/g' /etc/apk/repositories
 
 RUN apk add --no-cache musl-dev
 
