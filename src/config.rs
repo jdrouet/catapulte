@@ -3,7 +3,7 @@ use mrml::prelude::render::Options as RenderOptions;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[clap(about = clap::crate_description!(), author = clap::crate_authors!(), version = clap::crate_version!())]
+#[clap(about, author, version)]
 pub struct Config {
     #[clap(long, env = "AUTHENTICATION_ENABLED")]
     pub authentication_enabled: bool,
