@@ -71,12 +71,12 @@ test-integration:
 
 build-alpine-canary:
   stage: build
-  image: jdrouet/docker-with-buildx:20.10.8-0.6.3
+  image: jdrouet/docker-with-buildx:20.10
   timeout: 2h
   only:
     - main
   services:
-    - name: docker:20.10.8-dind
+    - name: docker:20.10-dind
       command: ["--mtu=1300"]
   before_script:
     - docker buildx version
@@ -89,12 +89,12 @@ build-alpine-canary:
 
 build-debian-canary:
   stage: build
-  image: jdrouet/docker-with-buildx:20.10.8-0.6.3
+  image: jdrouet/docker-with-buildx:20.10
   timeout: 3h
   only:
     - main
   services:
-    - name: docker:20.10.8-dind
+    - name: docker:20.10-dind
       command: ["--mtu=1300"]
   before_script:
     - docker buildx version
