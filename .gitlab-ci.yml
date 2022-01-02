@@ -76,7 +76,8 @@ build-alpine-canary:
   only:
     - main
   services:
-    - docker:20.10.8-dind
+    - name: docker:20.10.8-dind
+      command: ["--mtu=1300"]
   before_script:
     - docker buildx version
     - docker buildx create --name catapulte-build-alpine-canary --platform linux/amd64 --use
@@ -93,7 +94,8 @@ build-debian-canary:
   only:
     - main
   services:
-    - docker:20.10.8-dind
+    - name: docker:20.10.8-dind
+      command: ["--mtu=1300"]
   before_script:
     - docker buildx version
     - docker buildx create --name catapulte-build-debian-canary --platform linux/amd64 --use
