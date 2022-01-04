@@ -75,17 +75,14 @@ build-alpine-canary:
   timeout: 2h
   only:
     - main
+  variables:
+    DOCKER_BUILDKIT: 1
   services:
     - name: docker:20.10-dind
-      command: ["--mtu=1300"]
-  before_script:
-    - docker buildx version
-    - docker buildx create --name catapulte-build-alpine-canary --platform linux/amd64 --use
-  after_script:
-    - docker buildx rm catapulte-build-alpine-canary
   script:
     - docker login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD
-    - docker buildx build --push --file multiarch-alpine.Dockerfile --platform linux/amd64 --tag jdrouet/catapulte:canary-alpine .
+    - docker build --network host --file multiarch-alpine.Dockerfile --tag jdrouet/catapulte:canary-alpine .
+    - docker push jdrouet/catapulte:canary-alpine
 
 build-debian-canary:
   stage: build
@@ -93,15 +90,13 @@ build-debian-canary:
   timeout: 3h
   only:
     - main
+  variables:
+    DOCKER_BUILDKIT: 1
   services:
     - name: docker:20.10-dind
-      command: ["--mtu=1300"]
-  before_script:
-    - docker buildx version
-    - docker buildx create --name catapulte-build-debian-canary --platform linux/amd64 --use
-  after_script:
-    - docker buildx rm catapulte-build-debian-canary
   script:
     - docker login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD
-    - docker buildx build --push --file multiarch.Dockerfile --platform linux/amd64 --tag jdrouet/catapulte:canary --tag jdrouet/catapulte:canary-debian .
+    - docker build --network host --file multiarch.Dockerfile --platform linux/amd64 --tag jdrouet/catapulte:canary --tag jdrouet/catapulte:canary-debian .
+    - docker push jdrouet/catapulte:canary-debian
+    - docker push jdrouet/catapulte:canary
 
