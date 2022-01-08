@@ -5,9 +5,8 @@ use crate::service::multipart::{
 use crate::service::provider::TemplateProvider;
 use crate::service::smtp::SmtpPool;
 use crate::service::template::TemplateOptions;
-use actix_http::RequestHead;
 use actix_multipart::{Field, Multipart};
-use actix_web::{web, HttpResponse};
+use actix_web::{guard::GuardContext, web, HttpResponse};
 use futures::TryStreamExt;
 use lettre::Transport;
 use mrml::prelude::render::Options as RenderOptions;
@@ -16,8 +15,9 @@ use std::default::Default;
 use std::path::Path;
 use tempfile::TempDir;
 
-pub fn filter(req: &RequestHead) -> bool {
-    req.headers()
+pub fn filter(ctx: &GuardContext) -> bool {
+    ctx.head()
+        .headers()
         .get("content-type")
         .and_then(|value| value.to_str().ok())
         .map(|value| value.starts_with("multipart/form-data"))
