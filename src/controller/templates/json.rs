@@ -2,8 +2,7 @@ use crate::error::ServerError;
 use crate::service::provider::TemplateProvider;
 use crate::service::smtp::SmtpPool;
 use crate::service::template::TemplateOptions;
-use actix_http::RequestHead;
-use actix_web::{web, HttpResponse};
+use actix_web::{guard::GuardContext, web, HttpResponse};
 use lettre::Transport;
 use mrml::prelude::render::Options as RenderOptions;
 use serde::Deserialize;
@@ -53,8 +52,9 @@ impl Payload {
     }
 }
 
-pub fn filter(req: &RequestHead) -> bool {
-    req.headers()
+pub fn filter(ctx: &GuardContext) -> bool {
+    ctx.head()
+        .headers()
         .get("content-type")
         .and_then(|value| value.to_str().ok())
         .map(|value| value == "application/json")

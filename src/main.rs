@@ -52,7 +52,7 @@ async fn main() -> std::io::Result<()> {
                 .app_data(Data::new(provider.clone()))
                 .app_data(Data::new(smtp_pool.clone()))
                 .app_data(Data::new(cfg.clone().render_options()))
-                .wrap(DefaultHeaders::new().header("X-Version", env!("CARGO_PKG_VERSION")))
+                .wrap(DefaultHeaders::new().add(("X-Version", env!("CARGO_PKG_VERSION"))))
                 .wrap(Logger::default())
                 .wrap(Compress::default())
         )
