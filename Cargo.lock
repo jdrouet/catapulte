@@ -21,9 +21,9 @@ dependencies = [
 
 [[package]]
 name = "actix-http"
-version = "3.0.0-beta.19"
+version = "3.0.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae58d21721388ea9b2cd0d4c11756b0f34424cdcd6e5cc74c3ce37b4641c8af0"
+checksum = "08aac516b88cb8cfbfa834c76b58607ffac75946d947dcb6a9ffc5673e1e875d"
 dependencies = [
  "actix-codec",
  "actix-rt",
@@ -68,9 +68,9 @@ dependencies = [
 
 [[package]]
 name = "actix-multipart"
-version = "0.4.0-beta.12"
+version = "0.4.0-beta.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8362a002d669c85fea5504737a68b9f2d5538069ddd9ccd7d6d5f3eaa62cc000"
+checksum = "c59b1f14a8b2bc14df9be544d173f5390da5b62d531e406fd0f0ce9b825fea5a"
 dependencies = [
  "actix-utils",
  "actix-web",
@@ -86,9 +86,9 @@ dependencies = [
 
 [[package]]
 name = "actix-router"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e0b59ad08167ffbb686ddb495846707231e96908b829b1fc218198ec581e2ad"
+checksum = "cb6506dbef336634ff35d994d58daa0a412ea23751f15f9b4dcac4d594b1ed1f"
 dependencies = [
  "bytestring",
  "firestorm",
@@ -150,9 +150,9 @@ dependencies = [
 
 [[package]]
 name = "actix-web"
-version = "4.0.0-beta.21"
+version = "4.0.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "606fc29a9bde2907243086ceb93ce56df7584276c2c46abc64a524f645c63c5e"
+checksum = "73170d019de2d82c0d826c1f315c3106134bd764e9247505ba6f0d78d22dfe9e"
 dependencies = [
  "actix-codec",
  "actix-http",
@@ -189,9 +189,9 @@ dependencies = [
 
 [[package]]
 name = "actix-web-codegen"
-version = "0.5.0-rc.1"
+version = "0.5.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98a793e4a7bd059e06e1bc1bd9943b57a47f806de3599d2437441682292c333e"
+checksum = "4d0976042e6ddc82c7d0dedd64d39959bc26d9bba098b2f6c32a73fbef784eaf"
 dependencies = [
  "actix-router",
  "proc-macro2",
@@ -337,7 +337,7 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1d36a02058e76b040de25a4464ba1c80935655595b661505c8b39b664828b95"
 dependencies = [
- "generic-array 0.14.4",
+ "generic-array 0.14.5",
 ]
 
 [[package]]
@@ -596,7 +596,7 @@ version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d6b536309245c849479fba3da410962a43ed8e51c26b729208ec0ac2798d0"
 dependencies = [
- "generic-array 0.14.4",
+ "generic-array 0.14.5",
 ]
 
 [[package]]
@@ -643,7 +643,7 @@ checksum = "b697d66081d42af4fba142d56918a3cb21dc8eb63372c6b85d14f44fb9c5979b"
 dependencies = [
  "block-buffer 0.10.0",
  "crypto-common",
- "generic-array 0.14.4",
+ "generic-array 0.14.5",
 ]
 
 [[package]]
@@ -856,9 +856,9 @@ dependencies = [
 
 [[package]]
 name = "generic-array"
-version = "0.14.4"
+version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "501466ecc8a30d1d3b7fc9229b122b2ce8ed6e9d9223f1138d4babb253e51817"
+checksum = "fd48d33ec7f05fbfa152300fdad764757cbded343c1aa1cff2fbaf4134851803"
 dependencies = [
  "typenum",
  "version_check",
