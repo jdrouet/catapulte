@@ -12,9 +12,9 @@ pub struct Claims {
     exp: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Decoder {
-    key: DecodingKey<'static>,
+    key: DecodingKey,
     validation: Validation,
 }
 
@@ -35,29 +35,25 @@ impl Decoder {
             .unwrap_or_default()
     }
 
-    fn parse_decoding_key(root: Arc<Config>) -> DecodingKey<'static> {
+    fn parse_decoding_key(root: Arc<Config>) -> DecodingKey {
         if let Some(ref secret) = root.jwt_secret {
-            DecodingKey::from_secret(secret.as_bytes()).into_static()
+            DecodingKey::from_secret(secret.as_bytes())
         } else if let Some(ref secret) = root.jwt_secret_base64 {
             DecodingKey::from_base64_secret(secret.as_str()).expect("couldn't decode base64 secret")
         } else if let Some(ref key) = root.jwt_rsa_pem {
-            DecodingKey::from_rsa_pem(key.as_bytes())
-                .map(|value| value.into_static())
-                .expect("couldn't read rsa pem")
+            DecodingKey::from_rsa_pem(key.as_bytes()).expect("couldn't read rsa pem")
         } else if let Some(ref key) = root.jwt_ec_pem {
-            DecodingKey::from_ec_pem(key.as_bytes())
-                .map(|value| value.into_static())
-                .expect("couldn't read ec pem")
+            DecodingKey::from_ec_pem(key.as_bytes()).expect("couldn't read ec pem")
         } else if let Some(ref der) = root.jwt_rsa_der {
-            DecodingKey::from_rsa_der(der.as_bytes()).into_static()
+            DecodingKey::from_rsa_der(der.as_bytes())
         } else if let Some(ref der) = root.jwt_ec_der {
-            DecodingKey::from_ec_der(der.as_bytes()).into_static()
+            DecodingKey::from_ec_der(der.as_bytes())
         } else {
             log::warn!(
                 "no JWT decoding key provided, using the default \"{}\"",
                 DEFAULT_SECRET
             );
-            DecodingKey::from_secret(DEFAULT_SECRET.as_bytes()).into_static()
+            DecodingKey::from_secret(DEFAULT_SECRET.as_bytes())
         }
     }
 

@@ -9,7 +9,6 @@ use futures_core::future::LocalBoxFuture;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-#[derive(Debug)]
 pub struct Authentication {
     decoder: Decoder,
     enabled: bool,
