@@ -13,7 +13,7 @@ default = ["provider-jolimail"]
 provider-jolimail = ["reqwest"]
 
 [dependencies]
-actix-http = "3.0.1"
+actix-http = "3.0.2"
 actix-multipart = "0.4.0"
 actix-web = "4.0.1"
 actix-rt = "2.6.0"
