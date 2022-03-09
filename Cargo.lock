@@ -478,12 +478,13 @@ dependencies = [
 
 [[package]]
 name = "common-multipart-rfc7578"
-version = "0.3.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76d0a7a42b9c13f2b2a1a7e64b949a19bcb56a49b190076e60261001ceaa5304"
+checksum = "d5c858a5c7d0eed4f7dd35ef6dfbbedf72a5e689859d53af847d111b94c6e6a1"
 dependencies = [
  "bytes",
- "futures",
+ "futures-core",
+ "futures-util",
  "http",
  "mime",
  "mime_guess",
