@@ -20,7 +20,7 @@ FROM base AS builder
 COPY swagger /code/swagger
 RUN cargo build --release --offline
 
-FROM alpine:3.15
+FROM alpine:3.16
 
 LABEL org.label-schema.schema-version="1.0"
 LABEL org.label-schema.docker.cmd="docker run -d -p 3000:3000 -e TEMPLATE_ROOT=/templates -e SMTP_LOCALHOST=localhost -e SMTP_PORT=25 -e SMTP_USERNAME=username -e SMTP_PASSWORD=password -e SMTP_MAX_POOL_SIZE=10 -e TEMPLATE_PROVIDER=local jdrouet/catapulte"
