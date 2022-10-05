@@ -50,7 +50,7 @@ docker run -d \
   -e TEMPLATE_ROOT=/templates \
   -p 3000:3000 \
   -v /path/to/your/templates:/templates:ro \
-  jdrouet/catapulte:master
+  jdrouet/catapulte:latest
 ```
 
 Once your server started, you can simply send an email using an `HTTP` request.
