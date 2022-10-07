@@ -69,7 +69,7 @@ pub async fn handler(
     body: web::Json<Payload>,
 ) -> Result<HttpResponse, ServerError> {
     let template = template_provider.find_by_name(name.as_str()).await?;
-    let options: TemplateOptions = (&body).to_options();
+    let options: TemplateOptions = body.to_options();
     options.validate()?;
     let email = template.to_email(&options, render_opts.as_ref())?;
     smtp_pool.send(&email)?;
