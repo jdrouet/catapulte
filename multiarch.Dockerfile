@@ -1,5 +1,5 @@
 # fetch the vendor with the builder platform to avoid qemu issues
-FROM --platform=$BUILDPLATFORM rust:1-buster AS vendor
+FROM --platform=$BUILDPLATFORM rust:1-bullseye AS vendor
 
 ENV USER=root
 
@@ -37,7 +37,7 @@ RUN apt-get update \
 COPY swagger /code/swagger
 RUN cargo build --release --offline
 
-FROM debian:buster-slim
+FROM debian:bullseye-slim
 
 LABEL org.label-schema.schema-version="1.0"
 LABEL org.label-schema.docker.cmd="docker run -d -p 3000:3000 -e TEMPLATE_ROOT=/templates -e SMTP_LOCALHOST=localhost -e SMTP_PORT=25 -e SMTP_USERNAME=username -e SMTP_PASSWORD=password -e SMTP_MAX_POOL_SIZE=10 -e TEMPLATE_PROVIDER=local jdrouet/catapulte"
