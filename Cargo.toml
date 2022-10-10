@@ -34,7 +34,7 @@ reqwest = { version = "0.11.10", default-features = false, features = ["json", "
 serde = { features = ["derive"], version = "1.0.136" }
 serde_json = { version = "1.0.79" }
 tempfile = "3.3.0"
-uuid = { version = "1.0.0", features = ["v4"] }
+uuid = { version = "1.2.1", features = ["v4"] }
 
 # Fix build in docker
 funty = "=2.0.0"
