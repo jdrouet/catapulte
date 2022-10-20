@@ -20,7 +20,7 @@ actix-rt = "2.7"
 async-trait = "0.1"
 clap = { version = "4.0.17", features = ["derive", "env"] }
 env_logger = "0.9"
-futures = { version = "0.3.21", default-features = false }
+futures = { version = "0.3.25", default-features = false }
 futures-core = { version = "0.3.17", default-features = false }
 handlebars = "4.2.2"
 jsonwebtoken = "8.1.0"
