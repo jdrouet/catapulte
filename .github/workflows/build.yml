@@ -47,7 +47,7 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           context: .
-          file: ./multiarch-debian.Dockerfile
+          file: ./multiarch.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:alpine,${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:debian-alpine
