@@ -1,0 +1,16 @@
+<mjml>
+  <mj-head>
+    <mj-title>Hello {{name}}!</mj-title>
+    <mj-preview>Here is a reminder of what's in your cart.</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hello {{name}}!</mj-text>
+        {% for item in data %}
+        <mj-text>{{item.name}}</mj-text>
+        {% endfor %}
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

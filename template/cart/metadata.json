@@ -1,0 +1,28 @@
+{
+  "name": "cart",
+  "description": "Template with some more data",
+  "path": "template.mjml",
+  "attributes": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "data": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "required": [
+      "name",
+      "data"
+    ]
+  }
+}

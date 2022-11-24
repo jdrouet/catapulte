@@ -89,7 +89,7 @@ mod tests {
 
     #[actix_rt::test]
     #[serial]
-    async fn success() {
+    async fn success_user_login() {
         let _swagger = TempEnvVar::new("SWAGGER_ENABLED").with("true");
         let from = create_email();
         let to = create_email();
@@ -115,6 +115,42 @@ mod tests {
         assert!(last
             .html
             .contains("\"http://example.com/login?token=this_is_a_token\""));
+    }
+
+    #[actix_rt::test]
+    #[serial]
+    async fn success_cart() {
+        let _swagger = TempEnvVar::new("SWAGGER_ENABLED").with("true");
+        let from = create_email();
+        let to = create_email();
+        let payload = json!({
+            "from": from.clone(),
+            "to": to.clone(),
+            "params": {
+                "name": "bob",
+                "data": [
+                    {
+                        "name": "Apples",
+                    },
+                    {
+                        "name": "Oranges",
+                    },
+                ]
+            }
+        });
+        let req = test::TestRequest::post()
+            .uri("/templates/cart")
+            .set_json(&payload)
+            .to_request();
+        let res = ServerBuilder::default().execute(req).await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let list = get_latest_inbox(&from, &to).await;
+        assert!(!list.is_empty());
+        let last = list.first().unwrap();
+        assert!(last.text.contains("Hello bob!"));
+        assert!(last.html.contains("Hello bob!"));
+        assert!(last.html.contains("Apples"));
+        assert!(last.html.contains("Oranges"));
     }
 
     #[actix_rt::test]
