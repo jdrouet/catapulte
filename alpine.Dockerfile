@@ -1,6 +1,5 @@
-FROM rust:1-alpine AS base
-
-RUN apk add --no-cache musl-dev
+# fetch the vendor with the builder platform to avoid qemu issues
+FROM --platform=$BUILDPLATFORM rust:1-alpine AS vendor
 
 ENV USER=root
 
@@ -8,7 +7,22 @@ WORKDIR /code
 RUN cargo init
 COPY Cargo.toml /code/Cargo.toml
 COPY Cargo.lock /code/Cargo.lock
-RUN cargo fetch
+RUN mkdir -p /code/.cargo \
+  && cargo vendor > /code/.cargo/config
+
+FROM rust:1-alpine AS base
+
+RUN apk add --no-cache musl-dev
+
+ENV USER=root
+
+WORKDIR /code
+
+COPY Cargo.toml /code/Cargo.toml
+COPY Cargo.lock /code/Cargo.lock
+COPY src /code/src
+COPY --from=vendor /code/.cargo /code/.cargo
+COPY --from=vendor /code/vendor /code/vendor
 
 COPY src /code/src
 COPY template /code/template
@@ -20,7 +34,7 @@ FROM base AS builder
 COPY swagger /code/swagger
 RUN cargo build --release --offline
 
-FROM alpine:3.16
+FROM alpine:3
 
 LABEL org.label-schema.schema-version="1.0"
 LABEL org.label-schema.docker.cmd="docker run -d -p 3000:3000 -e TEMPLATE_ROOT=/templates -e SMTP_LOCALHOST=localhost -e SMTP_PORT=25 -e SMTP_USERNAME=username -e SMTP_PASSWORD=password -e SMTP_MAX_POOL_SIZE=10 -e TEMPLATE_PROVIDER=local jdrouet/catapulte"
