@@ -22,14 +22,15 @@ COPY src /code/src
 COPY --from=vendor /code/.cargo /code/.cargo
 COPY --from=vendor /code/vendor /code/vendor
 
+COPY asset /code/asset
 COPY src /code/src
+COPY swagger /code/swagger
 COPY template /code/template
 
 CMD [ "cargo", "test", "--offline" ]
 
 FROM base AS builder
 
-COPY swagger /code/swagger
 RUN cargo build --release --offline
 
 FROM debian:bullseye-slim
