@@ -6,6 +6,9 @@ on:
 jobs:
   build-alpine-canary:
     runs-on: ubuntu-latest
+    concurrency: 
+      group: ${{ github.ref }}-build-alpine-canary
+      cancel-in-progress: true
     steps:
       - name: checkout
         uses: actions/checkout@v3
@@ -29,6 +32,9 @@ jobs:
 
   build-debian-canary:
     runs-on: ubuntu-latest
+    concurrency: 
+      group: ${{ github.ref }}-build-debian-canary
+      cancel-in-progress: true
     steps:
       - name: checkout
         uses: actions/checkout@v3
@@ -46,4 +52,4 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           push: true
-          tags: ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:alpine,${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:debian-alpine
+          tags: ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:debian,${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:canary-debian
