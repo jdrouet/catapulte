@@ -24,7 +24,7 @@ services:
   runner:
     build:
       context: .
-      target: test
+      target: base
     depends_on:
       - smtp
       - smtp-tls
