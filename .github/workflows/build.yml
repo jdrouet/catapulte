@@ -18,6 +18,8 @@ jobs:
 
       - name: set up Docker Buildx
         uses: docker/setup-buildx-action@v2
+        with:
+          platforms: linux/amd64,linux/arm64
 
       - name: build and push alpine canary
         uses: docker/build-push-action@v3
@@ -42,6 +44,8 @@ jobs:
 
       - name: set up Docker Buildx
         uses: docker/setup-buildx-action@v2
+        with:
+          platforms: linux/amd64,linux/arm64
 
       - name: build and push debian canary
         uses: docker/build-push-action@v3
