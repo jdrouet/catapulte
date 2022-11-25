@@ -9,6 +9,9 @@ env:
 jobs:
   code-checking:
     runs-on: ubuntu-latest
+    concurrency: 
+      group: ${{ github.ref }}-code-checking
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
@@ -28,6 +31,9 @@ jobs:
 
   testing:
     runs-on: ubuntu-latest
+    concurrency: 
+      group: ${{ github.ref }}-testing
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v3
       - name: set up docker buildx
