@@ -1,8 +1,5 @@
-use actix_multipart::Field;
-use actix_web::web;
-use actix_web::web::{BufMut, Bytes, BytesMut};
-use futures::TryStreamExt;
-use mime::Mime;
+use axum::body::Bytes;
+use axum::extract::multipart::Field;
 use serde_json::Value as JsonValue;
 use serde_json::{from_slice, Error as JsonError};
 use std::io::Write;
@@ -11,57 +8,46 @@ use std::string::FromUtf8Error;
 
 #[derive(Debug)]
 pub enum MultipartError {
-    Parse(String),
+    Parse(&'static str),
 }
 
 impl ToString for MultipartError {
     fn to_string(&self) -> String {
         match self {
-            Self::Parse(inner) => inner.clone(),
+            Self::Parse(inner) => inner.to_string(),
         }
     }
 }
 
-pub async fn field_to_bytes(mut field: Field) -> Bytes {
-    let mut bytes = BytesMut::new();
-    while let Ok(Some(field)) = field.try_next().await {
-        bytes.put(field);
-    }
-    Bytes::from(bytes)
+pub async fn field_to_bytes<'a>(field: Field<'a>) -> Bytes {
+    // let _name = field.name().unwrap().to_string();
+    field.bytes().await.unwrap()
 }
 
-pub async fn field_to_string(field: Field) -> Result<String, FromUtf8Error> {
+pub async fn field_to_string<'a>(field: Field<'a>) -> Result<String, FromUtf8Error> {
     String::from_utf8(field_to_bytes(field).await.to_vec())
 }
 
-pub async fn field_to_json_value(field: Field) -> Result<JsonValue, JsonError> {
+pub async fn field_to_json_value<'a>(field: Field<'a>) -> Result<JsonValue, JsonError> {
     let bytes = field_to_bytes(field).await;
     from_slice(&bytes)
-}
-
-fn get_filename(field: &Field) -> Option<String> {
-    let content = field.content_disposition();
-    if let Some(filename) = content.get_filename() {
-        return Some(filename.to_string());
-    }
-    None
 }
 
 #[derive(Debug)]
 pub struct MultipartFile {
     pub filename: String,
     pub filepath: PathBuf,
-    pub content_type: Mime,
+    pub content_type: Option<String>,
 }
 
 impl MultipartFile {
-    fn from_field(root: &Path, field: &Field) -> Result<Self, MultipartError> {
-        let filename = match get_filename(field) {
-            Some(value) => value,
-            None => return Err(MultipartError::Parse("unable to get filename".into())),
-        };
+    fn from_field<'a>(root: &Path, field: &Field<'a>) -> Result<Self, MultipartError> {
+        let filename = field
+            .file_name()
+            .map(ToString::to_string)
+            .ok_or_else(|| MultipartError::Parse("unable to get filename"))?;
         let filepath = root.join(&filename);
-        let content_type = field.content_type().clone();
+        let content_type = field.content_type().map(|v| v.to_owned());
         Ok(Self {
             filename,
             filepath,
@@ -70,19 +56,16 @@ impl MultipartFile {
     }
 }
 
-pub async fn field_to_file(root: &Path, mut field: Field) -> Result<MultipartFile, MultipartError> {
+pub async fn field_to_file<'a>(
+    root: &Path,
+    mut field: Field<'a>,
+) -> Result<MultipartFile, MultipartError> {
     let multipart_file = MultipartFile::from_field(root, &field)?;
     let filepath = multipart_file.filepath.clone();
-    // TODO find a better way than unwraping twice
-    let mut file = web::block(|| std::fs::File::create(filepath))
-        .await
-        .unwrap()
-        .unwrap();
-    while let Ok(Some(chunk)) = field.try_next().await {
-        file = web::block(move || file.write_all(&chunk).map(|_| file))
-            .await
-            .unwrap()
-            .unwrap();
+    // TODO find a better way to load file content
+    let mut file = std::fs::File::create(filepath).unwrap();
+    while let Ok(Some(chunk)) = field.chunk().await {
+        file.write_all(&chunk).unwrap();
     }
     Ok(multipart_file)
 }

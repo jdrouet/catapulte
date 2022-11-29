@@ -1,47 +1,45 @@
 [package]
 name = "catapulte"
-version = "0.4.2"
+version = "1.0.0"
 description = "Catapulte is an open source mailer you can host yourself. You can use it to quickly catapult your transactionnal emails to destination."
 authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
-edition = "2018"
+edition = "2021"
 license-file = "license.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-default = ["provider-jolimail"]
-provider-jolimail = ["reqwest"]
-
 [dependencies]
-actix-http = "3.2"
-actix-multipart = "0.4"
-actix-web = "4.2"
-actix-rt = "2.7"
-async-trait = "0.1"
-clap = { version = "4.0.27", features = ["derive", "env"] }
-env_logger = "0.9"
-futures = { version = "0.3.25", default-features = false }
-futures-core = { version = "0.3.17", default-features = false }
-handlebars = "4.2.2"
-jsonwebtoken = "8.1.0"
-lazy_static = "1.4.0"
-lettre = { default-features = false, features = ["builder", "pool", "rustls-tls", "smtp-transport", "tokio1-rustls-tls"], version = "0.10.0-rc.6" }
-log = "0.4.16"
-mime = "0.3.16"
-mrml = "1.2.10"
-r2d2 = "0.8.9"
-reqwest = { version = "0.11.13", default-features = false, features = ["json", "rustls-tls"], optional = true }
-serde = { features = ["derive"], version = "1.0.147" }
-serde_json = { version = "1.0.89" }
-tempfile = "3.3.0"
-uuid = { version = "1.2.2", features = ["v4"] }
-
-# Fix build in docker
-funty = "=2.0.0"
+axum = { version = "0.6", features = ["multipart"] }
+clap = { version = "4.0", features = ["derive", "env"] }
+config = { version = "0.13", default-features = false }
+handlebars = { version = "4.2" }
+lettre = { default-features = false, features = [
+  "builder",
+  "pool",
+  "rustls-tls",
+  "smtp-transport",
+  "tokio1-rustls-tls",
+], version = "0.10.0-rc.6" }
+mime = { version = "0.3" }
+mrml = { version = "1.2" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+tempfile = { version = "3.3" }
+tokio = { version = "1.22", features = ["full"] }
+tower-http = { version = "0.3", default-features = false, features = ["trace"] }
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.2", features = ["v4"] }
 
 [dev-dependencies]
+bytes = "^1.0"
 common-multipart-rfc7578 = "0.6"
 env-test-util = "1.0"
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+lazy_static = "1.4"
+multer = "2.0"
+reqwest = { version = "0.11", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
 serial_test = "0.9"
 wiremock = "0.5"
