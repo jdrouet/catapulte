@@ -1,12 +1,12 @@
 mod status;
-// pub mod swagger;
-pub mod templates;
+mod swagger;
+mod templates;
 
 use crate::service::provider::TemplateProvider;
 use crate::service::render::RenderOptions;
 use crate::service::smtp::SmtpPool;
 use axum::extract::Extension;
-use axum::routing::{get, post, Router};
+use axum::routing::{get, head, post, Router};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
@@ -16,7 +16,8 @@ pub(super) fn create(
     template_provider: Arc<TemplateProvider>,
 ) -> Router {
     Router::new()
-        .route("/status", get(status::handler))
+        .route("/status", head(status::handler))
+        .route("/openapi.json", get(swagger::handler))
         .route("/templates/:name/json", post(templates::json::handler))
         .route(
             "/templates/:name/multipart",

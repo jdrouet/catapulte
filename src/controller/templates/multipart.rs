@@ -14,18 +14,20 @@ use serde_json::Value as JsonValue;
 use std::default::Default;
 use std::sync::Arc;
 use tempfile::TempDir;
+use utoipa::ToSchema;
 
-#[derive(Default)]
-struct TemplateOptionsParser {
+#[derive(Default, ToSchema)]
+pub(crate) struct MultipartPayload {
     from: String,
     to: Vec<String>,
     cc: Vec<String>,
     bcc: Vec<String>,
+    #[schema(value_type = Object)]
     params: Option<JsonValue>,
     attachments: Vec<MultipartFile>,
 }
 
-impl TemplateOptionsParser {
+impl MultipartPayload {
     async fn parse_from<'a>(&mut self, field: Field<'a>) -> Result<(), ServerError> {
         if let Ok(from) = field_to_string(field).await {
             self.from = from;
@@ -111,8 +113,8 @@ impl TemplateOptionsParser {
     }
 }
 
-impl From<TemplateOptionsParser> for TemplateOptions {
-    fn from(value: TemplateOptionsParser) -> Self {
+impl From<MultipartPayload> for TemplateOptions {
+    fn from(value: MultipartPayload) -> Self {
         Self::new(
             value.from,
             value.to,
@@ -124,6 +126,21 @@ impl From<TemplateOptionsParser> for TemplateOptions {
     }
 }
 
+#[utoipa::path(
+    operation_id = "send_multipart",
+    post,
+    path = "/templates/{name}/multipart",
+    params(
+        ("name" = String, Path, description = "Name of the template.")
+    ),
+    request_body(
+        content = MultipartPayload,
+        content_type = "multipart/form-data",
+    ),
+    responses(
+        (status = 204, description = "Your email has been sent.", body = None),
+    )
+)]
 pub(crate) async fn handler(
     Extension(render_opts): Extension<Arc<RenderOptions>>,
     Extension(smtp_pool): Extension<SmtpPool>,
@@ -134,7 +151,7 @@ pub(crate) async fn handler(
     let template = template_provider.find_by_name(name.as_str()).await?;
     let tmp_dir = TempDir::new()?;
     let tmp_path = tmp_dir.path().to_owned();
-    let parser = TemplateOptionsParser::from_multipart(&tmp_path, body).await?;
+    let parser = MultipartPayload::from_multipart(&tmp_path, body).await?;
     let options: TemplateOptions = parser.into();
     options.validate()?;
     let email = template.to_email(&options, render_opts.as_ref())?;

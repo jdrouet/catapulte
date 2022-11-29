@@ -9,8 +9,9 @@ use mrml::prelude::render::Options as RenderOptions;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
+use utoipa::ToSchema;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub(crate) enum Recipient {
     One(String),
@@ -36,16 +37,17 @@ impl Recipient {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct Payload {
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct JsonPayload {
     pub to: Option<Recipient>,
     pub cc: Option<Recipient>,
     pub bcc: Option<Recipient>,
     pub from: String,
+    #[schema(value_type = Object)]
     pub params: JsonValue,
 }
 
-impl Payload {
+impl JsonPayload {
     fn to_options(&self) -> TemplateOptions {
         let to = Recipient::option_to_vec(&self.to);
         let cc = Recipient::option_to_vec(&self.cc);
@@ -61,12 +63,24 @@ impl Payload {
     }
 }
 
+#[utoipa::path(
+    operation_id = "send_json",
+    post,
+    path = "/templates/{name}/json",
+    params(
+        ("name" = String, Path, description = "Name of the template.")
+    ),
+    request_body(content = JsonPayload, content_type = "application/json"),
+    responses(
+        (status = 204, description = "Your email has been sent.", body = None),
+    )
+)]
 pub(crate) async fn handler(
     Extension(render_opts): Extension<Arc<RenderOptions>>,
     Extension(smtp_pool): Extension<SmtpPool>,
     Extension(template_provider): Extension<Arc<TemplateProvider>>,
     Path(name): Path<String>,
-    Json(body): Json<Payload>,
+    Json(body): Json<JsonPayload>,
 ) -> Result<StatusCode, ServerError> {
     let template = template_provider.find_by_name(name.as_str()).await?;
     let options: TemplateOptions = body.to_options();
@@ -78,7 +92,7 @@ pub(crate) async fn handler(
 
 #[cfg(test)]
 mod tests {
-    use super::{handler, Payload, Recipient};
+    use super::{handler, JsonPayload, Recipient};
     use crate::tests::{create_email, get_latest_inbox};
     use axum::extract::{Extension, Json, Path};
     use axum::http::StatusCode;
@@ -86,8 +100,8 @@ mod tests {
     use std::thread::sleep;
     use std::time::Duration;
 
-    fn create_payload(from: &str, to: &str, token: &str) -> Payload {
-        Payload {
+    fn create_payload(from: &str, to: &str, token: &str) -> JsonPayload {
+        JsonPayload {
             to: Some(Recipient::One(to.to_owned())),
             from: from.to_owned(),
             cc: None,

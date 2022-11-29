@@ -33,7 +33,7 @@ pub async fn field_to_json_value<'a>(field: Field<'a>) -> Result<JsonValue, Json
     from_slice(&bytes)
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Deserialize)]
 pub struct MultipartFile {
     pub filename: String,
     pub filepath: PathBuf,
