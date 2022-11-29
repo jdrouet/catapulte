@@ -1,31 +1,17 @@
-use actix_web::{get, HttpResponse};
-use serde_json::json;
-use std::time::Instant;
+use axum::http::StatusCode;
 
-lazy_static! {
-    static ref STARTUP: Instant = Instant::now();
+pub(super) async fn handler() -> StatusCode {
+    StatusCode::NO_CONTENT
 }
 
-#[get("/status")]
-pub async fn handler() -> HttpResponse {
-    HttpResponse::Ok().json(json!({
-        "uptime": STARTUP.elapsed().as_secs(),
-    }))
-}
-
-// LCOV_EXCL_START
 #[cfg(test)]
 mod tests {
-    use crate::tests::ServerBuilder;
-    use actix_web::http::StatusCode;
-    use actix_web::test;
+    use super::handler;
+    use axum::http::StatusCode;
 
-    #[actix_rt::test]
-    #[serial]
-    async fn status_success() {
-        let req = test::TestRequest::get().uri("/status").to_request();
-        let res = ServerBuilder::default().execute(req).await;
-        assert_eq!(res.status(), StatusCode::OK);
+    #[tokio::test]
+    async fn success() {
+        let result = handler().await;
+        assert_eq!(result, StatusCode::NO_CONTENT);
     }
 }
-// LCOV_EXCL_END

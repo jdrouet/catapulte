@@ -1,13 +1,12 @@
 use crate::error::ServerError;
-use crate::service::template::Template;
-use async_trait::async_trait;
 use serde_json::error::Error as JsonError;
+use std::borrow::Cow;
 use std::io::Error as IoError;
 
 #[derive(Clone, Debug)]
 pub enum TemplateProviderError {
     MetadataInvalid,
-    InternalError(String),
+    // InternalError(String),
     TemplateNotFound,
 }
 
@@ -23,30 +22,15 @@ impl From<JsonError> for TemplateProviderError {
     }
 }
 
-impl From<reqwest::Error> for TemplateProviderError {
-    fn from(err: reqwest::Error) -> Self {
-        match err.status() {
-            Some(reqwest::StatusCode::NOT_FOUND) => Self::TemplateNotFound,
-            _ => Self::InternalError(format!("network error {:?}", err)),
-        }
-    }
-}
-
 impl From<TemplateProviderError> for ServerError {
     fn from(err: TemplateProviderError) -> Self {
         match err {
             TemplateProviderError::TemplateNotFound => {
-                ServerError::NotFound("unable to find template".into())
+                ServerError::not_found().message(Cow::Borrowed("unable to find template"))
             }
             TemplateProviderError::MetadataInvalid => {
-                ServerError::InternalServerError("unable to load metadata".into())
+                ServerError::internal().message(Cow::Borrowed("unable to load metadata"))
             }
-            TemplateProviderError::InternalError(msg) => ServerError::InternalServerError(msg),
         }
     }
-}
-
-#[async_trait]
-pub trait TemplateProvider {
-    async fn find_by_name(&self, name: &str) -> Result<Template, TemplateProviderError>;
 }
