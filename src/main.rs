@@ -1,4 +1,5 @@
 use clap::Parser;
+use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt;
@@ -94,8 +95,13 @@ async fn main() {
     let render_options = Arc::new(configuration.render.build());
     let smtp_pool = configuration.smtp.build().expect("smtp service init");
     let template_provider = Arc::new(configuration.template.build());
+    let prometheus = Arc::new(
+        PrometheusBuilder::new()
+            .install_recorder()
+            .expect("failed to install prometheus recorder"),
+    );
 
-    let app = controller::create(render_options, smtp_pool, template_provider);
+    let app = controller::create(render_options, smtp_pool, template_provider, prometheus);
     let address = configuration.address();
 
     tracing::info!("starting server on {}", address);

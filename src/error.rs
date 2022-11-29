@@ -57,82 +57,10 @@ impl IntoResponse for ServerError {
     }
 }
 
-// impl ServerError {
-//     fn response(&self) -> HttpResponseBuilder {
-//         match *self {
-//             ServerError::BadRequest(_) => HttpResponse::BadRequest(),
-//             ServerError::NotFound(_) => HttpResponse::NotFound(),
-//             ServerError::InternalServerError(_) => HttpResponse::InternalServerError(),
-//             ServerError::Unauthorized(_) => HttpResponse::Unauthorized(),
-//         }
-//     }
-
-//     fn name(&self) -> String {
-//         match *self {
-//             ServerError::BadRequest(_) => "Bad Request".into(),
-//             ServerError::NotFound(_) => "Not Found".into(),
-//             ServerError::InternalServerError(_) => "Internal Server Error".into(),
-//             ServerError::Unauthorized(_) => "Unauthorized".into(),
-//         }
-//     }
-
-//     fn message(&self) -> String {
-//         match *self {
-//             ServerError::BadRequest(ref msg) => msg.clone(),
-//             ServerError::NotFound(ref msg) => msg.clone(),
-//             ServerError::InternalServerError(ref msg) => msg.clone(),
-//             ServerError::Unauthorized(ref msg) => msg.clone(),
-//         }
-//     }
-// }
-
-// impl ResponseError for ServerError {
-//     fn error_response(&self) -> HttpResponse {
-//         let response = ServerErrorResponse {
-//             name: self.name(),
-//             message: Some(self.message()),
-//         };
-//         self.response().json(&response)
-//     }
-// }
-
-// impl From<actix_web::error::JsonPayloadError> for ServerError {
-//     fn from(error: actix_web::error::JsonPayloadError) -> Self {
-//         match error {
-//             actix_web::error::JsonPayloadError::Deserialize(err) => {
-//                 ServerError::BadRequest(err.to_string())
-//             }
-//             _ => ServerError::BadRequest(error.to_string()),
-//         }
-//     }
-// }
-
-// impl std::convert::From<r2d2::Error> for ServerError {
-//     fn from(error: r2d2::Error) -> Self {
-//         eprintln!("r2d2 pool error: {:?}", error);
-//         // tracing::error!("r2d2 pool error", {
-//         //     error: format!("{:?}", error),
-//         // });
-//         ServerError::internal()
-//     }
-// }
-
-// pub fn json_error_handler(
-//     err: actix_web::error::JsonPayloadError,
-//     _req: &HttpRequest,
-// ) -> actix_web::error::Error {
-//     error!("json_error_handler: {:?}", err);
-//     let error = ServerError::from(err);
-//     let res = error.error_response();
-//     actix_web::error::InternalError::from_response(error, res).into()
-// }
-
 impl std::convert::From<std::io::Error> for ServerError {
     fn from(error: std::io::Error) -> Self {
-        eprintln!("std io error: {:?}", error);
-        // tracing::error!("io error", {
-        //     error: format!("{:?}", error),
-        // });
+        metrics::increment_counter!("server_error", "origin" => "std::io::Error");
+        tracing::error!("io error: {:?}", error);
         ServerError::internal()
     }
 }

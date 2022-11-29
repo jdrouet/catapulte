@@ -148,6 +148,7 @@ pub(crate) async fn handler(
     Path(name): Path<String>,
     body: Multipart,
 ) -> Result<StatusCode, ServerError> {
+    metrics::increment_counter!("smtp_send", "method" => "multipart", "template_name" => name.clone());
     let template = template_provider.find_by_name(name.as_str()).await?;
     let tmp_dir = TempDir::new()?;
     let tmp_path = tmp_dir.path().to_owned();
@@ -155,8 +156,13 @@ pub(crate) async fn handler(
     let options: TemplateOptions = parser.into();
     options.validate()?;
     let email = template.to_email(&options, render_opts.as_ref())?;
-    smtp_pool.send(&email)?;
-    Ok(StatusCode::NO_CONTENT)
+    if let Err(err) = smtp_pool.send(&email) {
+        metrics::increment_counter!("smtp_send_error", "method" => "multipart", "template_name" => name);
+        Err(err)?
+    } else {
+        metrics::increment_counter!("smtp_send_success", "method" => "multipart", "template_name" => name);
+        Ok(StatusCode::NO_CONTENT)
+    }
 }
 
 // #[cfg(test)]

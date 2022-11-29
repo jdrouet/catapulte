@@ -4,6 +4,7 @@ use utoipa::OpenApi;
 #[derive(OpenApi, serde::Serialize)]
 #[openapi(
     paths(
+        super::metrics::handler,
         super::status::handler,
         super::templates::json::handler,
         super::templates::multipart::handler,
