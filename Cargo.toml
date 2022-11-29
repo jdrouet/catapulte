@@ -20,6 +20,10 @@ lettre = { default-features = false, features = [
   "smtp-transport",
   "tokio1-rustls-tls",
 ], version = "0.10.0-rc.6" }
+metrics = { version = "0.20" }
+metrics-exporter-prometheus = { version = "0.11", default-features = false, features = [
+  "http-listener",
+] }
 mime = { version = "0.3" }
 mrml = { version = "1.2" }
 serde = { version = "1.0", features = ["derive"] }

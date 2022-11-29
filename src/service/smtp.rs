@@ -115,7 +115,7 @@ impl Configuration {
 
     // TODO allow to add root certificate
     // TODO allow to accept invalid hostnames
-    fn get_tls(&self) -> Result<Tls, SmtpError> {
+    fn get_tls(&self) -> Result<Tls, ConfigurationError> {
         if self.tls_enabled {
             let parameteres = TlsParameters::builder(self.hostname.to_string())
                 .dangerous_accept_invalid_certs(self.accept_invalid_cert)
@@ -127,7 +127,7 @@ impl Configuration {
     }
 
     // TODO allow to specify authentication mechanism
-    fn get_transport(&self) -> Result<SmtpTransportBuilder, SmtpError> {
+    fn get_transport(&self) -> Result<SmtpTransportBuilder, ConfigurationError> {
         let result = SmtpTransport::builder_dangerous(self.hostname.as_str())
             .port(self.port)
             .timeout(Some(self.get_timeout()))
@@ -141,7 +141,7 @@ impl Configuration {
         Ok(result)
     }
 
-    pub fn build(&self) -> Result<SmtpTransport, SmtpError> {
+    pub fn build(&self) -> Result<SmtpTransport, ConfigurationError> {
         tracing::debug!("building smtp pool");
         let mailer = self.get_transport()?;
         Ok(mailer.build())
@@ -149,35 +149,27 @@ impl Configuration {
 }
 
 #[derive(Debug)]
-pub enum SmtpError {
-    Configuration(String),
-}
+pub struct ConfigurationError(LettreError);
 
-impl ToString for SmtpError {
-    fn to_string(&self) -> String {
-        match self {
-            Self::Configuration(msg) => {
-                format!("Smtp Error: configuration failed ({})", msg)
-            }
-        }
-    }
-}
-
-impl From<LettreError> for SmtpError {
+impl From<LettreError> for ConfigurationError {
     fn from(err: LettreError) -> Self {
-        Self::Configuration(err.to_string())
+        tracing::error!("smtp configuration error: {:?}", err);
+        Self(err)
     }
 }
 
 impl From<LettreError> for ServerError {
     fn from(err: LettreError) -> Self {
-        tracing::error!("lettre error: {:?}", err);
-        ServerError::internal()
-    }
-}
-
-impl From<SmtpError> for ServerError {
-    fn from(err: SmtpError) -> ServerError {
+        if let Some(code) = err.status() {
+            metrics::increment_counter!(
+                "smtp_error",
+                "severity" => code.severity.to_string(),
+                "category" => code.category.to_string(),
+                "detail" => code.detail.to_string(),
+            );
+        } else {
+            metrics::increment_counter!("smtp_error");
+        }
         tracing::error!("smtp error: {:?}", err);
         ServerError::internal()
     }
