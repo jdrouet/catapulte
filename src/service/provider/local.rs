@@ -6,6 +6,26 @@ use std::fs::{read_to_string, File};
 use std::io::BufReader;
 use std::path::PathBuf;
 
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct Configuration {
+    path: PathBuf,
+}
+
+impl Default for Configuration {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new().join("template"),
+        }
+    }
+}
+
+impl Configuration {
+    pub(crate) fn build(&self) -> TemplateProvider {
+        tracing::debug!("building template provider");
+        TemplateProvider::new(self.path.clone())
+    }
+}
+
 fn default_mjml_path() -> String {
     "template.mjml".into()
 }
@@ -20,17 +40,17 @@ pub struct LocalMetadata {
 }
 
 #[derive(Clone, Debug)]
-pub struct LocalTemplateProvider {
+pub struct TemplateProvider {
     root: PathBuf,
 }
 
-impl LocalTemplateProvider {
+impl TemplateProvider {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
 }
 
-impl LocalTemplateProvider {
+impl TemplateProvider {
     pub(super) async fn find_by_name(&self, name: &str) -> Result<Template, TemplateProviderError> {
         tracing::debug!("loading template {}", name);
         let path = self.root.join(name).join("metadata.json");

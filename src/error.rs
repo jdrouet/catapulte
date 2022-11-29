@@ -1,18 +1,18 @@
 #![allow(clippy::enum_variant_names)]
 
-// use actix_web::error::ResponseError;
-// use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder};
 use axum::extract::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct ServerError {
-    #[serde(skip_serializing)]
+    #[serde(skip)]
     code: StatusCode,
     pub message: Cow<'static, str>,
-    pub details: Option<serde_json::Value>,
+    #[schema(value_type = Object)]
+    pub details: Option<JsonValue>,
 }
 
 impl ServerError {

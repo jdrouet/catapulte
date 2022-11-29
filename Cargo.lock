@@ -164,6 +164,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "utoipa",
  "uuid",
  "wiremock",
 ]
@@ -739,6 +740,7 @@ checksum = "1885e79c1fc4b10f0e172c475f458b7f7b93061064d98c3293e98c5ba0c8b399"
 dependencies = [
  "autocfg",
  "hashbrown",
+ "serde",
 ]
 
 [[package]]
@@ -1887,6 +1889,30 @@ dependencies = [
  "idna 0.3.0",
  "percent-encoding",
  "serde",
+]
+
+[[package]]
+name = "utoipa"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b626abb3bbbe41ce00df6dea3d109a83a034930245c3307026d82d71e7a06e43"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_json",
+ "utoipa-gen",
+]
+
+[[package]]
+name = "utoipa-gen"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "250e8cdb0461b6fbaa1c1acb7f08300d773713fab721776becf5f7386b41a791"
+dependencies = [
+ "proc-macro-error",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
