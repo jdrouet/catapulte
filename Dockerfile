@@ -26,7 +26,6 @@ COPY --from=vendor /code/vendor /code/vendor
 
 COPY asset /code/asset
 COPY src /code/src
-COPY swagger /code/swagger
 COPY template /code/template
 
 CMD [ "cargo", "test", "--offline" ]
