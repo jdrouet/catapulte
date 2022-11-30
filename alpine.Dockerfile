@@ -33,7 +33,6 @@ CMD [ "cargo", "test", "--offline" ]
 
 FROM base AS builder
 
-COPY swagger /code/swagger
 RUN cargo build --release --offline
 
 FROM alpine:3
