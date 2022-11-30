@@ -39,15 +39,14 @@ By doing the following, you'll be able to have a running server that will render
 ```bash
 docker run -d \
   --name catapulte \
-  -e SMTP_HOSTNAME=localhost \
-  -e SMTP_PORT=25 \
-  -e SMTP_USERNAME=optional \
-  -e SMTP_PASSWORD=optional \
-  -e SMTP_TLS_ENABLED=true \
-  -e SMTP_ACCEPT_INVALID_CERT=false \
-  -e SWAGGER_ENABLED=true \
-  -e TEMPLATE_PROVIDER=local \
-  -e TEMPLATE_ROOT=/templates \
+  -e SMTP__HOSTNAME=localhost \
+  -e SMTP__PORT=25 \
+  -e SMTP__USERNAME=optional \
+  -e SMTP__PASSWORD=optional \
+  -e SMTP__TLS_ENABLED=true \
+  -e SMTP__ACCEPT_INVALID_CERT=false \
+  -e TEMPLATE__TYPE=local \
+  -e TEMPLATE__PATH=/templates \
   -p 3000:3000 \
   -v /path/to/your/templates:/templates:ro \
   jdrouet/catapulte:latest
@@ -59,7 +58,7 @@ Once your server started, you can simply send an email using an `HTTP` request.
 curl -X POST -v \
   -H "Content-Type: application/json" \
   --data '{"from":"alice@example.com","to":"bob@example.com","params":{"some":"data"}}' \
-  http://localhost:3000/templates/the-name-of-your-template
+  http://localhost:3000/templates/the-name-of-your-template/json
 ```
 
 You can also send attachments using a multipart request.
@@ -70,12 +69,12 @@ curl -X POST -v \
   -F from=alice@example.com \
   -F to=bob@example.com \
   -F params='{"some":"data"}' \
-  http://localhost:3000/templates/user-login
+  http://localhost:3000/templates/user-login/multipart
 ```
 
 You can configure it with [some environment variable](./wiki/environment-variables.md) and can find more information in [this wiki](./wiki/template-provider.md).
 
-If you some API specification, the [Open API specification](./openapi.yml) is also available.
+If you some API specification, the Open API specification is also available on `/openapi.json` when Catapulte is running.
 
 To use it in production, we prepared a documentation on how to use Catapulte with [Amazon Simple Email Service](./wiki/with-aws-ses.md).
 
@@ -86,7 +85,7 @@ You can send the same email to multiple recipients just by using an array in the
 curl -X POST -v \
   -H "Content-Type: application/json" \
   --data '{"from":"alice@example.com","to":["bob@example.com","jon@example.com"],"params":{"some":"data"}}' \
-  http://localhost:3000/templates/the-name-of-your-template
+  http://localhost:3000/templates/the-name-of-your-template/json
 ```
 
 ## Should you use it?
