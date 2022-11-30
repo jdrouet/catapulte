@@ -19,16 +19,15 @@ impl ToString for MultipartError {
     }
 }
 
-pub async fn field_to_bytes<'a>(field: Field<'a>) -> Bytes {
-    // let _name = field.name().unwrap().to_string();
+pub async fn field_to_bytes(field: Field<'_>) -> Bytes {
     field.bytes().await.unwrap()
 }
 
-pub async fn field_to_string<'a>(field: Field<'a>) -> Result<String, FromUtf8Error> {
+pub async fn field_to_string(field: Field<'_>) -> Result<String, FromUtf8Error> {
     String::from_utf8(field_to_bytes(field).await.to_vec())
 }
 
-pub async fn field_to_json_value<'a>(field: Field<'a>) -> Result<JsonValue, JsonError> {
+pub async fn field_to_json_value(field: Field<'_>) -> Result<JsonValue, JsonError> {
     let bytes = field_to_bytes(field).await;
     from_slice(&bytes)
 }
@@ -45,7 +44,7 @@ impl MultipartFile {
         let filename = field
             .file_name()
             .map(ToString::to_string)
-            .ok_or_else(|| MultipartError::Parse("unable to get filename"))?;
+            .ok_or(MultipartError::Parse("unable to get filename"))?;
         let filepath = root.join(&filename);
         let content_type = field.content_type().map(|v| v.to_owned());
         Ok(Self {

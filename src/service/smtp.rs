@@ -68,7 +68,7 @@ impl Configuration {
         Self {
             hostname: crate::tests::env_str("TEST_SMTP_HOSTNAME")
                 .unwrap_or_else(|| "localhost".to_string()),
-            port: crate::tests::env_number("TEST_SMTP_PORT").unwrap_or_else(|| 1025),
+            port: crate::tests::env_number("TEST_SMTP_PORT").unwrap_or(1025),
             username: None,
             password: None,
             max_pool_size: Self::default_max_pool_size(),
@@ -81,7 +81,7 @@ impl Configuration {
         Self {
             hostname: crate::tests::env_str("TEST_SMTPS_HOSTNAME")
                 .unwrap_or_else(|| "localhost".to_string()),
-            port: crate::tests::env_number("TEST_SMTPS_PORT").unwrap_or_else(|| 1026),
+            port: crate::tests::env_number("TEST_SMTPS_PORT").unwrap_or(1026),
             username: None,
             password: None,
             max_pool_size: Self::default_max_pool_size(),
@@ -171,7 +171,9 @@ impl From<LettreError> for ServerError {
             metrics::increment_counter!("smtp_error");
         }
         tracing::error!("smtp error: {:?}", err);
-        ServerError::internal()
+        ServerError::internal().details(serde_json::json!({
+            "origin": "smtp"
+        }))
     }
 }
 

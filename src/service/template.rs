@@ -1,55 +1,78 @@
 use crate::error::ServerError;
 use crate::service::multipart::MultipartFile;
 use handlebars::{Handlebars, RenderError as HandlebarTemplateRenderError};
+use lettre::error::Error as LettreError;
 use lettre::message::{Attachment, Body, Mailbox, Message, MessageBuilder, MultiPart, SinglePart};
 use mrml::mjml::MJML;
 use mrml::prelude::parse::Error as ParserError;
 use mrml::prelude::render::{Error as RenderError, Options as RenderOptions};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
-use std::borrow::Cow;
+use serde_json::{json, Value as JsonValue};
 use std::string::ToString;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum TemplateError {
-    InterpolationError(String),
-    InvalidOptions(String),
-    RenderingError(String),
-    ParsingError(String),
+    InterpolationError(HandlebarTemplateRenderError),
+    InvalidOptions(LettreError),
+    RenderingError(RenderError),
+    ParsingError(ParserError),
 }
 
-impl From<lettre::error::Error> for TemplateError {
-    fn from(err: lettre::error::Error) -> Self {
-        Self::InvalidOptions(err.to_string())
+impl From<LettreError> for TemplateError {
+    fn from(err: LettreError) -> Self {
+        Self::InvalidOptions(err)
     }
 }
 
 impl From<HandlebarTemplateRenderError> for TemplateError {
     fn from(err: HandlebarTemplateRenderError) -> Self {
-        TemplateError::InterpolationError(err.to_string())
+        TemplateError::InterpolationError(err)
     }
 }
 
 impl From<TemplateError> for ServerError {
     fn from(err: TemplateError) -> Self {
         match err {
-            TemplateError::InterpolationError(msg) => ServerError::bad_request(msg),
-            TemplateError::InvalidOptions(msg) => ServerError::bad_request(msg),
-            TemplateError::RenderingError(msg) => ServerError::internal().message(Cow::Owned(msg)),
-            TemplateError::ParsingError(msg) => ServerError::internal().message(Cow::Owned(msg)),
+            TemplateError::InterpolationError(err) => {
+                ServerError::bad_request("template interpolation error").details(json!({
+                    "origin": "template",
+                    "description": err.desc,
+                    "template": err.template_name,
+                    "line": err.line_no,
+                    "column": err.column_no,
+                }))
+            }
+            TemplateError::InvalidOptions(err) => {
+                ServerError::bad_request("template rendering options invalid").details(json!({
+                    "origin": "template",
+                    "description": err.to_string(),
+                }))
+            }
+            TemplateError::RenderingError(err) => ServerError::internal()
+                .message("template rendering failed")
+                .details(json!({
+                    "origin": "template",
+                    "description": err.to_string(),
+                })),
+            TemplateError::ParsingError(err) => ServerError::internal()
+                .message("template parsing failed")
+                .details(json!({
+                    "origin": "template",
+                    "description": err.to_string(),
+                })),
         }
     }
 }
 
 impl From<ParserError> for TemplateError {
     fn from(err: ParserError) -> Self {
-        TemplateError::ParsingError(err.to_string())
+        TemplateError::ParsingError(err)
     }
 }
 
 impl From<RenderError> for TemplateError {
     fn from(err: RenderError) -> Self {
-        TemplateError::RenderingError(err.to_string())
+        TemplateError::RenderingError(err)
     }
 }
 
@@ -94,13 +117,9 @@ impl TemplateOptions {
 
     pub fn validate(&self) -> Result<(), TemplateError> {
         if self.from.is_empty() {
-            Err(TemplateError::InvalidOptions(
-                "missing \"from\" field".into(),
-            ))
+            Err(TemplateError::InvalidOptions(LettreError::MissingFrom))
         } else if self.to.is_empty() && self.cc.is_empty() && self.bcc.is_empty() {
-            Err(TemplateError::InvalidOptions(
-                "missing \"to\", \"cc\" and \"bcc\"".into(),
-            ))
+            Err(TemplateError::InvalidOptions(LettreError::MissingTo))
         } else {
             Ok(())
         }

@@ -113,7 +113,6 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use lazy_static;
     use serde::Deserialize;
     use uuid::Uuid;
 
