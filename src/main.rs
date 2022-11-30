@@ -77,7 +77,7 @@ impl Configuration {
     pub(crate) fn parse(path: &str) -> Self {
         config::Config::builder()
             .add_source(config::File::with_name(path).required(false))
-            .add_source(config::Environment::default())
+            .add_source(config::Environment::default().separator("__"))
             .build()
             .unwrap()
             .try_deserialize()

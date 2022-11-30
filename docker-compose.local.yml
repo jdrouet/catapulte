@@ -10,15 +10,15 @@ services:
 
   catapulte:
     # if you want to use the last version
-    image: jdrouet/catapulte:canary
+    # image: jdrouet/catapulte:canary
     # if you want to build it locally
-    # build: .
+    build: .
     environment:
-      RUST_LOG: info
-      SMTP_HOSTNAME: smtp
-      SMTP_PORT: 1025
-      TEMPLATE_PROVIDER: local
-      TEMPLATE_ROOT: /template
+      LOG: debug
+      SMTP__HOSTNAME: smtp
+      SMTP__PORT: 1025
+      TEMPLATE__TYPE: local
+      TEMPLATE__PATH: /template
     networks:
       - backend
     ports:

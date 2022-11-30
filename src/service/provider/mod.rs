@@ -5,7 +5,7 @@ use crate::service::template::Template;
 use prelude::TemplateProviderError;
 
 #[derive(Clone, Debug, serde::Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub(crate) enum Configuration {
     Local(local::Configuration),
 }

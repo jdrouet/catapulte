@@ -7,7 +7,9 @@ WORKDIR /code
 RUN cargo init
 COPY Cargo.toml /code/Cargo.toml
 COPY Cargo.lock /code/Cargo.lock
-RUN mkdir -p /code/.cargo \
+RUN --mount=type=cache,target=$CARGO_HOME/git,sharing=locked \
+  --mount=type=cache,target=$CARGO_HOME/registry,sharing=locked \
+  mkdir -p /code/.cargo \
   && cargo vendor > /code/.cargo/config
 
 FROM rust:1-buster AS base
@@ -42,7 +44,13 @@ LABEL org.label-schema.url="https://github.com/jdrouet/catapulte"
 LABEL org.label-schema.description="Service to convert mrml to html and send it by email"
 LABEL maintaner="Jeremie Drouet <jeremie.drouet@gmail.com>"
 
-ENV ADDRESS=0.0.0.0
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update \
+  && apt-get install -y curl \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV HOST=0.0.0.0
 ENV PORT=3000
 ENV RUST_LOG=info
 ENV TEMPLATE_ROOT=/templates
@@ -50,5 +58,8 @@ ENV TEMPLATE_ROOT=/templates
 COPY --from=builder /code/target/release/catapulte /usr/bin/catapulte
 
 EXPOSE 3000
+
+HEALTHCHECK --interval=10s --timeout=3s \
+  CMD curl --fail --head http://localhost:3000/status || exit 1
 
 ENTRYPOINT [ "/usr/bin/catapulte" ]
