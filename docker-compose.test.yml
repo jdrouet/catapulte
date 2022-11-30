@@ -29,14 +29,14 @@ services:
       - smtp
       - smtp-tls
     environment:
-      - RUST_LOG=debug
+      - LOG=debug
       - TEST_INBOX_HOSTNAME=smtp
       - TEST_INBOX_PORT=1080
       - TEST_SMTP_HOSTNAME=smtp
       - TEST_SMTP_PORT=1025
       - TEST_SMTPS_HOSTNAME=smtp-tls
       - TEST_SMTPS_PORT=1026
-      - TEMPLATE_ROOT=/code/template
+      - TEMPLATE__PATH=/code/template
     networks:
       - backend
 
