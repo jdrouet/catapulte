@@ -26,11 +26,16 @@ pub(super) async fn handler(
 #[cfg(test)]
 mod tests {
     use super::handler;
+    use axum::extract::Extension;
     use axum::http::StatusCode;
 
     #[tokio::test]
     async fn success() {
-        let result = handler().await;
+        crate::try_init_logs();
+        let smtp_pool = crate::service::smtp::Configuration::secure()
+            .build()
+            .unwrap();
+        let result = handler(Extension(smtp_pool)).await.unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
     }
 }

@@ -1,6 +1,5 @@
 use crate::error::ServerError;
 use serde_json::error::Error as JsonError;
-use std::borrow::Cow;
 use std::io::Error as IoError;
 
 #[derive(Clone, Debug)]
@@ -29,10 +28,10 @@ impl From<TemplateProviderError> for ServerError {
     fn from(err: TemplateProviderError) -> Self {
         match err {
             TemplateProviderError::TemplateNotFound => {
-                ServerError::not_found().message(Cow::Borrowed("unable to find template"))
+                ServerError::not_found().message("unable to find template")
             }
             TemplateProviderError::MetadataInvalid => {
-                ServerError::internal().message(Cow::Borrowed("unable to load metadata"))
+                ServerError::internal().message("unable to load metadata")
             }
         }
     }

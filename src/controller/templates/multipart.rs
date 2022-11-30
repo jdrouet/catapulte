@@ -10,7 +10,7 @@ use axum::extract::{Extension, Multipart, Path};
 use axum::http::StatusCode;
 use lettre::Transport;
 use mrml::prelude::render::Options as RenderOptions;
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 use std::default::Default;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -100,7 +100,12 @@ impl MultipartPayload {
                 self.attachments.push(file);
                 Ok(())
             }
-            Err(err) => Err(ServerError::bad_request(err.to_string())),
+            Err(err) => Err(
+                ServerError::bad_request("unable to parse attachment").details(json!({
+                    "origin": "multipart",
+                    "description": err.to_string(),
+                })),
+            ),
         }
     }
 

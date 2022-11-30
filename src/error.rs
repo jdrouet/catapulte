@@ -1,16 +1,13 @@
-#![allow(clippy::enum_variant_names)]
-
 use axum::extract::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use serde_json::Value as JsonValue;
-use std::borrow::Cow;
+use serde_json::{json, Value as JsonValue};
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct ServerError {
     #[serde(skip)]
     code: StatusCode,
-    pub message: Cow<'static, str>,
+    pub message: &'static str,
     #[schema(value_type = Object)]
     pub details: Option<JsonValue>,
 }
@@ -19,15 +16,15 @@ impl ServerError {
     pub(crate) fn internal() -> Self {
         Self {
             code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: Cow::Borrowed(StatusCode::INTERNAL_SERVER_ERROR.as_str()),
+            message: StatusCode::INTERNAL_SERVER_ERROR.as_str(),
             details: None,
         }
     }
 
-    pub(crate) fn bad_request(message: String) -> Self {
+    pub(crate) fn bad_request(message: &'static str) -> Self {
         Self {
             code: StatusCode::BAD_REQUEST,
-            message: Cow::Owned(message),
+            message,
             details: None,
         }
     }
@@ -35,12 +32,12 @@ impl ServerError {
     pub(crate) fn not_found() -> Self {
         Self {
             code: StatusCode::BAD_REQUEST,
-            message: Cow::Borrowed("resource not found"),
+            message: "resource not found",
             details: None,
         }
     }
 
-    pub(crate) fn message(mut self, message: Cow<'static, str>) -> Self {
+    pub(crate) fn message(mut self, message: &'static str) -> Self {
         self.message = message;
         self
     }
@@ -61,6 +58,6 @@ impl std::convert::From<std::io::Error> for ServerError {
     fn from(error: std::io::Error) -> Self {
         metrics::increment_counter!("server_error", "origin" => "std::io::Error");
         tracing::error!("io error: {:?}", error);
-        ServerError::internal()
+        ServerError::internal().details(json!({ "origin": "io" }))
     }
 }
