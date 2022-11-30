@@ -32,7 +32,7 @@ struct Arguments {
     #[clap(short, long, default_value = "/etc/catapulte/catapulte.toml")]
     pub config_path: String,
     /// Log level.
-    #[clap(short, long, default_value = "INFO")]
+    #[clap(short, long, env, default_value = "INFO")]
     pub log: String,
 }
 

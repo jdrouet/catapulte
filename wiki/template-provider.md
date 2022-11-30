@@ -51,12 +51,3 @@ And now you can add the `mjml` template in a `template.mjml` file (you can chang
   </mj-body>
 </mjml>
 ```
-
-## Using jolimail
-
-When you start catapulte, you have to provide the environment variable `TEMPLATE_PROVIDER=jolimail`.
-
-After that, you have to specify the url where your [jolimail](https://github.com/jdrouet/jolimail) instance is reachable with the environment variable `TEMPLATE_PROVIDER_JOLIMAIL_BASE_URL=http://my-instance`
-.
-
-And that's it. You can create your template directly in [jolimail](https://github.com/jdrouet/jolimail), create versions, and simply request them.
