@@ -7,7 +7,7 @@ use std::sync::Arc;
 /// Returns the metrics reported by the service using the prometheus format.
 #[utoipa::path(
     operation_id = "metrics",
-    head,
+    get,
     path = "/metrics",
     responses(
         (

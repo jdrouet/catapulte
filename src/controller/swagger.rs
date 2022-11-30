@@ -1,5 +1,6 @@
-use axum::extract::Json;
+// use axum::extract::Json;
 use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 #[derive(OpenApi, serde::Serialize)]
 #[openapi(
@@ -18,9 +19,13 @@ use utoipa::OpenApi;
 )]
 pub(crate) struct ApiDoc;
 
-pub(super) async fn handler() -> Json<utoipa::openapi::OpenApi> {
-    Json(ApiDoc::openapi())
+pub(super) fn service() -> SwaggerUi {
+    SwaggerUi::new("/swagger").url("/openapi.json", ApiDoc::openapi())
 }
+
+// pub(super) async fn handler() -> Json<utoipa::openapi::OpenApi> {
+//     Json(ApiDoc::openapi())
+// }
 
 // pub fn config(config: Arc<Config>, app: &mut web::ServiceConfig) {
 //     if config.swagger_enabled {

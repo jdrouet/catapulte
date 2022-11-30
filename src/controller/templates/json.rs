@@ -11,11 +11,27 @@ use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum Recipient {
     One(String),
     More(Vec<String>),
+}
+
+impl utoipa::ToSchema for Recipient {
+    fn schema() -> utoipa::openapi::schema::Schema {
+        utoipa::openapi::OneOfBuilder::new()
+            .item(
+                utoipa::openapi::ObjectBuilder::new()
+                    .schema_type(utoipa::openapi::SchemaType::String),
+            )
+            .item(
+                utoipa::openapi::ArrayBuilder::new().items(utoipa::openapi::Object::with_type(
+                    utoipa::openapi::SchemaType::String,
+                )),
+            )
+            .into()
+    }
 }
 
 impl Recipient {
