@@ -6,7 +6,7 @@ use serde_json::{json, Value as JsonValue};
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct ServerError {
     #[serde(skip)]
-    code: StatusCode,
+    pub code: StatusCode,
     pub message: &'static str,
     #[schema(value_type = Object)]
     pub details: Option<JsonValue>,

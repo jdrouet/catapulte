@@ -115,12 +115,10 @@ pub(crate) async fn handler(
 #[cfg(test)]
 mod tests {
     use super::{handler, JsonPayload, Recipient};
-    use crate::tests::{create_email, get_latest_inbox};
+    use crate::tests::{create_email, expect_latest_inbox};
     use axum::extract::{Extension, Json, Path};
     use axum::http::StatusCode;
     use std::sync::Arc;
-    use std::thread::sleep;
-    use std::time::Duration;
 
     fn create_payload(from: &str, to: &str, token: &str) -> JsonPayload {
         JsonPayload {
@@ -136,7 +134,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial]
     async fn success() {
         crate::try_init_logs();
         let render_options = Arc::new(crate::service::render::Configuration::default().build());
@@ -160,8 +157,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
-        let list = get_latest_inbox(&from, &to).await;
-        assert!(!list.is_empty());
+        let list = expect_latest_inbox(&from, "to", &to).await;
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello bob!"));
         assert!(last.html.contains("Hello bob!"));
@@ -171,7 +167,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial_test::serial]
     async fn success_ssl() {
         crate::try_init_logs();
         let render_options = Arc::new(crate::service::render::Configuration::default().build());
@@ -195,15 +190,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
-        for _ in 0..10 {
-            sleep(Duration::from_secs(1));
-            let list = get_latest_inbox(&from, &to).await;
-            if !list.is_empty() {
-                break;
-            }
-        }
-        let list = get_latest_inbox(&from, &to).await;
-        assert!(!list.is_empty());
+        let list = expect_latest_inbox(&from, "to", &to).await;
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello bob!"));
         assert!(last.html.contains("Hello bob!"));
@@ -212,91 +199,7 @@ mod tests {
             .contains("\"http://example.com/login?token=this_is_a_secure_token\""));
     }
 
-    // #[tokio::test]
-    // #[serial_test::serial]
-    // async fn failure_anonymous() {
-    //     let from = create_email();
-    //     let to = create_email();
-    //     let payload = json!({
-    //         "from": from.clone(),
-    //         "to": to.clone(),
-    //         "params": {
-    //             "name": "bob",
-    //             "token": "this_is_a_token"
-    //         }
-    //     });
-    //     let req = test::TestRequest::post()
-    //         .uri("/templates/user-login")
-    //         .set_json(&payload)
-    //         .to_request();
-    //     let res = ServerBuilder::default()
-    //         .authenticated(true)
-    //         .execute(req)
-    //         .await;
-    //     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-    // }
-
-    //     #[actix_rt::test]
-    //     #[serial]
-    //     async fn failure_invalid_token() {
-    //         let from = create_email();
-    //         let to = create_email();
-    //         let payload = json!({
-    //             "from": from.clone(),
-    //             "to": to.clone(),
-    //             "params": {
-    //                 "name": "bob",
-    //                 "token": "this_is_a_token"
-    //             }
-    //         });
-    //         let req = test::TestRequest::post()
-    //             .uri("/templates/user-login")
-    //             .append_header(("authorization", "Bearer hello-world"))
-    //             .set_json(&payload)
-    //             .to_request();
-    //         let res = ServerBuilder::default()
-    //             .authenticated(true)
-    //             .execute(req)
-    //             .await;
-    //         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-    //     }
-
-    //     #[actix_rt::test]
-    //     #[serial]
-    //     async fn success_authenticated() {
-    //         let token = crate::service::jsonwebtoken::tests::create_token();
-    //         let from = create_email();
-    //         let to = create_email();
-    //         let payload = json!({
-    //             "from": from.clone(),
-    //             "to": to.clone(),
-    //             "params": {
-    //                 "name": "bob",
-    //                 "token": "this_is_a_token"
-    //             }
-    //         });
-    //         let req = test::TestRequest::post()
-    //             .uri("/templates/user-login")
-    //             .append_header(("authorization", format!("Bearer {}", token)))
-    //             .set_json(&payload)
-    //             .to_request();
-    //         let res = ServerBuilder::default()
-    //             .authenticated(true)
-    //             .execute(req)
-    //             .await;
-    //         assert_eq!(res.status(), StatusCode::NO_CONTENT);
-    //         let list = get_latest_inbox(&from, &to).await;
-    //         assert!(!list.is_empty());
-    //         let last = list.first().unwrap();
-    //         assert!(last.text.contains("Hello bob!"));
-    //         assert!(last.html.contains("Hello bob!"));
-    //         assert!(last
-    //             .html
-    //             .contains("\"http://example.com/login?token=this_is_a_token\""));
-    //     }
-
     #[tokio::test]
-    #[serial_test::serial]
     async fn success_even_missing_params() {
         let render_options = Arc::new(crate::service::render::Configuration::default().build());
         let smtp_pool = crate::service::smtp::Configuration::insecure()
@@ -320,81 +223,117 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
-        let list = get_latest_inbox(&from, &to).await;
-        assert!(!list.is_empty());
+        let list = expect_latest_inbox(&from, "to", &to).await;
         let last = list.first().unwrap();
         assert!(last.text.contains("Hello Alice!"));
         assert!(last.html.contains("Hello Alice!"));
         assert!(last.html.contains("\"http://example.com/login?token=\""));
     }
 
-    //     #[actix_rt::test]
-    //     #[serial]
-    //     async fn success_multiple_recipients() {
-    //         let from = create_email();
-    //         let to = vec![create_email(), create_email()];
-    //         let cc = vec![create_email(), create_email()];
-    //         let bcc = vec![create_email(), create_email()];
-    //         let payload = json!({
-    //             "from": from.clone(),
-    //             "to": to.clone(),
-    //             "cc": cc.clone(),
-    //             "bcc": bcc.clone(),
-    //             "params": {
-    //                 "name": "bob"
-    //             }
-    //         });
-    //         let req = test::TestRequest::post()
-    //             .uri("/templates/user-login")
-    //             .set_json(&payload)
-    //             .to_request();
-    //         let res = ServerBuilder::default().execute(req).await;
-    //         assert_eq!(res.status(), StatusCode::NO_CONTENT);
-    //         let list = get_latest_inbox(&from, &to[0]).await;
-    //         assert!(!list.is_empty());
-    //         let last = list.first().unwrap();
-    //         assert!(last.text.contains("Hello bob!"));
-    //         assert!(last.html.contains("Hello bob!"));
-    //         assert!(last.html.contains("\"http://example.com/login?token=\""));
-    //     }
+    #[tokio::test]
+    async fn success_multiple_recipients() {
+        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+        let smtp_pool = crate::service::smtp::Configuration::insecure()
+            .build()
+            .unwrap();
+        let template_provider =
+            Arc::new(crate::service::provider::Configuration::default().build());
+        //
+        let from = create_email();
+        let to = vec![create_email(), create_email()];
+        let cc = vec![create_email(), create_email()];
+        let bcc = vec![create_email(), create_email()];
+        //
+        let payload = JsonPayload {
+            to: Some(Recipient::More(to.clone())),
+            from: from.to_owned(),
+            cc: Some(Recipient::More(cc.clone())),
+            bcc: Some(Recipient::More(bcc.clone())),
+            params: serde_json::json!({
+                "name": "bob",
+                "token": "token",
+            }),
+        };
+        //
+        let result = handler(
+            Extension(render_options),
+            Extension(smtp_pool),
+            Extension(template_provider),
+            Path("user-login".into()),
+            Json(payload),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, StatusCode::NO_CONTENT);
+        for (kind, email) in to
+            .iter()
+            .map(|email| ("to", email))
+            .chain(cc.iter().map(|email| ("cc", email)))
+            .chain(bcc.iter().map(|email| ("bcc", email)))
+        {
+            let list = expect_latest_inbox(&from, kind, &email).await;
+            let last = list.first().unwrap();
+            assert!(last.text.contains("Hello bob!"));
+            assert!(last.html.contains("Hello bob!"));
+        }
+    }
 
-    //     #[actix_rt::test]
-    //     #[serial]
-    //     async fn failure_template_not_found() {
-    //         let from = create_email();
-    //         let to = create_email();
-    //         let payload = json!({
-    //             "from": from,
-    //             "to": to,
-    //             "params": {
-    //                 "name": "bob",
-    //                 "token": "this_is_a_token"
-    //             }
-    //         });
-    //         let req = test::TestRequest::post()
-    //             .uri("/templates/not-found")
-    //             .set_json(&payload)
-    //             .to_request();
-    //         let res = ServerBuilder::default().execute(req).await;
-    //         assert_eq!(res.status(), StatusCode::NOT_FOUND);
-    //     }
+    #[tokio::test]
+    async fn failure_template_not_found() {
+        crate::try_init_logs();
+        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+        let smtp_pool = crate::service::smtp::Configuration::insecure()
+            .build()
+            .unwrap();
+        let template_provider =
+            Arc::new(crate::service::provider::Configuration::default().build());
 
-    //     #[actix_rt::test]
-    //     #[serial]
-    //     async fn failure_invalid_arguments() {
-    //         let from = create_email();
-    //         let payload = json!({
-    //             "from": from,
-    //             "params": {
-    //                 "name": "bob",
-    //                 "token": "this_is_a_token"
-    //             }
-    //         });
-    //         let req = test::TestRequest::post()
-    //             .uri("/templates/user-login")
-    //             .set_json(&payload)
-    //             .to_request();
-    //         let res = ServerBuilder::default().execute(req).await;
-    //         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    //     }
+        let from = create_email();
+        let to = create_email();
+        let payload = create_payload(&from, &to, "this_is_a_token");
+
+        let result = handler(
+            Extension(render_options),
+            Extension(smtp_pool),
+            Extension(template_provider),
+            Path("not-found".into()),
+            Json(payload),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(result.code, StatusCode::BAD_REQUEST);
+        assert_eq!(result.message, "unable to find template");
+    }
+
+    #[tokio::test]
+    async fn failure_no_recipient() {
+        crate::try_init_logs();
+        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+        let smtp_pool = crate::service::smtp::Configuration::insecure()
+            .build()
+            .unwrap();
+        let template_provider =
+            Arc::new(crate::service::provider::Configuration::default().build());
+
+        let from = create_email();
+        let payload = JsonPayload {
+            to: None,
+            from: from.to_owned(),
+            cc: None,
+            bcc: None,
+            params: serde_json::json!({}),
+        };
+
+        let result = handler(
+            Extension(render_options),
+            Extension(smtp_pool),
+            Extension(template_provider),
+            Path("user-login".into()),
+            Json(payload),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(result.code, StatusCode::BAD_REQUEST);
+        assert_eq!(result.message, "template rendering options invalid");
+    }
 }
