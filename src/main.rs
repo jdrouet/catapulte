@@ -138,13 +138,22 @@ mod tests {
         pub text: String,
     }
 
-    pub async fn get_latest_inbox(from: &str, to: &str) -> Vec<Email> {
+    pub async fn expect_latest_inbox(from: &str, kind: &str, to: &str) -> Vec<Email> {
+        for _ in 0..10 {
+            let list = get_latest_inbox(from, kind, to).await;
+            if !list.is_empty() {
+                return list;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+        panic!("mailbox is empty");
+    }
+
+    pub async fn get_latest_inbox(from: &str, kind: &str, to: &str) -> Vec<Email> {
         let url = format!(
-            "http://{}:{}/api/emails?from={}&to={}",
+            "http://{}:{}/api/emails?from={from}&{kind}={to}",
             INBOX_HOSTNAME.as_str(),
             *INBOX_PORT,
-            from,
-            to
         );
         reqwest::get(url.as_str())
             .await
