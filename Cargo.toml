@@ -24,7 +24,6 @@ metrics = { version = "0.20" }
 metrics-exporter-prometheus = { version = "0.11", default-features = false, features = [
   "http-listener",
 ] }
-mime = { version = "0.3" }
 mrml = { version = "1.2" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
@@ -35,18 +34,13 @@ tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 utoipa = { version = "2.4", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "3.0", features = ["axum"] }
-uuid = { version = "1.2", features = ["v4"] }
 
 [dev-dependencies]
-bytes = "^1.0"
-env-test-util = "1.0"
 lazy_static = "1.4"
-multer = "2.0"
 multipart = "0.18"
 reqwest = { version = "0.11", default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
-serial_test = "0.9"
 tower = { version = "0.4" }
-wiremock = "0.5"
+uuid = { version = "1.2", features = ["v4"] }
