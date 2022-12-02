@@ -59,3 +59,4 @@ HEALTHCHECK --interval=10s --timeout=3s \
   CMD curl --fail --head http://localhost:3000/status || exit 1
 
 ENTRYPOINT [ "/usr/bin/catapulte" ]
+CMD [ "serve" ]

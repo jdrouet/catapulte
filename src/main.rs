@@ -1,10 +1,8 @@
 use clap::Parser;
-use metrics_exporter_prometheus::PrometheusBuilder;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+mod action;
 mod controller;
 mod error;
 mod service;
@@ -28,60 +26,16 @@ pub(crate) fn try_init_logs() {
 #[derive(Parser)]
 #[clap(about, author, version)]
 struct Arguments {
-    /// Path to the configuration toml file, default to /etc/catapulte/catapulte.toml.
-    #[clap(short, long, default_value = "/etc/catapulte/catapulte.toml")]
-    pub config_path: String,
     /// Log level.
     #[clap(short, long, env, default_value = "INFO")]
     pub log: String,
+    #[command(subcommand)]
+    pub action: action::Action,
 }
 
 impl Arguments {
-    fn configuration(&self) -> Configuration {
-        Configuration::parse(&self.config_path)
-    }
-
     fn init_logs(&self) {
         init_logs(&self.log)
-    }
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-struct Configuration {
-    #[serde(default = "Configuration::default_host")]
-    pub(crate) host: IpAddr,
-    #[serde(default = "Configuration::default_port")]
-    pub(crate) port: u16,
-    //
-    #[serde(default)]
-    pub(crate) render: service::render::Configuration,
-    #[serde(default)]
-    pub(crate) smtp: service::smtp::Configuration,
-    #[serde(default)]
-    pub(crate) template: service::provider::Configuration,
-}
-
-impl Configuration {
-    fn default_host() -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
-    }
-
-    fn default_port() -> u16 {
-        3000
-    }
-
-    fn address(&self) -> SocketAddr {
-        SocketAddr::from((self.host, self.port))
-    }
-
-    pub(crate) fn parse(path: &str) -> Self {
-        config::Config::builder()
-            .add_source(config::File::with_name(path).required(false))
-            .add_source(config::Environment::default().separator("__"))
-            .build()
-            .unwrap()
-            .try_deserialize()
-            .unwrap()
     }
 }
 
@@ -90,25 +44,7 @@ async fn main() {
     let args = Arguments::parse();
     args.init_logs();
 
-    let configuration = args.configuration();
-
-    let render_options = Arc::new(configuration.render.build());
-    let smtp_pool = configuration.smtp.build().expect("smtp service init");
-    let template_provider = Arc::new(configuration.template.build());
-    let prometheus = Arc::new(
-        PrometheusBuilder::new()
-            .install_recorder()
-            .expect("failed to install prometheus recorder"),
-    );
-
-    let app = controller::create(render_options, smtp_pool, template_provider, prometheus);
-    let address = configuration.address();
-
-    tracing::info!("starting server on {}", address);
-    axum::Server::bind(&address)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    args.action.execute().await
 }
 
 #[cfg(test)]

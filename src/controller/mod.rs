@@ -1,6 +1,6 @@
 mod metrics;
 mod status;
-mod swagger;
+pub(crate) mod swagger;
 mod templates;
 
 use crate::service::provider::TemplateProvider;
