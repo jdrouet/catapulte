@@ -271,7 +271,7 @@ mod tests {
             .chain(cc.iter().map(|email| ("cc", email)))
             .chain(bcc.iter().map(|email| ("bcc", email)))
         {
-            let list = expect_latest_inbox(&from, kind, &email).await;
+            let list = expect_latest_inbox(&from, kind, email).await;
             let last = list.first().unwrap();
             assert!(last.text.contains("Hello bob!"));
             assert!(last.html.contains("Hello bob!"));

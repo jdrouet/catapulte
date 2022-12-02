@@ -113,8 +113,16 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
+    use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
     use serde::Deserialize;
+    use std::sync::Arc;
     use uuid::Uuid;
+
+    lazy_static::lazy_static! {
+        pub(crate) static ref PROMETHEUS_HANDLER: Arc<PrometheusHandle> = Arc::new(PrometheusBuilder::new()
+            .install_recorder()
+            .expect("failed to install prometheus recorder"));
+    }
 
     pub fn env_str(key: &str) -> Option<String> {
         std::env::var(key).ok()

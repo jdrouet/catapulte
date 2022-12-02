@@ -199,141 +199,158 @@ pub(crate) async fn handler(
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-// use super::handler;
-// use crate::tests::{create_email, get_latest_inbox};
-// use axum::extract::{Extension, Path};
-// use axum::http::StatusCode;
-// use bytes::{BufMut, Bytes, BytesMut};
-// use common_multipart_rfc7578 as cmultipart;
-// use futures::TryStreamExt;
-// use serde_json::json;
-// use std::fs::File;
-// use std::io::BufReader;
-// use std::sync::Arc;
+#[cfg(test)]
+mod tests {
+    use crate::tests::{create_email, expect_latest_inbox};
+    use axum::body::Body;
+    use axum::http::{Method, Request};
+    use multipart::client::lazy::Multipart;
+    use std::io::{BufReader, Read};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use tower::ServiceExt;
 
-// async fn to_bytes(form: cmultipart::client::multipart::Form<'_>) -> Bytes {
-//     let mut body = cmultipart::client::multipart::Body::from(form);
-//     let mut bytes = BytesMut::new();
-//     while let Ok(Some(field)) = body.try_next().await {
-//         bytes.put(field.to_vec().as_slice());
-//     }
-//     bytes.into()
-// }
+    fn create_app() -> axum::Router {
+        crate::try_init_logs();
+        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+        let smtp_pool = crate::service::smtp::Configuration::insecure()
+            .build()
+            .unwrap();
+        let template_provider =
+            Arc::new(crate::service::provider::Configuration::default().build());
+        let prometheus_handler = crate::tests::PROMETHEUS_HANDLER.clone();
+        crate::controller::create(
+            render_options,
+            smtp_pool,
+            template_provider,
+            prometheus_handler,
+        )
+    }
 
-// #[tokio::test]
-// #[serial_test::serial]
-// async fn success_with_file() {
-//     let render_options = Arc::new(crate::service::render::Configuration::default().build());
-//     let smtp_pool = crate::service::smtp::Configuration::insecure()
-//         .build()
-//         .unwrap();
-//     let template_provider =
-//         Arc::new(crate::service::provider::Configuration::default().build());
+    fn build_request<'a>(
+        name: &str,
+        text: Vec<(&'static str, &'a str)>,
+        files: Vec<&'a Path>,
+    ) -> Request<Body> {
+        let mut body = Multipart::new();
+        for (key, value) in text {
+            body.add_text(key, value);
+        }
+        for path in files {
+            body.add_file("attachments", path);
+        }
 
-//     let from = create_email();
-//     let to = create_email();
+        let prepared = body.prepare().unwrap();
+        let content_len = prepared.content_len();
+        let boundary = prepared.boundary().to_owned();
 
-//     let payload = json!({
-//         "name": "bob",
-//         "token": "this_is_a_token"
-//     });
-//     let file = File::open("asset/cat.jpg").unwrap();
-//     let reader = BufReader::new(file);
-//     let mut form = cmultipart::client::multipart::Form::default();
-//     form.add_text("from", from.clone());
-//     form.add_text("to", to.clone());
-//     form.add_text("params", payload.to_string());
-//     form.add_reader_file("attachments", reader, "cat.jpg");
-//     let content_type = form.content_type();
-//     let bytes = to_bytes(form).await;
-//     // let payload = Multipart::
+        let content_type = multipart::client::hyper::content_type(&boundary);
 
-//     let result = handler(
-//         Extension(render_options),
-//         Extension(smtp_pool),
-//         Extension(template_provider),
-//         Path("user-login".into()),
-//         payload,
-//     )
-//     .await
-//     .unwrap();
+        let mut buffer = Vec::new();
+        BufReader::new(prepared).read_to_end(&mut buffer).unwrap();
+        let compatible_body = axum::body::Body::from(buffer);
 
-//     assert_eq!(result, StatusCode::NO_CONTENT);
-//     let list = get_latest_inbox(&from, &to).await;
-//     assert!(!list.is_empty());
-//     let last = list.first().unwrap();
-//     assert!(last.text.contains("Hello bob!"));
-//     assert!(last.html.contains("Hello bob!"));
-//     assert!(last
-//         .html
-//         .contains("\"http://example.com/login?token=this_is_a_token\""));
-// }
+        let uri = format!("/templates/{name}/multipart");
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header(axum::http::header::CONTENT_TYPE, content_type.to_string())
+            .header(axum::http::header::CONTENT_LENGTH, content_len.unwrap())
+            .body(compatible_body)
+            .unwrap()
+    }
 
-//     #[actix_rt::test]
-//     #[serial]
-//     async fn error_with_file_without_filename() {
-//         let from = create_email();
-//         let to = create_email();
-//         let payload = json!({
-//             "name": "bob",
-//             "token": "this_is_a_token"
-//         });
-//         let file = File::open("asset/cat.jpg").unwrap();
-//         let reader = BufReader::new(file);
-//         let mut form = cmultipart::client::multipart::Form::default();
-//         form.add_text("from", from.clone());
-//         form.add_text("to", to.clone());
-//         form.add_text("params", payload.to_string());
-//         form.add_reader("attachments", reader);
-//         let content_type = form.content_type();
-//         let bytes = to_bytes(form).await;
-//         let req = test::TestRequest::post()
-//             .insert_header(("content-type", content_type))
-//             .uri("/templates/user-login")
-//             .set_payload(bytes)
-//             .to_request();
-//         let res = ServerBuilder::default().execute(req).await;
-//         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-//     }
+    #[tokio::test]
+    async fn success_without_attachment() {
+        let app = create_app();
+        //
+        let from = create_email();
+        let to = create_email();
+        //
+        let req = build_request(
+            "user-login",
+            vec![
+                ("from", &from),
+                ("to", &to),
+                ("params", r#"{"name":"bob","token":"token"}"#),
+            ],
+            Vec::new(),
+        );
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::NO_CONTENT);
 
-//     #[actix_rt::test]
-//     #[serial]
-//     async fn success_with_multiple_recipients() {
-//         let from = create_email();
-//         let to_first = create_email();
-//         let to_second = create_email();
-//         let payload = json!({
-//             "name": "bob",
-//             "token": "this_is_a_token"
-//         });
-//         let file = File::open("asset/cat.jpg").unwrap();
-//         let reader = BufReader::new(file);
-//         let mut form = cmultipart::client::multipart::Form::default();
-//         form.add_text("from", from.clone());
-//         form.add_text("to", to_first.clone());
-//         form.add_text("to", to_second.clone());
-//         form.add_text("cc", create_email());
-//         form.add_text("bcc", create_email());
-//         form.add_text("params", payload.to_string());
-//         form.add_reader_file("attachments", reader, "cat.jpg");
-//         let content_type = form.content_type();
-//         let bytes = to_bytes(form).await;
-//         let req = test::TestRequest::post()
-//             .insert_header(("content-type", content_type))
-//             .uri("/templates/user-login")
-//             .set_payload(bytes)
-//             .to_request();
-//         let res = ServerBuilder::default().execute(req).await;
-//         assert_eq!(res.status(), StatusCode::NO_CONTENT);
-//         let list = get_latest_inbox(&from, &to_first).await;
-//         assert!(!list.is_empty());
-//         let last = list.first().unwrap();
-//         assert!(last.text.contains("Hello bob!"));
-//         assert!(last.html.contains("Hello bob!"));
-//         assert!(last
-//             .html
-//             .contains("\"http://example.com/login?token=this_is_a_token\""));
-//     }
-// }
+        //
+        let list = expect_latest_inbox(&from, "to", &to).await;
+        let last = list.first().unwrap();
+        assert!(last.text.contains("Hello bob!"));
+        assert!(last.html.contains("Hello bob!"));
+        assert!(last
+            .html
+            .contains("\"http://example.com/login?token=token\""));
+    }
+
+    #[tokio::test]
+    async fn success_with_attachment() {
+        let app = create_app();
+        //
+        let from = create_email();
+        let to = create_email();
+        let cat = PathBuf::new().join("asset").join("cat.jpg");
+        //
+        let req = build_request(
+            "user-login",
+            vec![
+                ("from", &from),
+                ("to", &to),
+                ("params", r#"{"name":"bob","token":"token"}"#),
+            ],
+            vec![&cat],
+        );
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::NO_CONTENT);
+
+        //
+        let list = expect_latest_inbox(&from, "to", &to).await;
+        let last = list.first().unwrap();
+        assert!(last.text.contains("Hello bob!"));
+        assert!(last.html.contains("Hello bob!"));
+        assert!(last
+            .html
+            .contains("\"http://example.com/login?token=token\""));
+    }
+
+    #[tokio::test]
+    async fn success_multiple_recipients() {
+        let app = create_app();
+        //
+        let from = create_email();
+        let to_first = create_email();
+        let to_second = create_email();
+        let cc = create_email();
+        //
+        let req = build_request(
+            "user-login",
+            vec![
+                ("from", &from),
+                ("to", &to_first),
+                ("to", &to_second),
+                ("cc", &cc),
+                ("params", r#"{"name":"bob","token":"token"}"#),
+            ],
+            Vec::new(),
+        );
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::NO_CONTENT);
+
+        //
+        let list = expect_latest_inbox(&from, "to", &to_first).await;
+        let last = list.first().unwrap();
+        assert!(last.text.contains("Hello bob!"));
+        assert!(last.html.contains("Hello bob!"));
+        assert!(last
+            .html
+            .contains("\"http://example.com/login?token=token\""));
+        expect_latest_inbox(&from, "to", &to_second).await;
+        expect_latest_inbox(&from, "cc", &cc).await;
+    }
+}
