@@ -1,38 +1,22 @@
 use crate::error::ServerError;
-use serde_json::error::Error as JsonError;
-use std::io::Error as IoError;
+use serde_json::json;
+use std::borrow::Cow;
 
 #[derive(Clone, Debug)]
-pub enum TemplateProviderError {
-    MetadataInvalid,
-    TemplateNotFound,
+pub enum Error {
+    Loading { origin: Cow<'static, str> },
+    Rendering { origin: Cow<'static, str> },
 }
 
-impl From<IoError> for TemplateProviderError {
-    fn from(err: IoError) -> Self {
-        metrics::increment_counter!("template_provider_error", "reason" => "template_not_found");
-        tracing::debug!("template provider error: template not found ({:?})", err);
-        Self::TemplateNotFound
-    }
-}
-
-impl From<JsonError> for TemplateProviderError {
-    fn from(err: JsonError) -> Self {
-        metrics::increment_counter!("template_provider_error", "reason" => "metadata_invalid");
-        tracing::debug!("template provider error: invalid metadata ({:?})", err);
-        Self::MetadataInvalid
-    }
-}
-
-impl From<TemplateProviderError> for ServerError {
-    fn from(err: TemplateProviderError) -> Self {
+impl From<Error> for ServerError {
+    fn from(err: Error) -> Self {
         match err {
-            TemplateProviderError::TemplateNotFound => {
-                ServerError::not_found().message("unable to find template")
-            }
-            TemplateProviderError::MetadataInvalid => {
-                ServerError::internal().message("unable to load metadata")
-            }
+            Error::Loading { origin } => ServerError::not_found()
+                .message("unable to find template")
+                .details(json!({ "origin": origin })),
+            Error::Rendering { origin } => ServerError::internal()
+                .message("unable to load metadata")
+                .details(json!({ "origin": origin })),
         }
     }
 }
