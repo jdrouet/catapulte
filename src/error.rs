@@ -37,6 +37,14 @@ impl ServerError {
         }
     }
 
+    pub(crate) fn failed_dependency() -> Self {
+        Self {
+            code: StatusCode::FAILED_DEPENDENCY,
+            message: "external service failed",
+            details: None,
+        }
+    }
+
     pub(crate) fn message(mut self, message: &'static str) -> Self {
         self.message = message;
         self

@@ -1,3 +1,4 @@
+pub mod http;
 pub mod local;
 pub mod prelude;
 
@@ -8,6 +9,7 @@ use prelude::Error;
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub(crate) enum Configuration {
     Local(local::Configuration),
+    Http(http::Configuration),
 }
 
 impl Default for Configuration {
@@ -21,6 +23,7 @@ impl Configuration {
         tracing::debug!("building template provider");
         match self {
             Self::Local(item) => TemplateProvider::Local(item.build()),
+            Self::Http(item) => TemplateProvider::Http(item.build()),
         }
     }
 }
@@ -28,12 +31,14 @@ impl Configuration {
 #[derive(Clone, Debug)]
 pub(crate) enum TemplateProvider {
     Local(local::TemplateProvider),
+    Http(http::TemplateProvider),
 }
 
 impl TemplateProvider {
     pub async fn find_by_name(&self, name: &str) -> Result<Template, Error> {
         match self {
             Self::Local(inner) => inner.find_by_name(name).await,
+            Self::Http(inner) => inner.find_by_name(name).await,
         }
     }
 }
