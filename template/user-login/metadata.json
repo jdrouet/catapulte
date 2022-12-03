@@ -1,7 +1,7 @@
 {
   "name": "user-login",
   "description": "Template for login with magic link",
-  "path": "template.mjml",
+  "template": "template.mjml",
   "attributes": {
     "type": "object",
     "properties": {

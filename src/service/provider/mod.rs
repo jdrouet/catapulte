@@ -2,7 +2,7 @@ pub mod local;
 pub mod prelude;
 
 use crate::service::template::Template;
-use prelude::TemplateProviderError;
+use prelude::Error;
 
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -31,7 +31,7 @@ pub(crate) enum TemplateProvider {
 }
 
 impl TemplateProvider {
-    pub async fn find_by_name(&self, name: &str) -> Result<Template, TemplateProviderError> {
+    pub async fn find_by_name(&self, name: &str) -> Result<Template, Error> {
         match self {
             Self::Local(inner) => inner.find_by_name(name).await,
         }
