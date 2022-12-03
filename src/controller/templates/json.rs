@@ -302,7 +302,7 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(result.code, StatusCode::BAD_REQUEST);
-        assert_eq!(result.message, "unable to find template");
+        assert_eq!(result.message, "unable to prepare template");
     }
 
     #[tokio::test]

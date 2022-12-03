@@ -58,25 +58,19 @@ impl TemplateProvider {
         let metadata_file = File::open(path).map_err(|err| {
             metrics::increment_counter!("template_provider_error", "reason" => "metadata_not_found");
             tracing::debug!("template provider error: metadata not found ({:?})", err);
-            Error::Loading {
-                origin: Cow::Borrowed("opening metadata"),
-            }
+            Error::not_found("local", Cow::Borrowed("unable to open metadata"))
         })?;
         let metadata_reader = BufReader::new(metadata_file);
         let metadata: LocalMetadata = serde_json::from_reader(metadata_reader).map_err(|err| {
             metrics::increment_counter!("template_provider_error", "reason" => "metadata_invalid");
             tracing::debug!("template provider error: metadata invalid ({:?})", err);
-            Error::Loading {
-                origin: Cow::Borrowed("parsing metadata"),
-            }
+            Error::provider("local", Cow::Borrowed("unable to parse metadata"))
         })?;
         let template_path = self.root.join(name).join(metadata.template);
         let content = read_to_string(template_path).map_err(|err| {
             metrics::increment_counter!("template_provider_error", "reason" => "template_not_found");
             tracing::debug!("template provider error: template not found ({:?})", err);
-            Error::Loading {
-                origin: Cow::Borrowed("reading template"),
-            }
+            Error::provider("local", Cow::Borrowed("unable to read template"))
         })?;
         Ok(Template {
             name: metadata.name,
