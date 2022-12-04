@@ -4,9 +4,9 @@ use std::borrow::Cow;
 
 #[derive(Clone, Debug)]
 pub struct Error {
-    provider: &'static str,
-    kind: ErrorKind,
-    message: Cow<'static, str>,
+    pub provider: &'static str,
+    pub kind: ErrorKind,
+    pub message: Cow<'static, str>,
 }
 
 impl Error {
