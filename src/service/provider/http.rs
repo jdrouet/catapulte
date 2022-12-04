@@ -1,7 +1,7 @@
 use super::prelude::Error;
 use crate::service::template::Template;
 use axum::http::HeaderMap;
-use reqwest::Url;
+use reqwest::{StatusCode, Url};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
@@ -141,6 +141,26 @@ impl TemplateProvider {
     pub(super) async fn find_by_name(&self, name: &str) -> Result<Template, Error> {
         tracing::debug!("loading template {}", name);
         let res = self.build_request(name, "metadata.json").await?;
+        let status = res.status();
+        if status == StatusCode::NOT_FOUND {
+            tracing::error!("unable to find template metadata: {}", status);
+            return Err(Error::not_found(
+                "http",
+                Cow::Borrowed("error when loading metadata"),
+            ));
+        } else if status.is_client_error() {
+            tracing::error!("unable to load template metadata: {}", status);
+            return Err(Error::internal(
+                "http",
+                Cow::Borrowed("error when loading metadata"),
+            ));
+        } else if status.is_server_error() {
+            tracing::error!("unable to load template metadata: {}", status);
+            return Err(Error::provider(
+                "http",
+                Cow::Borrowed("error when loading metadata"),
+            ));
+        }
         let metadata: RemoteMetadata = res.json().await.map_err(|err| {
             tracing::error!("unable to parse template metadata: {:?}", err);
             Error::provider("http", Cow::Borrowed("unable to parse template metadata"))
@@ -161,6 +181,8 @@ impl TemplateProvider {
 #[cfg(test)]
 mod tests {
     use super::TemplateProvider;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn interpolate(url: &str, name: &str) -> String {
         TemplateProvider::new(url.into()).interpolate(name, "metadata.json")
@@ -178,12 +200,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_github_templates() {
+    async fn fetch_not_found_template() {
         crate::try_init_logs();
-        let provider = TemplateProvider::new(
-            "https://raw.githubusercontent.com/jdrouet/catapulte/main/template/".into(),
-        );
+        let mock_server = MockServer::start().await;
+
+        let provider = TemplateProvider::new(format!("{}/templates/", &mock_server.uri()));
+        let result = provider.find_by_name("user-login").await.unwrap_err();
+        assert_eq!(result.provider, "http");
+        assert_eq!(result.message, "error when loading metadata");
+    }
+
+    #[tokio::test]
+    async fn fetch_template_separate_file() {
+        crate::try_init_logs();
+        //
+        let metadata: serde_json::Value =
+            serde_json::from_str(include_str!("../../../template/user-login/metadata.json"))
+                .unwrap();
+        let content = include_str!("../../../template/user-login/template.mjml");
+        //
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/templates/user-login/metadata.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/templates/user-login/template.mjml"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(content))
+            .mount(&mock_server)
+            .await;
+
+        let provider = TemplateProvider::new(format!("{}/templates/", &mock_server.uri()));
         let result = provider.find_by_name("user-login").await.unwrap();
+        assert!(result.content.starts_with("<mjml>"));
+    }
+
+    #[tokio::test]
+    async fn fetch_template_separate_file_missing_template() {
+        crate::try_init_logs();
+        //
+        let metadata: serde_json::Value =
+            serde_json::from_str(include_str!("../../../template/user-login/metadata.json"))
+                .unwrap();
+        //
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/templates/user-login/metadata.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
+            .mount(&mock_server)
+            .await;
+
+        let provider = TemplateProvider::new(format!("{}/templates/", &mock_server.uri()));
+        let result = provider.find_by_name("user-login").await.unwrap_err();
+        assert_eq!(result.provider, "http");
+        assert_eq!(result.message, "unable to load template content");
+    }
+
+    #[tokio::test]
+    async fn fetch_template_same_file() {
+        crate::try_init_logs();
+        //
+        let content = include_str!("../../../template/user-login/template.mjml");
+        let metadata = serde_json::json!({
+            "name": "single-file",
+            "description": "read from single file",
+            "content": content,
+            "attributes": serde_json::json!({
+                "type": "object",
+                "properties": serde_json::json!({
+                    "token": serde_json::json!({
+                        "type": "string"
+                    })
+                }),
+                "required": serde_json::json!([
+                    "token"
+                ])
+            })
+        });
+        //
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/templates/single-file/metadata.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
+            .mount(&mock_server)
+            .await;
+        let provider = TemplateProvider::new(format!("{}/templates/", &mock_server.uri()));
+        let result = provider.find_by_name("single-file").await.unwrap();
         assert!(result.content.starts_with("<mjml>"));
     }
 }
