@@ -7,6 +7,8 @@ WORKDIR /code
 RUN cargo init
 COPY Cargo.toml /code/Cargo.toml
 COPY Cargo.lock /code/Cargo.lock
+
+# https://docs.docker.com/engine/reference/builder/#run---mounttypecache
 RUN --mount=type=cache,target=$CARGO_HOME/git,sharing=locked \
   --mount=type=cache,target=$CARGO_HOME/registry,sharing=locked \
   mkdir -p /code/.cargo \
@@ -34,15 +36,20 @@ FROM base AS builder
 
 RUN cargo build --release --offline
 
+FROM scratch AS binary
+
+COPY --from=builder /code/target/release/catapulte /catapulte
+
 FROM debian:bullseye-slim
 
 LABEL org.label-schema.schema-version="1.0"
-LABEL org.label-schema.docker.cmd="docker run -d -p 3000:3000 -e TEMPLATE_ROOT=/templates -e SMTP_LOCALHOST=localhost -e SMTP_PORT=25 -e SMTP_USERNAME=username -e SMTP_PASSWORD=password -e SMTP_MAX_POOL_SIZE=10 -e TEMPLATE_PROVIDER=local jdrouet/catapulte"
+LABEL org.label-schema.docker.cmd="docker run -d -p 3000:3000 -e TEMPLATE__TYPE=LOCAL -e TEMPLATE__PATH=/templates -e SMTP__HOSTNAME=localhost -e SMTP__PORT=25 -e SMTP__USERNAME=username -e SMTP__PASSWORD=password -e SMTP__MAX_POOL_SIZE=10 jdrouet/catapulte"
 LABEL org.label-schema.vcs-url="https://jolimail.io"
 LABEL org.label-schema.url="https://github.com/jdrouet/catapulte"
 LABEL org.label-schema.description="Service to convert mrml to html and send it by email"
 LABEL maintaner="Jeremie Drouet <jeremie.drouet@gmail.com>"
 
+# https://docs.docker.com/engine/reference/builder/#run---mounttypecache
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,target=/var/lib/apt,sharing=locked \
   apt-get update \
