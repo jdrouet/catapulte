@@ -54,6 +54,8 @@ jobs:
           context: .
           file: ./alpine.Dockerfile
           platforms: ${{ github.event.inputs.platforms }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           push: ${{ github.event.inputs.publish }}
           tags: ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:${{ github.event.inputs.version }}-alpine
           # tags: ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:${{ needs.variables.outputs.version }}-alpine
@@ -84,5 +86,7 @@ jobs:
         with:
           platforms: ${{ github.event.inputs.platforms }}
           push: ${{ github.event.inputs.publish }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:${{ github.event.inputs.version }},${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:${{ github.event.inputs.version }}-debian
           # tags: ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:${{ needs.variables.outputs.version }},${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:${{ needs.variables.outputs.version }}-debian
