@@ -1,7 +1,17 @@
 on:
-  push:
-    tags:        
-      - 'v*'
+  # push:
+  #   tags:
+  #     - 'v*'
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Platforms used to build'
+        required: true
+        default: 'linux/amd64,linux/arm64'
+      publish:
+        description: 'Pushed the docker image and publish the binary'
+        required: true
+        default: false
 
 name: Release catapulte version
 
@@ -32,15 +42,15 @@ jobs:
       - name: set up docker buildx
         uses: docker/setup-buildx-action@v2
         with:
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ github.event.inputs.platforms }}
 
-      - name: build and push alpine canary
+      - name: build and push alpine
         uses: docker/build-push-action@v3
         with:
           context: .
           file: ./alpine.Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
+          platforms: ${{ github.event.inputs.platforms }}
+          push: ${{ github.event.inputs.publish }}
           tags: ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:${{ needs.variables.outputs.version }}-alpine
 
   build-debian:
@@ -59,8 +69,9 @@ jobs:
       - name: set up docker buildx
         uses: docker/setup-buildx-action@v2
 
-      - name: build and push debian canary
+      - name: build and push debian
         uses: docker/build-push-action@v3
         with:
-          push: true
+          platforms: ${{ github.event.inputs.platforms }}
+          push: ${{ github.event.inputs.publish }}
           tags: ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:${{ needs.variables.outputs.version }},${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:${{ needs.variables.outputs.version }}-debian
