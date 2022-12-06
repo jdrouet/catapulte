@@ -19,6 +19,16 @@ jobs:
           toolchain: stable
           profile: minimal
           components: rustfmt,clippy
+          
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: run lint
         run: cargo fmt --check
