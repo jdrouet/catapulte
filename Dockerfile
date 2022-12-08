@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=$CARGO_HOME/git,sharing=locked \
   mkdir -p /code/.cargo \
   && cargo vendor > /code/.cargo/config
 
-FROM rust:1-buster AS base
+FROM rust:1-bullseye AS base
 
 ENV USER=root
 
