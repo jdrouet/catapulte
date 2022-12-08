@@ -1,0 +1,12 @@
+on:
+  push:
+    branches:
+      - "main"
+
+jobs:
+  call-workflow-build-docker-images:
+    uses: ./.github/workflows/build-docker-images.yml
+    with:
+      version: canary
+      platforms: linux/amd64
+      publish: true

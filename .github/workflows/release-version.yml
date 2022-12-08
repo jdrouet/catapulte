@@ -1,0 +1,22 @@
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  variables:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: compute version
+        id: version
+        run: echo "version=$(echo ${GITHUB_REF} | cut -d 'v' -f 2)" >> $GITHUB_OUTPUT
+
+  call-workflow-build-docker-images:
+    uses: ./.github/workflows/build-docker-images.yml
+    needs: [variables]
+    with:
+      version: ${{ needs.variables.outputs.version }}
+      platforms: linux/amd64,linux/arm64
+      publish: true
