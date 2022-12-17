@@ -18,7 +18,7 @@ pub(crate) fn init_logs(directive: &str) {
 pub(crate) fn try_init_logs() {
     let level = std::env::var("LOG").unwrap_or_else(|_| "catapulte=debug".into());
     let _ = tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(&level))
+        .with(tracing_subscriber::EnvFilter::new(level))
         .with(tracing_subscriber::fmt::layer())
         .try_init();
 }
