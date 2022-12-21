@@ -12,7 +12,7 @@ license-file = "license.md"
 axum = { version = "0.6", features = ["multipart"] }
 clap = { version = "4.0", features = ["derive", "env"] }
 config = { version = "0.13", default-features = false }
-handlebars = { version = "4.2" }
+handlebars = { version = "4.3" }
 lettre = { default-features = false, features = [
   "builder",
   "pool",
