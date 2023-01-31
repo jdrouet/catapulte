@@ -40,7 +40,7 @@ pub struct MultipartFile {
 }
 
 impl MultipartFile {
-    fn from_field<'a>(root: &Path, field: &Field<'a>) -> Result<Self, MultipartError> {
+    fn from_field(root: &Path, field: &Field<'_>) -> Result<Self, MultipartError> {
         let filename = field
             .file_name()
             .map(ToString::to_string)
