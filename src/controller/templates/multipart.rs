@@ -25,34 +25,40 @@ pub(crate) struct MultipartPayload {
     attachments: Vec<MultipartFile>,
 }
 
-impl utoipa::ToSchema for MultipartPayload {
-    fn schema() -> utoipa::openapi::schema::Schema {
-        utoipa::openapi::ObjectBuilder::new()
-            .property(
-                "from",
-                utoipa::openapi::ObjectBuilder::new()
-                    .schema_type(utoipa::openapi::SchemaType::String),
-            )
-            .required("from")
-            .property("to", super::json::Recipient::schema())
-            .property("cc", super::json::Recipient::schema())
-            .property("bcc", super::json::Recipient::schema())
-            .property(
-                "params",
-                utoipa::openapi::ObjectBuilder::new()
-                    .schema_type(utoipa::openapi::SchemaType::Object),
-            )
-            .property(
-                "attachments",
-                utoipa::openapi::ArrayBuilder::new().items(
+impl<'s> utoipa::ToSchema<'s> for MultipartPayload {
+    fn schema() -> (
+        &'s str,
+        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+    ) {
+        (
+            "MultipartPayload",
+            utoipa::openapi::ObjectBuilder::new()
+                .property(
+                    "from",
                     utoipa::openapi::ObjectBuilder::new()
-                        .schema_type(utoipa::openapi::SchemaType::String)
-                        .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
-                            utoipa::openapi::KnownFormat::Binary,
-                        ))),
-                ),
-            )
-            .into()
+                        .schema_type(utoipa::openapi::SchemaType::String),
+                )
+                .required("from")
+                .property("to", super::json::Recipient::schema().1)
+                .property("cc", super::json::Recipient::schema().1)
+                .property("bcc", super::json::Recipient::schema().1)
+                .property(
+                    "params",
+                    utoipa::openapi::ObjectBuilder::new()
+                        .schema_type(utoipa::openapi::SchemaType::Object),
+                )
+                .property(
+                    "attachments",
+                    utoipa::openapi::ArrayBuilder::new().items(
+                        utoipa::openapi::ObjectBuilder::new()
+                            .schema_type(utoipa::openapi::SchemaType::String)
+                            .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
+                                utoipa::openapi::KnownFormat::Binary,
+                            ))),
+                    ),
+                )
+                .into(),
+        )
     }
 }
 

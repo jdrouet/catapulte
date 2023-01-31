@@ -18,19 +18,23 @@ pub(crate) enum Recipient {
     More(Vec<String>),
 }
 
-impl utoipa::ToSchema for Recipient {
-    fn schema() -> utoipa::openapi::schema::Schema {
-        utoipa::openapi::OneOfBuilder::new()
-            .item(
-                utoipa::openapi::ObjectBuilder::new()
-                    .schema_type(utoipa::openapi::SchemaType::String),
-            )
-            .item(
-                utoipa::openapi::ArrayBuilder::new().items(utoipa::openapi::Object::with_type(
-                    utoipa::openapi::SchemaType::String,
-                )),
-            )
-            .into()
+impl<'s> utoipa::ToSchema<'s> for Recipient {
+    fn schema() -> (
+        &'s str,
+        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+    ) {
+        (
+            "Recipient",
+            utoipa::openapi::OneOfBuilder::new()
+                .item(
+                    utoipa::openapi::ObjectBuilder::new()
+                        .schema_type(utoipa::openapi::SchemaType::String),
+                )
+                .item(utoipa::openapi::ArrayBuilder::new().items(
+                    utoipa::openapi::Object::with_type(utoipa::openapi::SchemaType::String),
+                ))
+                .into(),
+        )
     }
 }
 
