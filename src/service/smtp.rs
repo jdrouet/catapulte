@@ -95,21 +95,25 @@ impl Configuration {
 impl Configuration {
     fn get_credentials(&self) -> Option<Credentials> {
         if let Some(username) = self.username.as_ref() {
+            tracing::debug!("using username {username:?}");
             if let Some(password) = self.password.as_ref() {
                 Some(Credentials::new(username.clone(), password.clone()))
             } else {
                 Some(Credentials::new(username.clone(), String::new()))
             }
         } else {
+            tracing::debug!("using no username");
             None
         }
     }
 
     fn get_pool_config(&self) -> PoolConfig {
+        tracing::debug!("with max pool size {}", self.max_pool_size);
         PoolConfig::default().max_size(self.max_pool_size)
     }
 
     fn get_timeout(&self) -> Duration {
+        tracing::debug!("with timeout {}ms", self.timeout);
         Duration::from_millis(self.timeout)
     }
 
@@ -117,17 +121,24 @@ impl Configuration {
     // TODO allow to accept invalid hostnames
     fn get_tls(&self) -> Result<Tls, ConfigurationError> {
         if self.tls_enabled {
+            tracing::debug!("with tls enable");
             let parameteres = TlsParameters::builder(self.hostname.to_string())
                 .dangerous_accept_invalid_certs(self.accept_invalid_cert)
                 .build_rustls()?;
             Ok(Tls::Required(parameteres))
         } else {
+            tracing::debug!("with tls disabled");
             Ok(Tls::None)
         }
     }
 
     // TODO allow to specify authentication mechanism
     fn get_transport(&self) -> Result<SmtpTransportBuilder, ConfigurationError> {
+        tracing::debug!(
+            "connecting to hostname {:?} on port {}",
+            self.hostname,
+            self.port
+        );
         let result = SmtpTransport::builder_dangerous(self.hostname.as_str())
             .port(self.port)
             .timeout(Some(self.get_timeout()))
