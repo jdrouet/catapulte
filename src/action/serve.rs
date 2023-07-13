@@ -72,7 +72,30 @@ impl Action {
         tracing::info!("starting server on {}", address);
         axum::Server::bind(&address)
             .serve(app.into_make_service())
+            .with_graceful_shutdown(shutdown_signal())
             .await
             .unwrap();
     }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("signal received, starting graceful shutdown");
 }
