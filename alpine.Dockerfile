@@ -56,6 +56,7 @@ ENV HOST=0.0.0.0
 ENV PORT=3000
 ENV RUST_LOG=info
 ENV TEMPLATE_ROOT=/templates
+ENV DISABLE_LOG_COLOR=true
 
 COPY --from=builder /code/target/release/catapulte /usr/bin/catapulte
 
