@@ -298,6 +298,7 @@ dependencies = [
  "clap",
  "config",
  "handlebars",
+ "hyper 0.14.24",
  "lazy_static",
  "lettre",
  "metrics",
