@@ -167,7 +167,7 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
- "hyper 0.14.26",
+ "hyper 0.14.27",
  "itoa",
  "matchit",
  "memchr",
@@ -298,7 +298,7 @@ dependencies = [
  "clap",
  "config",
  "handlebars",
- "hyper 0.14.26",
+ "hyper 0.14.27",
  "lazy_static",
  "lettre",
  "metrics",
@@ -999,9 +999,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "0.14.26"
+version = "0.14.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab302d72a6f11a3b910431ff93aae7e773078c769f0a3ef15fb9ec692ed147d4"
+checksum = "ffb1cfd654a8219eaef89881fdb3bb3b1cdc5fa75ded05d6933b2b382e395468"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -1028,7 +1028,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0646026eb1b3eea4cd9ba47912ea5ce9cc07713d105b1a14698f4e6433d348b7"
 dependencies = [
  "http",
- "hyper 0.14.26",
+ "hyper 0.14.27",
  "rustls 0.21.1",
  "tokio",
  "tokio-rustls 0.24.0",
@@ -1342,7 +1342,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a4964177ddfdab1e3a2b37aec7cf320e14169abb0ed73999f558136409178d5"
 dependencies = [
  "base64 0.21.0",
- "hyper 0.14.26",
+ "hyper 0.14.27",
  "indexmap 1.9.2",
  "ipnet",
  "metrics",
@@ -2117,7 +2117,7 @@ dependencies = [
  "h2",
  "http",
  "http-body",
- "hyper 0.14.26",
+ "hyper 0.14.27",
  "hyper-rustls",
  "ipnet",
  "js-sys",
@@ -3298,7 +3298,7 @@ dependencies = [
  "futures",
  "futures-timer",
  "http-types",
- "hyper 0.14.26",
+ "hyper 0.14.27",
  "log 0.4.17",
  "once_cell",
  "regex",
