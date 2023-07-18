@@ -15,6 +15,8 @@ struct Configuration {
     pub(crate) smtp: crate::service::smtp::Configuration,
     #[serde(default)]
     pub(crate) template: crate::service::provider::Configuration,
+    #[serde(default)]
+    pub(crate) tracing: crate::service::tracing::Configuration,
 }
 
 impl Configuration {
@@ -65,9 +67,11 @@ impl Action {
                 .expect("failed to install prometheus recorder"),
         );
 
+        let address = configuration.address();
+
         let app =
             crate::controller::create(render_options, smtp_pool, template_provider, prometheus);
-        let address = configuration.address();
+        let app = configuration.tracing.add_layer(app);
 
         tracing::info!("starting server on {}", address);
         axum::Server::bind(&address)
