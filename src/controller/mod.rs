@@ -10,7 +10,6 @@ use axum::extract::Extension;
 use axum::routing::{get, head, post, Router};
 use metrics_exporter_prometheus::PrometheusHandle;
 use std::sync::Arc;
-use tower_http::trace::TraceLayer;
 
 pub(super) fn create(
     render_options: Arc<RenderOptions>,
@@ -31,5 +30,4 @@ pub(super) fn create(
         .layer(Extension(smtp_pool))
         .layer(Extension(template_provider))
         .layer(Extension(prometheus_handle))
-        .layer(TraceLayer::new_for_http())
 }
