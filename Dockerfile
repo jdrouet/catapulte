@@ -1,5 +1,5 @@
 # fetch the vendor with the builder platform to avoid qemu issues
-FROM --platform=$BUILDPLATFORM rust:1-bullseye AS vendor
+FROM --platform=$BUILDPLATFORM rust:1-bookworm AS vendor
 
 ENV USER=root
 
@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=$CARGO_HOME/git,sharing=locked \
   mkdir -p /code/.cargo \
   && cargo vendor > /code/.cargo/config
 
-FROM rust:1-bullseye AS base
+FROM rust:1-bookworm AS base
 
 ENV USER=root
 
