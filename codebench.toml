@@ -1,0 +1,17 @@
+version = "v1"
+
+[[metrics]]
+name = "docker-image.size.alpine.amd64"
+threshold = 5
+expectation = "decrease"
+
+[metrics.tags]
+unit = "byte"
+
+[[metrics]]
+name = "docker-image.size.debian.amd64"
+threshold = 5
+expectation = "decrease"
+
+[metrics.tags]
+unit = "byte"

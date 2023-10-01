@@ -40,6 +40,15 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:canary-alpine
 
+      - name: publish image size metric
+        run: |
+          docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:canary-alpine
+          IMAGE_SIZE=$(docker image inspect ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:canary-alpine | jq .[0].Size)
+          curl https://codebench.cloud/binaries/codebench-cli-amd64 -o ./codebench-cli
+          chmod +x ./codebench-cli
+          ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} publish docker-image.size.alpine.amd64 gauge $IMAGE_SIZE
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} report
+
   build-debian:
     runs-on: ubuntu-latest
 
@@ -64,6 +73,7 @@ jobs:
         uses: docker/setup-buildx-action@v2
         with:
           platforms: linux/amd64
+
       - name: build and push debian
         uses: docker/build-push-action@v3
         with:
@@ -72,3 +82,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: jdrouet/catapulte:canary,jdrouet/catapulte:canary-debian
+
+      - name: publish image size metric
+        run: |
+          docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:canary-debian
+          IMAGE_SIZE=$(docker image inspect ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:canary-debian | jq .[0].Size)
+          curl https://codebench.cloud/binaries/codebench-cli-amd64 -o ./codebench-cli
+          chmod +x ./codebench-cli
+          ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} publish docker-image.size.debian.amd64 gauge $IMAGE_SIZE
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} report
