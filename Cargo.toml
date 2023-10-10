@@ -37,8 +37,8 @@ tokio = { version = "1.33", features = ["full"] }
 tower-http = { version = "0.4", default-features = false, features = ["trace"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-utoipa = { version = "3.5", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "3.1", features = ["axum"] }
+utoipa = { version = "4.0", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "4.0", features = ["axum"] }
 
 [dev-dependencies]
 lazy_static = "1.4"
