@@ -46,8 +46,7 @@ jobs:
           IMAGE_SIZE=$(docker image inspect ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:canary-alpine | jq .[0].Size)
           curl https://codebench.cloud/binaries/codebench-cli-amd64 -o ./codebench-cli
           chmod +x ./codebench-cli
-          ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} publish docker-image.size.alpine.amd64 gauge $IMAGE_SIZE
-          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} report
+          ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} publish docker-image.size.alpine.amd64 $IMAGE_SIZE
 
   build-debian:
     runs-on: ubuntu-latest
@@ -89,5 +88,4 @@ jobs:
           IMAGE_SIZE=$(docker image inspect ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:canary-debian | jq .[0].Size)
           curl https://codebench.cloud/binaries/codebench-cli-amd64 -o ./codebench-cli
           chmod +x ./codebench-cli
-          ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} publish docker-image.size.debian.amd64 gauge $IMAGE_SIZE
-          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} report
+          ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} publish docker-image.size.debian.amd64 $IMAGE_SIZE
