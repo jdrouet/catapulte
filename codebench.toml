@@ -6,7 +6,7 @@ threshold = 5
 expectation = "decrease"
 
 [metrics.tags]
-unit = "byte"
+unit = "B"
 
 [[metrics]]
 name = "docker-image.size.debian.amd64"
@@ -14,4 +14,4 @@ threshold = 5
 expectation = "decrease"
 
 [metrics.tags]
-unit = "byte"
+unit = "B"
