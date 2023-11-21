@@ -44,9 +44,9 @@ jobs:
         run: |
           docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:canary-alpine
           IMAGE_SIZE=$(docker image inspect ${{ secrets.DOCKER_HUB_USERNAME }}/catapulte:canary-alpine | jq .[0].Size)
-          curl https://codebench.cloud/binaries/codebench-cli-amd64 -o ./codebench-cli
-          chmod +x ./codebench-cli
-          ./codebench-cli --token ${{ secrets.CODEBENCH_TOKEN }} publish docker-image.size.alpine.amd64 $IMAGE_SIZE
+          curl https://ci-metrics.eu/binaries/cimetrics-cli-amd64 -o ./cimetrics-cli
+          chmod +x ./cimetrics-cli
+          ./cimetrics-cli --token ${{ secrets.CODEBENCH_TOKEN }} publish docker-image.size.alpine.amd64 $IMAGE_SIZE
 
   build-debian:
     runs-on: ubuntu-latest
