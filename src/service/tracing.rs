@@ -1,4 +1,3 @@
-use hyper::http::Request;
 use tower_http::trace::MakeSpan;
 use tracing::{Level, Span};
 
@@ -32,7 +31,7 @@ impl WithTraceIdMakeSpan {
 }
 
 impl<B> MakeSpan<B> for WithTraceIdMakeSpan {
-    fn make_span(&mut self, request: &Request<B>) -> Span {
+    fn make_span(&mut self, request: &axum::http::Request<B>) -> Span {
         let trace_id = request
             .headers()
             .get(&self.header)
