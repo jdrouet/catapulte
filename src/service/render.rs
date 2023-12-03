@@ -9,9 +9,13 @@ pub(crate) struct Configuration {
 impl Configuration {
     pub(crate) fn build(&self) -> RenderOptions {
         tracing::debug!("building render options");
-        RenderOptions {
+        let mut opts = RenderOptions {
             disable_comments: self.disable_comments,
-            social_icon_origin: self.social_icon_origin.clone(),
+            ..Default::default()
+        };
+        if let Some(ref url) = self.social_icon_origin {
+            opts.social_icon_origin = Some(url.to_string().into());
         }
+        opts
     }
 }
