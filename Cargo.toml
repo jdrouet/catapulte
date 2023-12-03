@@ -19,7 +19,7 @@ lettre = { default-features = false, features = [
   "rustls-tls",
   "smtp-transport",
   "tokio1-rustls-tls",
-], version = "0.10" }
+], version = "0.11" }
 metrics = { version = "0.21" }
 metrics-exporter-prometheus = { version = "0.12", default-features = false, features = [
   "http-listener",
