@@ -24,7 +24,7 @@ metrics = { version = "0.21" }
 metrics-exporter-prometheus = { version = "0.12", default-features = false, features = [
   "http-listener",
 ] }
-mrml = { version = "1.2" }
+mrml = { version = "2.0" }
 reqwest = { version = "0.11", default-features = false, features = [
   "json",
   "rustls-tls",

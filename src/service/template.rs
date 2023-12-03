@@ -3,8 +3,8 @@ use crate::service::multipart::MultipartFile;
 use handlebars::{Handlebars, RenderError as HandlebarTemplateRenderError};
 use lettre::error::Error as LettreError;
 use lettre::message::{Attachment, Body, Mailbox, Message, MessageBuilder, MultiPart, SinglePart};
-use mrml::mjml::MJML;
-use mrml::prelude::parse::Error as ParserError;
+use mrml::mjml::Mjml;
+use mrml::prelude::parser::Error as ParserError;
 use mrml::prelude::render::{Error as RenderError, Options as RenderOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -158,23 +158,23 @@ impl TemplateOptions {
 }
 
 impl Template {
-    fn render(&self, opts: &TemplateOptions) -> Result<MJML, TemplateError> {
+    fn render(&self, opts: &TemplateOptions) -> Result<Mjml, TemplateError> {
         let reg = Handlebars::new();
         let mjml = reg.render_template(self.content.as_str(), &opts.params)?;
         Ok(mrml::parse(mjml)?)
     }
 
-    fn get_body(email: &MJML, opts: &RenderOptions) -> Result<MultiPart, TemplateError> {
+    fn get_body(email: &Mjml, opts: &RenderOptions) -> Result<MultiPart, TemplateError> {
         Ok(MultiPart::alternative()
             .singlepart(Self::get_body_plain(email))
             .multipart(Self::get_body_html(email, opts)?))
     }
 
-    fn get_body_plain(email: &MJML) -> SinglePart {
+    fn get_body_plain(email: &Mjml) -> SinglePart {
         SinglePart::plain(email.get_preview().unwrap_or_default())
     }
 
-    fn get_body_html(email: &MJML, opts: &RenderOptions) -> Result<MultiPart, TemplateError> {
+    fn get_body_html(email: &Mjml, opts: &RenderOptions) -> Result<MultiPart, TemplateError> {
         Ok(MultiPart::related().singlepart(SinglePart::html(email.render(opts)?)))
     }
 
@@ -193,7 +193,7 @@ impl Template {
 
     fn get_multipart(
         &self,
-        template: &MJML,
+        template: &Mjml,
         template_opts: &TemplateOptions,
         render_opts: &RenderOptions,
     ) -> Result<MultiPart, TemplateError> {
