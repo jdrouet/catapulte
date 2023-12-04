@@ -1,0 +1,52 @@
+## The ip address on which the server listens
+# host = "0.0.0.0"
+## The port on which the server listens
+# port = 3000
+
+## Section related to rendering the template
+# [render]
+## When disabled, the comments will not be rendered
+# disable_comments = false
+## The base url to download the social icons
+# social_icon_origin = ""
+
+## Section related to connecting to the SMTP server
+# [smtp]
+## Hostname or IP address of the SMTP server
+# hostname = "127.0.0.1"
+## Port to reach the SMTP server
+# port = 25
+## Username to authenticate to the SMTP server
+# username = ""
+## Password to authenticate to the SMTP server
+# password = ""
+## Maximum pool size for the SMTP server
+# max_pool_size = 10
+## Enables the TLS by default
+# tls_enabled = false
+## Connection timeout in ms
+# timeout = 5000
+## Wether or not catapulte should accept invalid certificates
+# accept_invalid_cert = false
+
+## Section related to fetching the template
+## There are 2 possible modes: local and http.
+## When using local, catapulte will read the template from the local system.
+## When using http, catapulte will read the template from a http request.
+# [template]
+# type = "local"
+## Path of the root folder containing the templates.
+# path = "/templates"
+
+# type = "http"
+## Base URL of used to fetch the templates
+# url = ""
+## URL parameters to add to the query
+# params = { "key" = "value" }
+## Headers to add to the query
+# headers = { "user-agent" = "catapulte" }
+
+## Section related to tracing and adding a tracing parameter to the logs
+# [tracing]
+## If this header is specified, the header from the query will be parsed and added to every log.
+# header = "x-trace-id"
