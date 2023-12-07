@@ -1430,9 +1430,9 @@ checksum = "41f5c9112cb662acd3b204077e0de5bc66305fa8df65c8019d5adb10e9ab6e58"
 
 [[package]]
 name = "mrml"
-version = "2.0.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70ee4cd963c7026c242f2da66539b8415d40cdb4c71327727cd09db5e463d841"
+checksum = "13b6cbfe1ae1e7de18c2a51b9709a5f859bfacca91fc1029d8947ae77fe0f652"
 dependencies = [
  "indexmap 2.1.0",
  "mrml-json-macros",
