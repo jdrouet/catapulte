@@ -9,7 +9,7 @@ license-file = "license.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-axum = { version = "0.6", features = ["multipart"] }
+axum = { version = "0.7", features = ["multipart"] }
 clap = { version = "4.4", features = ["derive", "env"] }
 config = { version = "0.13", default-features = false }
 handlebars = { version = "4.5" }
