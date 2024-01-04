@@ -36,7 +36,7 @@ impl From<TemplateError> for ServerError {
             TemplateError::InterpolationError(err) => {
                 ServerError::bad_request("template interpolation error").details(json!({
                     "origin": "template",
-                    "description": err.desc,
+                    "description": err.reason().to_string(),
                     "template": err.template_name,
                     "line": err.line_no,
                     "column": err.column_no,
