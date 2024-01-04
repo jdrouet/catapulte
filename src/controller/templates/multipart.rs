@@ -9,7 +9,7 @@ use axum::extract::multipart::Field;
 use axum::extract::{Extension, Multipart, Path};
 use axum::http::StatusCode;
 use lettre::Transport;
-use mrml::prelude::render::Options as RenderOptions;
+use mrml::prelude::render::RenderOptions;
 use serde_json::{json, Value as JsonValue};
 use std::default::Default;
 use std::sync::Arc;
@@ -273,15 +273,16 @@ mod tests {
         let from = create_email();
         let to = create_email();
         //
-        let req = build_request(
-            "user-login",
-            vec![
-                ("from", &from),
-                ("to", &to),
-                ("params", r#"{"name":"bob","token":"token"}"#),
-            ],
-            Vec::new(),
-        );
+        let req =
+            build_request(
+                "user-login",
+                vec![
+                    ("from", &from),
+                    ("to", &to),
+                    ("params", r#"{"name":"bob","token":"token"}"#),
+                ],
+                Vec::new(),
+            );
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::NO_CONTENT);
 
@@ -303,15 +304,16 @@ mod tests {
         let to = create_email();
         let cat = PathBuf::new().join("asset").join("cat.jpg");
         //
-        let req = build_request(
-            "user-login",
-            vec![
-                ("from", &from),
-                ("to", &to),
-                ("params", r#"{"name":"bob","token":"token"}"#),
-            ],
-            vec![&cat],
-        );
+        let req =
+            build_request(
+                "user-login",
+                vec![
+                    ("from", &from),
+                    ("to", &to),
+                    ("params", r#"{"name":"bob","token":"token"}"#),
+                ],
+                vec![&cat],
+            );
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::NO_CONTENT);
 
@@ -334,17 +336,18 @@ mod tests {
         let to_second = create_email();
         let cc = create_email();
         //
-        let req = build_request(
-            "user-login",
-            vec![
-                ("from", &from),
-                ("to", &to_first),
-                ("to", &to_second),
-                ("cc", &cc),
-                ("params", r#"{"name":"bob","token":"token"}"#),
-            ],
-            Vec::new(),
-        );
+        let req =
+            build_request(
+                "user-login",
+                vec![
+                    ("from", &from),
+                    ("to", &to_first),
+                    ("to", &to_second),
+                    ("cc", &cc),
+                    ("params", r#"{"name":"bob","token":"token"}"#),
+                ],
+                Vec::new(),
+            );
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::NO_CONTENT);
 

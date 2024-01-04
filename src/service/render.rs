@@ -1,4 +1,4 @@
-pub(crate) use mrml::prelude::render::Options as RenderOptions;
+pub(crate) use mrml::prelude::render::RenderOptions;
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub(crate) struct Configuration {

@@ -5,7 +5,7 @@ use lettre::error::Error as LettreError;
 use lettre::message::{Attachment, Body, Mailbox, Message, MessageBuilder, MultiPart, SinglePart};
 use mrml::mjml::Mjml;
 use mrml::prelude::parser::Error as ParserError;
-use mrml::prelude::render::{Error as RenderError, Options as RenderOptions};
+use mrml::prelude::render::{Error as RenderError, RenderOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::string::ToString;

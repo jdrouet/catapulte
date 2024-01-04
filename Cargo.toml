@@ -9,7 +9,7 @@ license-file = "license.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-axum = { version = "0.6", features = ["multipart"] }
+axum = { version = "0.7", features = ["multipart"] }
 clap = { version = "4.4", features = ["derive", "env"] }
 config = { version = "0.13", default-features = false }
 handlebars = { version = "4.5" }
@@ -33,11 +33,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
 tempfile = { version = "3.8" }
 tokio = { version = "1.35", features = ["full"] }
-tower-http = { version = "0.4", default-features = false, features = ["trace"] }
+tower-http = { version = "0.5", default-features = false, features = ["trace"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 utoipa = { version = "4.1", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "4.0", features = ["axum"] }
+utoipa-swagger-ui = { version = "5.0", features = ["axum"] }
 
 [dev-dependencies]
 lazy_static = "1.4"

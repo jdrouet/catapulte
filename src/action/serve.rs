@@ -1,6 +1,7 @@
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use tokio::net::TcpListener;
 
 #[derive(Clone, Debug, serde::Deserialize)]
 struct Configuration {
@@ -74,8 +75,8 @@ impl Action {
         let app = configuration.tracing.add_layer(app);
 
         tracing::info!("starting server on {}", address);
-        axum::Server::bind(&address)
-            .serve(app.into_make_service())
+        let tcp_listener = TcpListener::bind(&address).await.unwrap();
+        axum::serve(tcp_listener, app.into_make_service())
             .with_graceful_shutdown(shutdown_signal())
             .await
             .unwrap();
@@ -89,12 +90,13 @@ async fn shutdown_signal() {
             .expect("failed to install Ctrl+C handler");
     };
 
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
-    };
+    let terminate =
+        async {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install signal handler")
+                .recv()
+                .await;
+        };
 
     tokio::select! {
         _ = ctrl_c => {},
