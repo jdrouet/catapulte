@@ -18,7 +18,7 @@ use axum::http::StatusCode;
 pub(super) async fn handler(
     Extension(smtp_pool): Extension<SmtpPool>,
 ) -> Result<StatusCode, ServerError> {
-    metrics::increment_counter!("status_check");
+    metrics::counter!("status_check").increment(1);
     smtp_pool.test_connection()?;
     Ok(StatusCode::NO_CONTENT)
 }

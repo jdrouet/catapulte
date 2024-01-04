@@ -64,7 +64,7 @@ impl IntoResponse for ServerError {
 
 impl std::convert::From<std::io::Error> for ServerError {
     fn from(error: std::io::Error) -> Self {
-        metrics::increment_counter!("server_error", "origin" => "std::io::Error");
+        metrics::counter!("server_error", "origin" => "std::io::Error").increment(1);
         tracing::error!("io error: {:?}", error);
         ServerError::internal().details(json!({ "origin": "io" }))
     }
