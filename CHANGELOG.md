@@ -6,6 +6,245 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha-1.1](https://github.com/jdrouet/catapulte/compare/v1.0.0-alpha-1...v1.0.0-alpha-1.1) - 2024-01-04
+
+### Added
+- *(serve)* add opportunity to have trace id logged for each request
+- *(serve)* add graceful shutdown
+- allow to disable color in logs
+
+### Fixed
+- Dockerfile to reduce vulnerabilities
+- remove double trace layer
+- Dockerfile to reduce vulnerabilities
+- Dockerfile to reduce vulnerabilities
+
+### Other
+- apply lint with stable rust version
+- *(deps)* Bump mrml
+- *(deps)* Bump handlerbars
+- *(deps)* Bump metrics and related
+- *(deps)* Bump axum and related
+- *(deps)* Bump zerocopy from 0.7.28 to 0.7.31
+- *(deps)* Bump tokio from 1.34.0 to 1.35.0
+- *(deps)* bump deps
+- update release-plz config
+- update release-plz config
+- release
+- add example catapulte.toml file
+- *(deps)* bump mrml to 2.0
+- *(deps)* bump lettre to 0.11
+- *(deps)* Bump wiremock from 0.5.21 to 0.5.22
+- *(deps)* Bump clap from 4.4.9 to 4.4.10
+- *(deps)* fully remove hyper
+- *(deps)* Bump hyper from 0.14.27 to 1.0.1
+- *(deps)* Bump clap from 4.4.8 to 4.4.9
+- *(deps)* Bump config from 0.13.3 to 0.13.4
+- *(deps)* Bump serde from 1.0.192 to 1.0.193
+- update funding
+- rename codebench config file
+- change ci-metrics for alpine image
+- move from codebench to ci-metrics
+- *(deps)* Bump uuid from 1.5.0 to 1.6.1
+- *(deps)* Bump utoipa from 4.0.0 to 4.1.0
+- *(deps)* Bump tracing-subscriber from 0.3.17 to 0.3.18
+- *(deps)* Bump handlebars from 4.4.0 to 4.5.0
+- *(deps)* Bump tokio from 1.33.0 to 1.34.0
+- *(deps)* Bump clap from 4.4.7 to 4.4.8
+- *(deps)* Bump serde from 1.0.191 to 1.0.192
+- *(deps)* Bump serde from 1.0.190 to 1.0.191
+- *(deps)* Bump wiremock from 0.5.19 to 0.5.21
+- *(ci)* update events units
+- *(ci)* update command to push metrics
+- *(deps)* Bump serde_json from 1.0.107 to 1.0.108
+- *(deps)* Bump serde from 1.0.189 to 1.0.190
+- *(deps)* Bump tempfile from 3.8.0 to 3.8.1
+- *(deps)* Bump clap from 4.4.6 to 4.4.7
+- *(deps)* Bump tracing from 0.1.39 to 0.1.40
+- *(deps)* Bump rustix from 0.38.17 to 0.38.19
+- *(deps)* Bump uuid from 1.4.1 to 1.5.0
+- *(deps)* Bump serde from 1.0.188 to 1.0.189
+- *(deps)* Bump tracing from 0.1.37 to 0.1.39
+- *(deps)* Bump utoipa and utoipa-swagger-ui to 4.0
+- *(deps)* Bump tokio from 1.32.0 to 1.33.0
+- *(ci)* add missing fetch-depth
+- *(ci)* automagically create pr
+- *(deps)* update dependencies
+- *(deps)* Bump reqwest from 0.11.21 to 0.11.22
+- *(deps)* Bump reqwest from 0.11.20 to 0.11.21
+- *(ci)* publish docker image size
+- *(deps)* Bump clap from 4.4.5 to 4.4.6
+- *(deps)* Bump clap from 4.4.4 to 4.4.5
+- *(deps)* Bump clap from 4.4.3 to 4.4.4
+- *(deps)* Bump serde_json from 1.0.106 to 1.0.107
+- *(deps)* Bump clap from 4.4.2 to 4.4.3
+- *(deps)* Bump serde_json from 1.0.105 to 1.0.106
+- *(deps)* Bump handlebars from 4.3.7 to 4.4.0
+- *(deps)* Bump tower-http from 0.4.3 to 0.4.4
+- *(deps)* Bump clap from 4.4.1 to 4.4.2
+- *(deps)* Bump serde from 1.0.187 to 1.0.188
+- *(deps)* Bump clap from 4.4.0 to 4.4.1
+- *(deps)* Bump serde from 1.0.186 to 1.0.187
+- *(deps)* Bump serde from 1.0.185 to 1.0.186
+- *(deps)* Bump clap from 4.3.24 to 4.4.0
+- *(deps)* Bump reqwest from 0.11.19 to 0.11.20
+- *(deps)* Bump clap from 4.3.23 to 4.3.24
+- *(deps)* Bump rustls-webpki from 0.100.1 to 0.100.2
+- *(deps)* Bump utoipa from 3.4.4 to 3.5.0
+- *(deps)* Bump reqwest from 0.11.18 to 0.11.19
+- *(deps)* Bump serde from 1.0.183 to 1.0.185
+- *(deps)* Bump tempfile from 3.7.1 to 3.8.0
+- *(deps)* Bump clap from 4.3.22 to 4.3.23
+- *(deps)* Bump lettre to 0.10
+- *(deps)* Bump tokio from 1.31.0 to 1.32.0
+- *(docker)* bump debian tag from bullseye to bookworm
+- *(deps)* run cargo update to bump deps
+- *(deps)* Bump serde_json from 1.0.104 to 1.0.105
+- *(deps)* Bump tokio from 1.30.0 to 1.31.0
+- *(deps)* Bump tokio from 1.29.1 to 1.30.0
+- *(deps)* Bump clap from 4.3.19 to 4.3.21
+- *(deps)* Bump utoipa-swagger-ui from 3.1.4 to 3.1.5
+- *(deps)* Bump tempfile from 3.7.0 to 3.7.1
+- *(deps)* Bump serde from 1.0.181 to 1.0.183
+- *(deps)* Bump utoipa from 3.4.3 to 3.4.4
+- *(deps)* Bump serde from 1.0.180 to 1.0.181
+- *(deps)* Bump axum from 0.6.19 to 0.6.20
+- *(deps)* Bump serde from 1.0.178 to 1.0.180
+- *(deps)* Bump serde from 1.0.177 to 1.0.178
+- *(deps)* Bump serde from 1.0.176 to 1.0.177
+- *(deps)* Bump serde_json from 1.0.103 to 1.0.104
+- *(deps)* Bump serde from 1.0.175 to 1.0.176
+- *(deps)* Bump serde from 1.0.174 to 1.0.175
+- *(deps)* Bump utoipa from 3.4.2 to 3.4.3
+- *(deps)* Bump utoipa from 3.4.0 to 3.4.2
+- *(deps)* Bump clap from 4.3.17 to 4.3.19
+- *(deps)* Bump serde from 1.0.171 to 1.0.174
+- *(deps)* Bump clap from 4.3.16 to 4.3.17
+- *(deps)* Bump tower-http from 0.4.2 to 0.4.3
+- *(deps)* Bump tempfile from 3.6.0 to 3.7.0
+- *(deps)* Bump tower-http from 0.4.1 to 0.4.2
+- *(deps)* Bump serde_json from 1.0.102 to 1.0.103
+- *(deps)* Bump hyper from 0.14.26 to 0.14.27
+- *(deps)* Bump clap from 4.3.12 to 4.3.16
+- *(deps)* Bump uuid from 1.4.0 to 1.4.1
+- *(deps)* Bump axum from 0.6.18 to 0.6.19
+- *(deps)* Bump hyper from 0.14.24 to 0.14.26
+- *(deps)* Bump clap from 4.3.11 to 4.3.12
+- *(deps)* Bump utoipa-swagger-ui from 3.1.3 to 3.1.4
+- *(deps)* Bump utoipa from 3.3.0 to 3.4.0
+- *(deps)* Bump serde_json from 1.0.101 to 1.0.102
+- *(deps)* Bump serde_json from 1.0.100 to 1.0.101
+- *(deps)* Bump serde from 1.0.167 to 1.0.171
+- *(deps)* Bump serde from 1.0.166 to 1.0.167
+- *(deps)* Bump clap from 4.3.10 to 4.3.11
+- *(deps)* Bump clap from 4.1.11 to 4.3.10
+- *(deps)* Bump metrics from 0.21.0 to 0.21.1
+- *(deps)* Bump serde_json from 1.0.99 to 1.0.100
+- *(deps)* Bump tokio from 1.29.0 to 1.29.1
+- *(deps)* Bump tokio from 1.28.2 to 1.29.0
+- *(deps)* Bump uuid from 1.3.4 to 1.4.0
+- *(deps)* Bump serde_json from 1.0.97 to 1.0.99
+- *(deps)* Bump tower-http from 0.4.0 to 0.4.1
+- *(deps)* Bump serde_json from 1.0.96 to 1.0.97
+- *(deps)* Bump uuid from 1.3.3 to 1.3.4
+- *(deps)* Bump serde from 1.0.163 to 1.0.164
+- *(deps)* Bump wiremock from 0.5.18 to 0.5.19
+- *(deps)* Bump tempfile from 3.5.0 to 3.6.0
+- *(deps)* Bump tokio from 1.28.1 to 1.28.2
+- *(deps)* Bump reqwest from 0.11.17 to 0.11.18
+- *(deps)* Bump uuid from 1.3.2 to 1.3.3
+- *(deps)* Bump serde from 1.0.162 to 1.0.163
+- *(deps)* Bump handlebars from 4.3.6 to 4.3.7
+- *(deps)* Bump tokio from 1.28.0 to 1.28.1
+- *(deps)* Bump metrics-exporter-prometheus from 0.12.0 to 0.12.1
+- *(deps)* Bump serde from 1.0.161 to 1.0.162
+- *(deps)* Bump serde from 1.0.160 to 1.0.161
+- *(deps)* Bump tokio from 1.27.0 to 1.28.0
+- *(deps)* Bump reqwest from 0.11.16 to 0.11.17
+- *(deps)* Bump axum from 0.6.16 to 0.6.18
+- *(deps)* Bump uuid from 1.3.1 to 1.3.2
+- *(deps)* Bump tracing from 0.1.37 to 0.1.38
+- *(deps)* Bump tracing-subscriber from 0.3.16 to 0.3.17
+- *(deps)* Bump axum from 0.6.15 to 0.6.16
+- *(deps)* Bump metrics from 0.20.1 to 0.21.0
+- *(deps)* Bump metrics-exporter-prometheus from 0.11.0 to 0.12.0
+- *(deps)* Bump utoipa from 3.2.1 to 3.3.0
+- *(deps)* Bump h2 from 0.3.15 to 0.3.17
+- *(deps)* Bump axum from 0.6.14 to 0.6.15
+- *(deps)* Bump serde_json from 1.0.95 to 1.0.96
+- *(deps)* Bump axum from 0.6.12 to 0.6.14
+- *(deps)* Bump serde from 1.0.159 to 1.0.160
+- *(deps)* Bump uuid from 1.3.0 to 1.3.1
+- *(deps)* Bump utoipa-swagger-ui from 3.1.2 to 3.1.3
+- *(deps)* Bump wiremock from 0.5.17 to 0.5.18
+- *(deps)* Bump utoipa-swagger-ui from 3.1.1 to 3.1.2
+- *(deps)* Bump utoipa from 3.2.0 to 3.2.1
+- add some logs for creating smtp service
+- *(deps)* Bump serde from 1.0.158 to 1.0.159
+- *(deps)* Bump tempfile from 3.4.0 to 3.5.0
+- *(deps)* Bump utoipa from 3.1.2 to 3.2.0
+- *(deps)* Bump reqwest from 0.11.15 to 0.11.16
+- *(deps)* Bump tokio from 1.26.0 to 1.27.0
+- *(deps)* Bump serde_json from 1.0.94 to 1.0.95
+- *(deps)* Bump axum from 0.6.11 to 0.6.12
+- *(deps)* Bump serde from 1.0.156 to 1.0.158
+- *(deps)* Bump reqwest from 0.11.14 to 0.11.15
+- *(deps)* Bump clap from 4.1.9 to 4.1.11
+- *(deps)* Bump utoipa from 3.1.1 to 3.1.2
+- *(deps)* Bump clap from 4.1.8 to 4.1.9
+- *(deps)* Bump utoipa from 3.1.0 to 3.1.1
+- *(deps)* Bump utoipa-swagger-ui from 3.1.0 to 3.1.1
+- *(deps)* Bump serde from 1.0.155 to 1.0.156
+- *(deps)* Bump serde from 1.0.154 to 1.0.155
+- *(deps)* Bump axum from 0.6.10 to 0.6.11
+- *(deps)* Bump utoipa-swagger-ui from 3.0.2 to 3.1.0
+- *(deps)* Bump utoipa from 3.0.3 to 3.1.0
+- *(deps)* Bump serde from 1.0.153 to 1.0.154
+- *(deps)* Bump serde from 1.0.152 to 1.0.153
+- *(deps)* Bump serde_json from 1.0.93 to 1.0.94
+- *(deps)* Bump axum from 0.6.9 to 0.6.10
+- *(deps)* Bump tokio from 1.25.0 to 1.26.0
+- *(deps)* Bump clap from 4.1.7 to 4.1.8
+- *(deps)* Bump clap from 4.1.6 to 4.1.7
+- *(deps)* Bump axum from 0.6.8 to 0.6.9
+- *(deps)* Bump tempfile from 3.3.0 to 3.4.0
+- *(deps)* Bump axum from 0.6.7 to 0.6.8
+- *(deps)* Bump tower-http from 0.3.5 to 0.4.0
+- *(deps)* Bump utoipa from 3.0.2 to 3.0.3
+- *(deps)* Bump axum from 0.6.6 to 0.6.7
+- *(deps)* Bump clap from 4.1.4 to 4.1.6
+- *(deps)* Bump axum from 0.6.4 to 0.6.6
+- *(deps)* Bump utoipa from 3.0.1 to 3.0.2
+- *(deps)* Bump serde_json from 1.0.92 to 1.0.93
+- *(deps)* Bump serde_json from 1.0.91 to 1.0.92
+- *(deps)* Bump uuid from 1.2.2 to 1.3.0
+- *(deps)* Bum utoipa and utoipa to 3.0
+- *(deps)* Bump tokio from 1.24.2 to 1.25.0
+- fix clippy suggestions
+- *(deps)* Bump clap from 4.1.3 to 4.1.4
+- *(deps)* Bump axum from 0.6.3 to 0.6.4
+- Merge pull request [#404](https://github.com/jdrouet/catapulte/pull/404) from jdrouet/dependabot/cargo/clap-4.1.3
+- *(deps)* Bump axum from 0.6.2 to 0.6.3
+- *(deps)* Bump reqwest from 0.11.13 to 0.11.14
+- *(deps)* Bump tokio from 1.24.1 to 1.24.2
+- *(deps)* Bump clap from 4.1.0 to 4.1.1
+- *(deps)* Bump clap from 4.0.32 to 4.1.0
+- *(deps)* Bump wiremock from 0.5.16 to 0.5.17
+- *(deps)* Bump mrml from 1.2.10 to 1.2.11
+- *(deps)* Bump axum from 0.6.1 to 0.6.2
+- *(deps)* Bump tokio from 1.24.0 to 1.24.1
+- *(deps)* Bump tokio from 1.23.1 to 1.24.0
+- *(deps)* Bump tokio from 1.23.0 to 1.23.1
+- *(deps)* Bump wiremock from 0.5.15 to 0.5.16
+- *(deps)* Bump serde from 1.0.151 to 1.0.152
+- *(deps)* Bump clap from 4.0.30 to 4.0.32
+- *(deps)* Bump clap from 4.0.29 to 4.0.30
+- *(deps)* Bump handlebars from 4.3.5 to 4.3.6
+- *(deps)* Bump serde_json from 1.0.89 to 1.0.91
+- *(deps)* Bump serde from 1.0.150 to 1.0.151
+- please clippy
+- *(deps)* Bump serde from 1.0.149 to 1.0.150
+
 ## [1.0.0-alpha-1](https://github.com/jdrouet/catapulte/releases/tag/v1.0.0-alpha-1) - 2023-12-04
 
 ### Added
