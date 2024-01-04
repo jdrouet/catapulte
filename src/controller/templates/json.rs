@@ -104,16 +104,19 @@ pub(crate) async fn handler(
     Path(name): Path<String>,
     Json(body): Json<JsonPayload>,
 ) -> Result<StatusCode, ServerError> {
-    metrics::increment_counter!("smtp_send", "method" => "json", "template_name" => name.clone());
+    metrics::counter!("smtp_send", "method" => "json", "template_name" => name.clone())
+        .increment(1);
     let template = template_provider.find_by_name(name.as_str()).await?;
     let options: TemplateOptions = body.to_options();
     options.validate()?;
     let email = template.to_email(&options, &render_opts)?;
     if let Err(err) = smtp_pool.send(&email) {
-        metrics::increment_counter!("smtp_send_error", "method" => "json", "template_name" => name);
+        metrics::counter!("smtp_send_error", "method" => "json", "template_name" => name)
+            .increment(1);
         Err(err)?
     } else {
-        metrics::increment_counter!("smtp_send_success", "method" => "json", "template_name" => name);
+        metrics::counter!("smtp_send_success", "method" => "json", "template_name" => name)
+            .increment(1);
         Ok(StatusCode::NO_CONTENT)
     }
 }

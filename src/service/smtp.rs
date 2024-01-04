@@ -172,14 +172,15 @@ impl From<LettreError> for ConfigurationError {
 impl From<LettreError> for ServerError {
     fn from(err: LettreError) -> Self {
         if let Some(code) = err.status() {
-            metrics::increment_counter!(
+            metrics::counter!(
                 "smtp_error",
                 "severity" => code.severity.to_string(),
                 "category" => code.category.to_string(),
                 "detail" => code.detail.to_string(),
-            );
+            )
+            .increment(1);
         } else {
-            metrics::increment_counter!("smtp_error");
+            metrics::counter!("smtp_error").increment(1);
         }
         tracing::error!("smtp error: {:?}", err);
         ServerError::internal().details(serde_json::json!({
