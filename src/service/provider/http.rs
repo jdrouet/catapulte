@@ -117,7 +117,9 @@ impl TemplateProvider {
             tracing::error!("unable to generate metadata url: {:?}", err);
             Error::configuration(
                 "http",
-                Cow::Owned(format!("unable to build url for template {name} and {filename}")),
+                Cow::Owned(format!(
+                    "unable to build url for template {name} and {filename}"
+                )),
             )
         })
     }
@@ -141,13 +143,22 @@ impl TemplateProvider {
         let status = res.status();
         if status == StatusCode::NOT_FOUND {
             tracing::error!("unable to find template metadata: {}", status);
-            return Err(Error::not_found("http", Cow::Borrowed("error when loading metadata")));
+            return Err(Error::not_found(
+                "http",
+                Cow::Borrowed("error when loading metadata"),
+            ));
         } else if status.is_client_error() {
             tracing::error!("unable to load template metadata: {}", status);
-            return Err(Error::internal("http", Cow::Borrowed("error when loading metadata")));
+            return Err(Error::internal(
+                "http",
+                Cow::Borrowed("error when loading metadata"),
+            ));
         } else if status.is_server_error() {
             tracing::error!("unable to load template metadata: {}", status);
-            return Err(Error::provider("http", Cow::Borrowed("error when loading metadata")));
+            return Err(Error::provider(
+                "http",
+                Cow::Borrowed("error when loading metadata"),
+            ));
         }
         let metadata: RemoteMetadata = res.json().await.map_err(|err| {
             tracing::error!("unable to parse template metadata: {:?}", err);

@@ -30,11 +30,9 @@ impl<'s> utoipa::ToSchema<'s> for Recipient {
                     utoipa::openapi::ObjectBuilder::new()
                         .schema_type(utoipa::openapi::SchemaType::String),
                 )
-                .item(
-                    utoipa::openapi::ArrayBuilder::new().items(
-                        utoipa::openapi::Object::with_type(utoipa::openapi::SchemaType::String)
-                    ),
-                )
+                .item(utoipa::openapi::ArrayBuilder::new().items(
+                    utoipa::openapi::Object::with_type(utoipa::openapi::SchemaType::String),
+                ))
                 .into(),
         )
     }
@@ -156,16 +154,15 @@ mod tests {
         let to = create_email();
         let payload = create_payload(&from, &to, "this_is_a_token");
 
-        let result =
-            handler(
-                Extension(render_options),
-                Extension(smtp_pool),
-                Extension(template_provider),
-                Path("user-login".into()),
-                Json(payload),
-            )
-            .await
-            .unwrap();
+        let result = handler(
+            Extension(render_options),
+            Extension(smtp_pool),
+            Extension(template_provider),
+            Path("user-login".into()),
+            Json(payload),
+        )
+        .await
+        .unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
         let list = expect_latest_inbox(&from, "to", &to).await;
         let last = list.first().unwrap();
@@ -190,16 +187,15 @@ mod tests {
         let to = create_email();
         let payload = create_payload(&from, &to, "this_is_a_secure_token");
 
-        let result =
-            handler(
-                Extension(render_options),
-                Extension(smtp_pool),
-                Extension(template_provider),
-                Path("user-login".into()),
-                Json(payload),
-            )
-            .await
-            .unwrap();
+        let result = handler(
+            Extension(render_options),
+            Extension(smtp_pool),
+            Extension(template_provider),
+            Path("user-login".into()),
+            Json(payload),
+        )
+        .await
+        .unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
         let list = expect_latest_inbox(&from, "to", &to).await;
         let last = list.first().unwrap();
@@ -224,16 +220,15 @@ mod tests {
         let mut payload = create_payload(&from, &to, "this_is_a_secure_token");
         payload.params = serde_json::json!({ "name": "Alice" });
 
-        let result =
-            handler(
-                Extension(render_options),
-                Extension(smtp_pool),
-                Extension(template_provider),
-                Path("user-login".into()),
-                Json(payload),
-            )
-            .await
-            .unwrap();
+        let result = handler(
+            Extension(render_options),
+            Extension(smtp_pool),
+            Extension(template_provider),
+            Path("user-login".into()),
+            Json(payload),
+        )
+        .await
+        .unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
         let list = expect_latest_inbox(&from, "to", &to).await;
         let last = list.first().unwrap();
@@ -267,16 +262,15 @@ mod tests {
             }),
         };
         //
-        let result =
-            handler(
-                Extension(render_options),
-                Extension(smtp_pool),
-                Extension(template_provider),
-                Path("user-login".into()),
-                Json(payload),
-            )
-            .await
-            .unwrap();
+        let result = handler(
+            Extension(render_options),
+            Extension(smtp_pool),
+            Extension(template_provider),
+            Path("user-login".into()),
+            Json(payload),
+        )
+        .await
+        .unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
         for (kind, email) in to
             .iter()
@@ -305,16 +299,15 @@ mod tests {
         let to = create_email();
         let payload = create_payload(&from, &to, "this_is_a_token");
 
-        let result =
-            handler(
-                Extension(render_options),
-                Extension(smtp_pool),
-                Extension(template_provider),
-                Path("not-found".into()),
-                Json(payload),
-            )
-            .await
-            .unwrap_err();
+        let result = handler(
+            Extension(render_options),
+            Extension(smtp_pool),
+            Extension(template_provider),
+            Path("not-found".into()),
+            Json(payload),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(result.code, StatusCode::BAD_REQUEST);
         assert_eq!(result.message, "unable to prepare template");
     }
@@ -338,16 +331,15 @@ mod tests {
             params: serde_json::json!({}),
         };
 
-        let result =
-            handler(
-                Extension(render_options),
-                Extension(smtp_pool),
-                Extension(template_provider),
-                Path("user-login".into()),
-                Json(payload),
-            )
-            .await
-            .unwrap_err();
+        let result = handler(
+            Extension(render_options),
+            Extension(smtp_pool),
+            Extension(template_provider),
+            Path("user-login".into()),
+            Json(payload),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(result.code, StatusCode::BAD_REQUEST);
         assert_eq!(result.message, "template rendering options invalid");
     }

@@ -90,13 +90,12 @@ async fn shutdown_signal() {
             .expect("failed to install Ctrl+C handler");
     };
 
-    let terminate =
-        async {
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to install signal handler")
-                .recv()
-                .await;
-        };
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
 
     tokio::select! {
         _ = ctrl_c => {},
