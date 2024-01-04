@@ -6,7 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0-alpha-1.1](https://github.com/jdrouet/catapulte/compare/v1.0.0-alpha-1...v1.0.0-alpha-1.1) - 2024-01-04
+## [1.0.0-alpha.2](https://github.com/jdrouet/catapulte/compare/v1.0.0-alpha-1...v1.0.0-alpha.2) - 2024-01-04
 
 ### Added
 - *(serve)* add opportunity to have trace id logged for each request
