@@ -10,7 +10,7 @@ license-file = "license.md"
 
 [dependencies]
 axum = { version = "0.7", features = ["multipart"] }
-clap = { version = "4.4", features = ["derive", "env"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 config = { version = "0.14", default-features = false }
 handlebars = { version = "5.1" }
 lettre = { default-features = false, features = [
