@@ -1,6 +1,6 @@
 [package]
 name = "catapulte"
-version = "1.0.0"
+version = "1.0.1"
 description = "Catapulte is an open source mailer you can host yourself. You can use it to quickly catapult your transactionnal emails to destination."
 authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
 edition = "2021"

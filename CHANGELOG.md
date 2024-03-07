@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.1](https://github.com/jdrouet/catapulte/compare/v1.0.0...v1.0.1) - 2024-03-07
+
+### Other
+- *(deps)* Bump clap from 4.5.1 to 4.5.2
+
 ## [1.0.0] - 2024-03-05
 
 ### Build
