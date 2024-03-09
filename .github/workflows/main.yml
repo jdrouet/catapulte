@@ -1,4 +1,9 @@
-on: [push]
+name: common
+
+on:
+  workflow_call:
+  pull_request:
+  push:
 
 # Make sure CI fails on all warnings, including Clippy lints
 env:
@@ -9,7 +14,7 @@ env:
 jobs:
   code-checking:
     runs-on: ubuntu-latest
-    concurrency: 
+    concurrency:
       group: ${{ github.ref }}-code-checking
       cancel-in-progress: true
     steps:
@@ -19,7 +24,7 @@ jobs:
           toolchain: stable
           profile: minimal
           components: rustfmt,clippy
-          
+
       - uses: actions/cache@v3
         with:
           path: |
@@ -54,7 +59,7 @@ jobs:
         ports:
           - 1026:1026
 
-    concurrency: 
+    concurrency:
       group: ${{ github.ref }}-testing
       cancel-in-progress: true
 
@@ -65,7 +70,7 @@ jobs:
         with:
           toolchain: stable
           profile: minimal
-          
+
       - uses: actions/cache@v3
         with:
           path: |

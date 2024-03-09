@@ -1,3 +1,5 @@
+name: canary release
+
 on:
   push:
     branches:
@@ -7,7 +9,7 @@ jobs:
   build-alpine:
     runs-on: ubuntu-latest
 
-    concurrency: 
+    concurrency:
       group: ${{ github.ref }}-build-docker-alpine-canary
       cancel-in-progress: true
 
@@ -51,7 +53,7 @@ jobs:
   build-debian:
     runs-on: ubuntu-latest
 
-    concurrency: 
+    concurrency:
       group: ${{ github.ref }}-build-docker-debian-canary
       cancel-in-progress: true
 

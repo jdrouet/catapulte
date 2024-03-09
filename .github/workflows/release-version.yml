@@ -1,7 +1,9 @@
+name: version release
+
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   variables:
@@ -17,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [variables]
 
-    concurrency: 
+    concurrency:
       group: ${{ github.ref }}-build-docker-alpine-version
       cancel-in-progress: true
 
@@ -54,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [variables]
 
-    concurrency: 
+    concurrency:
       group: ${{ github.ref }}-build-docker-debian-version
       cancel-in-progress: true
 
