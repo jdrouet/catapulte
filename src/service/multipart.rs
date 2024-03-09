@@ -2,6 +2,7 @@ use axum::body::Bytes;
 use axum::extract::multipart::Field;
 use serde_json::Value as JsonValue;
 use serde_json::{from_slice, Error as JsonError};
+use std::fmt::Display;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::string::FromUtf8Error;
@@ -11,10 +12,10 @@ pub enum MultipartError {
     Parse(&'static str),
 }
 
-impl ToString for MultipartError {
-    fn to_string(&self) -> String {
+impl Display for MultipartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Parse(inner) => inner.to_string(),
+            Self::Parse(inner) => inner.fmt(f),
         }
     }
 }

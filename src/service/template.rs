@@ -8,7 +8,6 @@ use mrml::prelude::parser::Error as ParserError;
 use mrml::prelude::render::{Error as RenderError, RenderOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use std::string::ToString;
 
 #[derive(Debug)]
 pub enum TemplateError {

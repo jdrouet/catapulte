@@ -4,7 +4,6 @@ use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::transport::smtp::{
     Error as LettreError, PoolConfig, SmtpTransport, SmtpTransportBuilder,
 };
-use std::string::ToString;
 use std::time::Duration;
 
 pub type SmtpPool = SmtpTransport;
@@ -160,7 +159,7 @@ impl Configuration {
 }
 
 #[derive(Debug)]
-pub struct ConfigurationError(LettreError);
+pub struct ConfigurationError(#[allow(dead_code)] LettreError);
 
 impl From<LettreError> for ConfigurationError {
     fn from(err: LettreError) -> Self {
