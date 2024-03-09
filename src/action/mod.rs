@@ -3,7 +3,7 @@ mod serve;
 
 #[derive(clap::Subcommand)]
 pub(crate) enum Action {
-    /// Run the Tekitoi server
+    /// Run the Catapulte server
     Serve(serve::Action),
     /// Prints the open api schema
     OpenApi(openapi::Action),
