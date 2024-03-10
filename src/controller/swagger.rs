@@ -19,6 +19,6 @@ use utoipa_swagger_ui::SwaggerUi;
 )]
 pub(crate) struct ApiDoc;
 
-pub(super) fn service() -> SwaggerUi {
+pub(crate) fn service() -> SwaggerUi {
     SwaggerUi::new("/swagger").url("/openapi.json", ApiDoc::openapi())
 }

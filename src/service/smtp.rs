@@ -9,7 +9,7 @@ use std::time::Duration;
 pub type SmtpPool = SmtpTransport;
 
 #[derive(Clone, Debug, serde::Deserialize)]
-pub struct Configuration {
+pub(crate) struct Configuration {
     #[serde(default = "Configuration::default_hostname")]
     pub hostname: String,
     #[serde(default = "Configuration::default_port")]
@@ -120,7 +120,7 @@ impl Configuration {
     // TODO allow to accept invalid hostnames
     fn get_tls(&self) -> Result<Tls, ConfigurationError> {
         if self.tls_enabled {
-            tracing::debug!("with tls enable");
+            tracing::debug!("with tls enabled");
             let parameteres = TlsParameters::builder(self.hostname.to_string())
                 .dangerous_accept_invalid_certs(self.accept_invalid_cert)
                 .build_rustls()?;
@@ -151,7 +151,7 @@ impl Configuration {
         Ok(result)
     }
 
-    pub fn build(&self) -> Result<SmtpTransport, ConfigurationError> {
+    pub(crate) fn build(&self) -> Result<SmtpTransport, ConfigurationError> {
         tracing::debug!("building smtp pool");
         let mailer = self.get_transport()?;
         Ok(mailer.build())
@@ -159,7 +159,7 @@ impl Configuration {
 }
 
 #[derive(Debug)]
-pub struct ConfigurationError(#[allow(dead_code)] LettreError);
+pub(crate) struct ConfigurationError(#[allow(dead_code)] LettreError);
 
 impl From<LettreError> for ConfigurationError {
     fn from(err: LettreError) -> Self {

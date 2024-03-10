@@ -210,30 +210,35 @@ pub(crate) async fn handler(
 
 #[cfg(test)]
 mod tests {
+    use crate::service::server::Server;
     use crate::tests::{create_email, expect_latest_inbox};
     use axum::body::Body;
     use axum::http::{Method, Request};
+    use metrics_exporter_prometheus::PrometheusBuilder;
     use multipart::client::lazy::Multipart;
     use std::io::{BufReader, Read};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
     use tower::ServiceExt;
 
     fn create_app() -> axum::Router {
         crate::try_init_logs();
-        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+
+        let render_options = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider =
-            Arc::new(crate::service::provider::Configuration::default().build());
-        let prometheus_handler = crate::tests::PROMETHEUS_HANDLER.clone();
-        crate::controller::create(
+        let template_provider = crate::service::provider::Configuration::default().build();
+        let prometheus_handle = PrometheusBuilder::new().build_recorder().handle();
+
+        Server::new(
+            SocketAddr::from((IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 5555)),
             render_options,
             smtp_pool,
             template_provider,
-            prometheus_handler,
+            prometheus_handle,
         )
+        .app()
     }
 
     fn build_request<'a>(
