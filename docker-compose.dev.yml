@@ -19,7 +19,7 @@ services:
       - SMARTHOST_PORT=1025
     networks:
       - backend
-    ports: 
+    ports:
       - 1026:1026
     volumes:
       - ./asset/selfsigned.key:/selfsigned.key:ro

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
 #[derive(Debug)]
-pub enum TemplateError {
+pub(crate) enum TemplateError {
     InterpolationError(HandlebarTemplateRenderError),
     InvalidOptions(LettreError),
     RenderingError(RenderError),
@@ -76,7 +76,7 @@ impl From<RenderError> for TemplateError {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Template {
+pub(crate) struct Template {
     pub name: String,
     #[serde(default)]
     pub description: String,
@@ -85,7 +85,7 @@ pub struct Template {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct TemplateOptions {
+pub(crate) struct TemplateOptions {
     to: Vec<String>,
     cc: Vec<String>,
     bcc: Vec<String>,
@@ -96,7 +96,7 @@ pub struct TemplateOptions {
 }
 
 impl TemplateOptions {
-    pub fn new(
+    pub(crate) fn new(
         from: String,
         to: Vec<String>,
         cc: Vec<String>,
@@ -114,7 +114,7 @@ impl TemplateOptions {
         }
     }
 
-    pub fn validate(&self) -> Result<(), TemplateError> {
+    pub(crate) fn validate(&self) -> Result<(), TemplateError> {
         if self.from.is_empty() {
             Err(TemplateError::InvalidOptions(LettreError::MissingFrom))
         } else if self.to.is_empty() && self.cc.is_empty() && self.bcc.is_empty() {
@@ -126,7 +126,7 @@ impl TemplateOptions {
 }
 
 impl TemplateOptions {
-    pub fn to_builder(&self) -> MessageBuilder {
+    pub(crate) fn to_builder(&self) -> MessageBuilder {
         let from: Mailbox = self.from.parse().unwrap();
         let builder = Message::builder().from(from);
         let builder = self.apply_to(builder);
@@ -203,7 +203,7 @@ impl Template {
         }))
     }
 
-    pub fn to_email(
+    pub(crate) fn to_email(
         &self,
         template_opts: &TemplateOptions,
         render_opts: &RenderOptions,

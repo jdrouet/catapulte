@@ -1,22 +1,11 @@
-mod metrics;
-mod status;
+pub(crate) mod metrics;
+pub(crate) mod status;
 pub(crate) mod swagger;
-mod templates;
+pub(crate) mod templates;
 
-use crate::service::provider::TemplateProvider;
-use crate::service::render::RenderOptions;
-use crate::service::smtp::SmtpPool;
-use axum::extract::Extension;
 use axum::routing::{get, head, post, Router};
-use metrics_exporter_prometheus::PrometheusHandle;
-use std::sync::Arc;
 
-pub(super) fn create(
-    render_options: Arc<RenderOptions>,
-    smtp_pool: SmtpPool,
-    template_provider: Arc<TemplateProvider>,
-    prometheus_handle: Arc<PrometheusHandle>,
-) -> Router {
+pub(crate) fn create() -> Router {
     Router::new()
         .route("/status", head(status::handler))
         .route("/metrics", get(metrics::handler))
@@ -26,8 +15,4 @@ pub(super) fn create(
             post(templates::multipart::handler),
         )
         .merge(swagger::service())
-        .layer(Extension(render_options))
-        .layer(Extension(smtp_pool))
-        .layer(Extension(template_provider))
-        .layer(Extension(prometheus_handle))
 }

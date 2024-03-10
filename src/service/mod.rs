@@ -1,6 +1,6 @@
-pub mod multipart;
-pub mod provider;
-pub mod render;
-pub mod smtp;
-pub mod template;
-pub mod tracing;
+pub(crate) mod multipart;
+pub(crate) mod provider;
+pub(crate) mod render;
+pub(crate) mod server;
+pub(crate) mod smtp;
+pub(crate) mod template;

@@ -15,7 +15,7 @@ use axum::http::StatusCode;
         (status = 500, description = "The SMTP server cannot be reached."),
     )
 )]
-pub(super) async fn handler(
+pub(crate) async fn handler(
     Extension(smtp_pool): Extension<SmtpPool>,
 ) -> Result<StatusCode, ServerError> {
     metrics::counter!("status_check").increment(1);
@@ -32,6 +32,7 @@ mod tests {
     #[tokio::test]
     async fn success() {
         crate::try_init_logs();
+
         let smtp_pool = crate::service::smtp::Configuration::secure()
             .build()
             .unwrap();
