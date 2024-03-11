@@ -1,11 +1,11 @@
 use crate::service::provider::TemplateProvider;
-use crate::service::render::RenderOptions;
 use crate::service::smtp::SmtpPool;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_exporter_prometheus::PrometheusHandle;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use tokio::net::TcpListener;
+
+use super::render::RenderService;
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub(crate) struct Configuration {
@@ -48,30 +48,51 @@ impl Configuration {
 
 pub(crate) struct Server {
     socket_address: SocketAddr,
-    render_options: RenderOptions,
+    render_service: RenderService,
     smtp_pool: SmtpPool,
     template_provider: TemplateProvider,
     prometheus_handle: PrometheusHandle,
 }
 
+#[cfg(test)]
 impl Server {
-    pub fn new(
+    pub fn default_insecure() -> Self {
+        let render_service = crate::service::render::Configuration::default().build();
+        let smtp_pool = crate::service::smtp::Configuration::insecure()
+            .build()
+            .unwrap();
+        let template_provider = crate::service::provider::Configuration::default().build();
+        let prometheus_handle = PrometheusBuilder::new().build_recorder().handle();
+
+        Server::new(
+            SocketAddr::from((IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 5555)),
+            render_service,
+            smtp_pool,
+            template_provider,
+            prometheus_handle,
+        )
+    }
+}
+
+impl Server {
+    #[inline]
+    pub(crate) fn new(
         socket_address: SocketAddr,
-        render_options: RenderOptions,
+        render_service: RenderService,
         smtp_pool: SmtpPool,
         template_provider: TemplateProvider,
         prometheus_handle: PrometheusHandle,
     ) -> Self {
         Self {
             socket_address,
-            render_options,
+            render_service,
             smtp_pool,
             template_provider,
             prometheus_handle,
         }
     }
 
-    pub fn from_config(config: Configuration) -> Self {
+    pub(crate) fn from_config(config: Configuration) -> Self {
         Self::new(
             config.address(),
             config.render.build(),
@@ -83,18 +104,18 @@ impl Server {
         )
     }
 
-    pub fn app(self) -> axum::Router {
+    pub(crate) fn app(self) -> axum::Router {
         use axum::extract::Extension;
 
         crate::controller::create()
-            .layer(Extension(Arc::new(self.render_options)))
+            .layer(Extension(self.render_service))
             .layer(Extension(self.smtp_pool))
             .layer(Extension(self.template_provider))
-            .layer(Extension(Arc::new(self.prometheus_handle)))
+            .layer(Extension(self.prometheus_handle))
             .layer(tower_http::trace::TraceLayer::new_for_http())
     }
 
-    pub async fn run(self) {
+    pub(crate) async fn run(self) {
         tracing::info!("starting server on {:?}", self.socket_address);
         let tcp_listener = TcpListener::bind(&self.socket_address).await.unwrap();
 

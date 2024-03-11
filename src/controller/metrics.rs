@@ -1,6 +1,5 @@
 use axum::extract::Extension;
 use metrics_exporter_prometheus::PrometheusHandle;
-use std::sync::Arc;
 
 /// Check the metrics of the service
 ///
@@ -18,6 +17,6 @@ use std::sync::Arc;
         ),
     )
 )]
-pub(super) async fn handler(Extension(handle): Extension<Arc<PrometheusHandle>>) -> String {
+pub(super) async fn handler(Extension(handle): Extension<PrometheusHandle>) -> String {
     handle.render()
 }
