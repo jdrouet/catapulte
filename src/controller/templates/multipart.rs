@@ -184,7 +184,7 @@ impl From<MultipartPayload> for TemplateOptions {
 pub(crate) async fn handler(
     Extension(render_opts): Extension<Arc<RenderOptions>>,
     Extension(smtp_pool): Extension<SmtpPool>,
-    Extension(template_provider): Extension<Arc<TemplateProvider>>,
+    Extension(template_provider): Extension<TemplateProvider>,
     Path(name): Path<String>,
     body: Multipart,
 ) -> Result<StatusCode, ServerError> {

@@ -89,7 +89,7 @@ impl Server {
         crate::controller::create()
             .layer(Extension(Arc::new(self.render_options)))
             .layer(Extension(self.smtp_pool))
-            .layer(Extension(Arc::new(self.template_provider)))
+            .layer(Extension(self.template_provider))
             .layer(Extension(Arc::new(self.prometheus_handle)))
             .layer(tower_http::trace::TraceLayer::new_for_http())
     }
