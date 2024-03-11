@@ -40,7 +40,6 @@ pub struct LocalMetadata {
     attributes: JsonValue,
 }
 
-#[derive(Clone, Debug)]
 pub struct TemplateProvider {
     root: PathBuf,
 }

@@ -2,6 +2,8 @@ pub mod http;
 pub mod local;
 pub mod prelude;
 
+use std::sync::Arc;
+
 use crate::service::template::Template;
 use prelude::Error;
 
@@ -21,24 +23,26 @@ impl Default for Configuration {
 impl Configuration {
     pub(crate) fn build(&self) -> TemplateProvider {
         tracing::debug!("building template provider");
-        match self {
-            Self::Local(item) => TemplateProvider::Local(item.build()),
-            Self::Http(item) => TemplateProvider::Http(item.build()),
-        }
+        TemplateProvider(Arc::new(match self {
+            Self::Local(item) => InnerTemplateProvider::Local(item.build()),
+            Self::Http(item) => InnerTemplateProvider::Http(item.build()),
+        }))
     }
 }
 
-#[derive(Clone, Debug)]
-pub(crate) enum TemplateProvider {
+enum InnerTemplateProvider {
     Local(local::TemplateProvider),
     Http(http::TemplateProvider),
 }
 
+#[derive(Clone)]
+pub(crate) struct TemplateProvider(Arc<InnerTemplateProvider>);
+
 impl TemplateProvider {
     pub async fn find_by_name(&self, name: &str) -> Result<Template, Error> {
-        match self {
-            Self::Local(inner) => inner.find_by_name(name).await,
-            Self::Http(inner) => inner.find_by_name(name).await,
+        match self.0.as_ref() {
+            InnerTemplateProvider::Local(inner) => inner.find_by_name(name).await,
+            InnerTemplateProvider::Http(inner) => inner.find_by_name(name).await,
         }
     }
 }

@@ -98,7 +98,7 @@ impl JsonPayload {
 pub(crate) async fn handler(
     Extension(render_opts): Extension<Arc<RenderOptions>>,
     Extension(smtp_pool): Extension<SmtpPool>,
-    Extension(template_provider): Extension<Arc<TemplateProvider>>,
+    Extension(template_provider): Extension<TemplateProvider>,
     Path(name): Path<String>,
     Json(body): Json<JsonPayload>,
 ) -> Result<StatusCode, ServerError> {
@@ -147,8 +147,7 @@ mod tests {
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider =
-            Arc::new(crate::service::provider::Configuration::default().build());
+        let template_provider = crate::service::provider::Configuration::default().build();
 
         let from = create_email();
         let to = create_email();
@@ -180,8 +179,7 @@ mod tests {
         let smtp_pool = crate::service::smtp::Configuration::secure()
             .build()
             .unwrap();
-        let template_provider =
-            Arc::new(crate::service::provider::Configuration::default().build());
+        let template_provider = crate::service::provider::Configuration::default().build();
 
         let from = create_email();
         let to = create_email();
@@ -212,8 +210,7 @@ mod tests {
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider =
-            Arc::new(crate::service::provider::Configuration::default().build());
+        let template_provider = crate::service::provider::Configuration::default().build();
 
         let from = create_email();
         let to = create_email();
@@ -243,8 +240,7 @@ mod tests {
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider =
-            Arc::new(crate::service::provider::Configuration::default().build());
+        let template_provider = crate::service::provider::Configuration::default().build();
         //
         let from = create_email();
         let to = vec![create_email(), create_email()];
@@ -292,8 +288,7 @@ mod tests {
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider =
-            Arc::new(crate::service::provider::Configuration::default().build());
+        let template_provider = crate::service::provider::Configuration::default().build();
 
         let from = create_email();
         let to = create_email();
@@ -319,8 +314,7 @@ mod tests {
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider =
-            Arc::new(crate::service::provider::Configuration::default().build());
+        let template_provider = crate::service::provider::Configuration::default().build();
 
         let from = create_email();
         let payload = JsonPayload {
