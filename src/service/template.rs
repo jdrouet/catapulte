@@ -8,25 +8,18 @@ use mrml::prelude::parser::Error as ParserError;
 use mrml::prelude::render::{Error as RenderError, RenderOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub(crate) enum TemplateError {
-    InterpolationError(HandlebarTemplateRenderError),
-    InvalidOptions(LettreError),
-    RenderingError(RenderError),
-    ParsingError(ParserError),
-}
-
-impl From<LettreError> for TemplateError {
-    fn from(err: LettreError) -> Self {
-        Self::InvalidOptions(err)
-    }
-}
-
-impl From<HandlebarTemplateRenderError> for TemplateError {
-    fn from(err: HandlebarTemplateRenderError) -> Self {
-        TemplateError::InterpolationError(err)
-    }
+    #[error("unable to interpolate values in template")]
+    InterpolationError(#[from] HandlebarTemplateRenderError),
+    #[error("invalid options when sending email")]
+    InvalidOptions(#[from] LettreError),
+    #[error("unable to render template")]
+    RenderingError(#[from] RenderError),
+    #[error("unable to parse template")]
+    ParsingError(#[from] ParserError),
 }
 
 impl From<TemplateError> for ServerError {
@@ -60,18 +53,6 @@ impl From<TemplateError> for ServerError {
                     "description": err.to_string(),
                 })),
         }
-    }
-}
-
-impl From<ParserError> for TemplateError {
-    fn from(err: ParserError) -> Self {
-        TemplateError::ParsingError(err)
-    }
-}
-
-impl From<RenderError> for TemplateError {
-    fn from(err: RenderError) -> Self {
-        TemplateError::RenderingError(err)
     }
 }
 
