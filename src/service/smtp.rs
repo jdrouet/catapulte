@@ -65,9 +65,9 @@ impl Configuration {
 impl Configuration {
     pub(crate) fn insecure() -> Self {
         Self {
-            hostname: crate::tests::env_str("TEST_SMTP_HOSTNAME")
+            hostname: tests::env_str("TEST_SMTP_HOSTNAME")
                 .unwrap_or_else(|| "localhost".to_string()),
-            port: crate::tests::env_number("TEST_SMTP_PORT").unwrap_or(1025),
+            port: tests::env_number("TEST_SMTP_PORT").unwrap_or(1025),
             username: None,
             password: None,
             max_pool_size: Self::default_max_pool_size(),
@@ -78,9 +78,9 @@ impl Configuration {
     }
     pub(crate) fn secure() -> Self {
         Self {
-            hostname: crate::tests::env_str("TEST_SMTPS_HOSTNAME")
+            hostname: tests::env_str("TEST_SMTPS_HOSTNAME")
                 .unwrap_or_else(|| "localhost".to_string()),
-            port: crate::tests::env_number("TEST_SMTPS_PORT").unwrap_or(1026),
+            port: tests::env_number("TEST_SMTPS_PORT").unwrap_or(1026),
             username: None,
             password: None,
             max_pool_size: Self::default_max_pool_size(),
@@ -185,5 +185,62 @@ impl From<LettreError> for ServerError {
         ServerError::internal().details(serde_json::json!({
             "origin": "smtp"
         }))
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use reqwest::Url;
+    use serde::Deserialize;
+    use uuid::Uuid;
+
+    pub(crate) fn env_str(key: &str) -> Option<String> {
+        std::env::var(key).ok()
+    }
+
+    pub(crate) fn env_number<T: std::str::FromStr>(key: &str) -> Option<T> {
+        std::env::var(key)
+            .ok()
+            .and_then(|value| value.parse::<T>().ok())
+    }
+
+    pub(crate) fn inbox_hostname() -> String {
+        env_str("TEST_INBOX_HOSTNAME").unwrap_or_else(|| "localhost".to_string())
+    }
+
+    pub(crate) fn inbox_port() -> u16 {
+        env_number("TEST_INBOX_PORT").unwrap_or(1080)
+    }
+
+    #[derive(Deserialize)]
+    pub(crate) struct Email {
+        pub html: String,
+        pub text: String,
+    }
+
+    pub(crate) async fn expect_latest_inbox(from: &str, kind: &str, to: &str) -> Vec<Email> {
+        for _ in 0..10 {
+            let list = get_latest_inbox(from, kind, to).await;
+            if !list.is_empty() {
+                return list;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+        panic!("mailbox is empty");
+    }
+
+    pub(crate) async fn get_latest_inbox(from: &str, kind: &str, to: &str) -> Vec<Email> {
+        let url = format!("http://{}:{}/api/emails", inbox_hostname(), inbox_port(),);
+        let url = Url::parse_with_params(&url, [("from", from), (kind, to)]).unwrap();
+        reqwest::get(url)
+            .await
+            .unwrap()
+            .json::<Vec<Email>>()
+            .await
+            .unwrap()
+    }
+
+    pub(crate) fn create_email() -> String {
+        format!("{}@example.com", Uuid::new_v4())
     }
 }

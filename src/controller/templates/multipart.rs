@@ -211,7 +211,7 @@ pub(crate) async fn handler(
 #[cfg(test)]
 mod tests {
     use crate::service::server::Server;
-    use crate::tests::{create_email, expect_latest_inbox};
+    use crate::service::smtp::tests::{create_email, expect_latest_inbox};
     use axum::body::Body;
     use axum::http::{Method, Request};
     use metrics_exporter_prometheus::PrometheusBuilder;

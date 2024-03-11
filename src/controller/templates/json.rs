@@ -122,7 +122,7 @@ pub(crate) async fn handler(
 #[cfg(test)]
 mod tests {
     use super::{handler, JsonPayload, Recipient};
-    use crate::tests::{create_email, expect_latest_inbox};
+    use crate::service::smtp::tests::{create_email, expect_latest_inbox};
     use axum::extract::{Extension, Json, Path};
     use axum::http::StatusCode;
     use std::sync::Arc;
