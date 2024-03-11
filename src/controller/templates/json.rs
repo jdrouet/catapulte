@@ -1,14 +1,13 @@
 use crate::error::ServerError;
 use crate::service::provider::TemplateProvider;
+use crate::service::render::RenderService;
 use crate::service::smtp::SmtpPool;
 use crate::service::template::TemplateOptions;
 use axum::extract::{Extension, Json, Path};
 use axum::http::StatusCode;
 use lettre::Transport;
-use mrml::prelude::render::RenderOptions;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
-use std::sync::Arc;
 use utoipa::ToSchema;
 
 #[derive(Debug, Deserialize)]
@@ -96,7 +95,7 @@ impl JsonPayload {
     )
 )]
 pub(crate) async fn handler(
-    Extension(render_opts): Extension<Arc<RenderOptions>>,
+    Extension(render_service): Extension<RenderService>,
     Extension(smtp_pool): Extension<SmtpPool>,
     Extension(template_provider): Extension<TemplateProvider>,
     Path(name): Path<String>,
@@ -107,7 +106,7 @@ pub(crate) async fn handler(
     let template = template_provider.find_by_name(name.as_str()).await?;
     let options: TemplateOptions = body.to_options();
     options.validate()?;
-    let email = template.to_email(&options, &render_opts)?;
+    let email = template.to_email(&options, render_service.as_ref())?;
     if let Err(err) = smtp_pool.send(&email) {
         metrics::counter!("smtp_send_error", "method" => "json", "template_name" => name)
             .increment(1);
@@ -125,7 +124,6 @@ mod tests {
     use crate::service::smtp::tests::{create_email, expect_latest_inbox};
     use axum::extract::{Extension, Json, Path};
     use axum::http::StatusCode;
-    use std::sync::Arc;
 
     fn create_payload(from: &str, to: &str, token: &str) -> JsonPayload {
         JsonPayload {
@@ -143,7 +141,7 @@ mod tests {
     #[tokio::test]
     async fn success() {
         crate::try_init_logs();
-        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
@@ -154,7 +152,7 @@ mod tests {
         let payload = create_payload(&from, &to, "this_is_a_token");
 
         let result = handler(
-            Extension(render_options),
+            Extension(render_service),
             Extension(smtp_pool),
             Extension(template_provider),
             Path("user-login".into()),
@@ -175,7 +173,7 @@ mod tests {
     #[tokio::test]
     async fn success_ssl() {
         crate::try_init_logs();
-        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::secure()
             .build()
             .unwrap();
@@ -186,7 +184,7 @@ mod tests {
         let payload = create_payload(&from, &to, "this_is_a_secure_token");
 
         let result = handler(
-            Extension(render_options),
+            Extension(render_service),
             Extension(smtp_pool),
             Extension(template_provider),
             Path("user-login".into()),
@@ -206,7 +204,7 @@ mod tests {
 
     #[tokio::test]
     async fn success_even_missing_params() {
-        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
@@ -218,7 +216,7 @@ mod tests {
         payload.params = serde_json::json!({ "name": "Alice" });
 
         let result = handler(
-            Extension(render_options),
+            Extension(render_service),
             Extension(smtp_pool),
             Extension(template_provider),
             Path("user-login".into()),
@@ -236,7 +234,7 @@ mod tests {
 
     #[tokio::test]
     async fn success_multiple_recipients() {
-        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
@@ -259,7 +257,7 @@ mod tests {
         };
         //
         let result = handler(
-            Extension(render_options),
+            Extension(render_service),
             Extension(smtp_pool),
             Extension(template_provider),
             Path("user-login".into()),
@@ -284,7 +282,7 @@ mod tests {
     #[tokio::test]
     async fn failure_template_not_found() {
         crate::try_init_logs();
-        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
@@ -295,7 +293,7 @@ mod tests {
         let payload = create_payload(&from, &to, "this_is_a_token");
 
         let result = handler(
-            Extension(render_options),
+            Extension(render_service),
             Extension(smtp_pool),
             Extension(template_provider),
             Path("not-found".into()),
@@ -310,7 +308,7 @@ mod tests {
     #[tokio::test]
     async fn failure_no_recipient() {
         crate::try_init_logs();
-        let render_options = Arc::new(crate::service::render::Configuration::default().build());
+        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
@@ -326,7 +324,7 @@ mod tests {
         };
 
         let result = handler(
-            Extension(render_options),
+            Extension(render_service),
             Extension(smtp_pool),
             Extension(template_provider),
             Path("user-login".into()),

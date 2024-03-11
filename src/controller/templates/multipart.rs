@@ -3,16 +3,15 @@ use crate::service::multipart::{
     field_to_file, field_to_json_value, field_to_string, MultipartFile,
 };
 use crate::service::provider::TemplateProvider;
+use crate::service::render::RenderService;
 use crate::service::smtp::SmtpPool;
 use crate::service::template::TemplateOptions;
 use axum::extract::multipart::Field;
 use axum::extract::{Extension, Multipart, Path};
 use axum::http::StatusCode;
 use lettre::Transport;
-use mrml::prelude::render::RenderOptions;
 use serde_json::{json, Value as JsonValue};
 use std::default::Default;
-use std::sync::Arc;
 use tempfile::TempDir;
 
 #[derive(Default)]
@@ -182,7 +181,7 @@ impl From<MultipartPayload> for TemplateOptions {
     )
 )]
 pub(crate) async fn handler(
-    Extension(render_opts): Extension<Arc<RenderOptions>>,
+    Extension(render_service): Extension<RenderService>,
     Extension(smtp_pool): Extension<SmtpPool>,
     Extension(template_provider): Extension<TemplateProvider>,
     Path(name): Path<String>,
@@ -190,13 +189,14 @@ pub(crate) async fn handler(
 ) -> Result<StatusCode, ServerError> {
     metrics::counter!("smtp_send", "method" => "multipart", "template_name" => name.clone())
         .increment(1);
+
     let template = template_provider.find_by_name(name.as_str()).await?;
     let tmp_dir = TempDir::new()?;
     let tmp_path = tmp_dir.path().to_owned();
     let parser = MultipartPayload::from_multipart(&tmp_path, body).await?;
     let options: TemplateOptions = parser.into();
     options.validate()?;
-    let email = template.to_email(&options, render_opts.as_ref())?;
+    let email = template.to_email(&options, render_service.as_ref())?;
     if let Err(err) = smtp_pool.send(&email) {
         metrics::counter!("smtp_send_error", "method" => "multipart", "template_name" => name)
             .increment(1);
@@ -209,36 +209,20 @@ pub(crate) async fn handler(
 }
 
 #[cfg(test)]
-mod tests {
+mod integration_tests {
     use crate::service::server::Server;
     use crate::service::smtp::tests::{create_email, expect_latest_inbox};
     use axum::body::Body;
     use axum::http::{Method, Request};
-    use metrics_exporter_prometheus::PrometheusBuilder;
     use multipart::client::lazy::Multipart;
     use std::io::{BufReader, Read};
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::path::{Path, PathBuf};
     use tower::ServiceExt;
 
     fn create_app() -> axum::Router {
         crate::try_init_logs();
 
-        let render_options = crate::service::render::Configuration::default().build();
-        let smtp_pool = crate::service::smtp::Configuration::insecure()
-            .build()
-            .unwrap();
-        let template_provider = crate::service::provider::Configuration::default().build();
-        let prometheus_handle = PrometheusBuilder::new().build_recorder().handle();
-
-        Server::new(
-            SocketAddr::from((IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 5555)),
-            render_options,
-            smtp_pool,
-            template_provider,
-            prometheus_handle,
-        )
-        .app()
+        Server::default_insecure().app()
     }
 
     fn build_request<'a>(
@@ -292,7 +276,6 @@ mod tests {
         );
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::NO_CONTENT);
-
         //
         let list = expect_latest_inbox(&from, "to", &to).await;
         let last = list.first().unwrap();

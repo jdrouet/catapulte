@@ -40,3 +40,31 @@ mod tests {
         assert_eq!(result, StatusCode::NO_CONTENT);
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    use crate::service::server::Server;
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    fn create_app() -> axum::Router {
+        crate::try_init_logs();
+
+        Server::default_insecure().app()
+    }
+
+    #[tokio::test]
+    async fn success() {
+        let res = create_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .method("HEAD")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::NO_CONTENT);
+    }
+}
