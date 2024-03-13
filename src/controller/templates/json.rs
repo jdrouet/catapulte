@@ -38,21 +38,19 @@ impl<'s> utoipa::ToSchema<'s> for Recipient {
 }
 
 impl Recipient {
-    pub fn to_vec(&self) -> Vec<String> {
+    fn into_vec(self) -> Vec<String> {
         match self {
-            Recipient::One(item) => vec![item.clone()],
-            Recipient::More(list) => list.clone(),
+            Recipient::One(item) => vec![item],
+            Recipient::More(list) => list,
         }
     }
 }
 
-impl Recipient {
-    pub fn option_to_vec(item: &Option<Recipient>) -> Vec<String> {
-        if let Some(item) = item {
-            item.to_vec()
-        } else {
-            vec![]
-        }
+fn option_to_vec(item: Option<Recipient>) -> Vec<String> {
+    if let Some(item) = item {
+        item.into_vec()
+    } else {
+        vec![]
     }
 }
 
@@ -66,19 +64,12 @@ pub(crate) struct JsonPayload {
     pub params: JsonValue,
 }
 
-impl JsonPayload {
-    fn to_options(&self) -> TemplateOptions {
-        let to = Recipient::option_to_vec(&self.to);
-        let cc = Recipient::option_to_vec(&self.cc);
-        let bcc = Recipient::option_to_vec(&self.bcc);
-        TemplateOptions::new(
-            self.from.clone(),
-            to,
-            cc,
-            bcc,
-            self.params.clone(),
-            Default::default(),
-        )
+impl From<JsonPayload> for TemplateOptions {
+    fn from(value: JsonPayload) -> Self {
+        let to = option_to_vec(value.to);
+        let cc = option_to_vec(value.cc);
+        let bcc = option_to_vec(value.bcc);
+        TemplateOptions::new(value.from, to, cc, bcc, value.params, Default::default())
     }
 }
 
@@ -104,9 +95,9 @@ pub(crate) async fn handler(
     metrics::counter!("smtp_send", "method" => "json", "template_name" => name.clone())
         .increment(1);
     let template = template_provider.find_by_name(name.as_str()).await?;
-    let options: TemplateOptions = body.to_options();
+    let options: TemplateOptions = body.into();
     options.validate()?;
-    let email = template.to_email(&options, render_service.as_ref())?;
+    let email = template.try_into_email(options, render_service.as_ref())?;
     if let Err(err) = smtp_pool.send(&email) {
         metrics::counter!("smtp_send_error", "method" => "json", "template_name" => name)
             .increment(1);

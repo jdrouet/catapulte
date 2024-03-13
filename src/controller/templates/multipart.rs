@@ -196,7 +196,7 @@ pub(crate) async fn handler(
     let parser = MultipartPayload::from_multipart(&tmp_path, body).await?;
     let options: TemplateOptions = parser.into();
     options.validate()?;
-    let email = template.to_email(&options, render_service.as_ref())?;
+    let email = template.try_into_email(options, render_service.as_ref())?;
     if let Err(err) = smtp_pool.send(&email) {
         metrics::counter!("smtp_send_error", "method" => "multipart", "template_name" => name)
             .increment(1);
