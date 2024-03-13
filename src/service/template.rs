@@ -184,17 +184,16 @@ impl Template {
         }))
     }
 
-    pub(crate) fn to_email(
-        &self,
-        template_opts: &TemplateOptions,
+    pub(crate) fn try_into_email(
+        self,
+        template_opts: TemplateOptions,
         render_opts: &RenderOptions,
     ) -> Result<Message, TemplateError> {
-        // debug!("rendering template: {} ({})", self.name, self.description);
-        let email = self.render(template_opts)?;
+        let email = self.render(&template_opts)?;
         let builder = template_opts.to_builder();
         Ok(builder
             .subject(email.get_title().unwrap_or_default().as_str())
-            .multipart(self.get_multipart(&email, template_opts, render_opts)?)?)
+            .multipart(self.get_multipart(&email, &template_opts, render_opts)?)?)
     }
 }
 
