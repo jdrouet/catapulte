@@ -4,6 +4,8 @@ on:
   workflow_call:
   pull_request:
   push:
+    branches:
+      - main
 
 # Make sure CI fails on all warnings, including Clippy lints
 env:
