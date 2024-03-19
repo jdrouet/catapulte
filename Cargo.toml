@@ -47,5 +47,5 @@ http-body-util = "0.1.1"
 lazy_static = "1.4.0"
 multipart = "0.18.0"
 tower = { version = "0.4.13" }
-uuid = { version = "1.7.0", features = ["v4"] }
+uuid = { version = "1.8.0", features = ["v4"] }
 wiremock = { version = "0.6.0" }
