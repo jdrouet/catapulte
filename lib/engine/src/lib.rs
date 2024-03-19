@@ -1,10 +1,11 @@
+pub mod parser;
 pub mod render;
 
-use std::{rc::Rc, sync::Arc};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct Config {
-    // pub parser: mrml::prelude::parser::ParserOptions,
+    pub parser: parser::Config,
     pub render: render::Config,
 }
 
@@ -18,21 +19,18 @@ pub enum Error {
     Rendering(#[from] mrml::prelude::render::Error),
 }
 
-#[derive(Debug, Default)]
-struct InnerEngine {
-    parser: Rc<mrml::prelude::parser::AsyncParserOptions>,
-    render: mrml::prelude::render::RenderOptions,
-}
-
 #[derive(Clone, Debug, Default)]
-pub struct Engine(Arc<InnerEngine>);
+pub struct Engine {
+    parser: Arc<mrml::prelude::parser::AsyncParserOptions>,
+    render: Arc<mrml::prelude::render::RenderOptions>,
+}
 
 impl From<Config> for Engine {
     fn from(value: Config) -> Self {
-        Self(Arc::new(InnerEngine {
-            parser: Default::default(),
-            render: value.render.into(),
-        }))
+        Self {
+            parser: Arc::new(value.parser.into()),
+            render: Arc::new(value.render.into()),
+        }
     }
 }
 
@@ -46,13 +44,13 @@ impl Engine {
     }
 
     async fn parse(&self, input: String) -> Result<mrml::mjml::Mjml, Error> {
-        mrml::async_parse_with_options(input, self.0.parser.clone())
+        mrml::async_parse_with_options(input, self.parser.clone())
             .await
             .map_err(Error::from)
     }
 
     fn render(&self, input: mrml::mjml::Mjml) -> Result<String, Error> {
-        Ok(input.render(&self.0.render)?)
+        Ok(input.render(&self.render)?)
     }
 
     pub async fn handle<T>(
