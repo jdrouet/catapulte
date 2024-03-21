@@ -13,7 +13,7 @@ use utoipa_swagger_ui::SwaggerUi;
     components(schemas(
         crate::error::ServerError,
         super::templates::json::JsonPayload,
-        super::templates::json::Recipient,
+        super::templates::Recipient,
         super::templates::multipart::MultipartPayload,
     ))
 )]

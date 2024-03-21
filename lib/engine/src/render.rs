@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub disable_comments: bool,
@@ -12,8 +12,10 @@ pub struct Config {
 
 impl From<Config> for mrml::prelude::render::RenderOptions {
     fn from(value: Config) -> Self {
-        let mut result: Self = Default::default();
-        result.disable_comments = value.disable_comments;
+        let mut result: Self = mrml::prelude::render::RenderOptions {
+            disable_comments: value.disable_comments,
+            ..Default::default()
+        };
         if let Some(origin) = value.social_icon_origin {
             result.social_icon_origin = Some(origin.into());
         }

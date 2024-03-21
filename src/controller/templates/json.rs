@@ -1,75 +1,36 @@
 use crate::error::ServerError;
-use crate::service::provider::TemplateProvider;
-use crate::service::render::RenderService;
 use crate::service::smtp::SmtpPool;
-use crate::service::template::TemplateOptions;
 use axum::extract::{Extension, Json, Path};
 use axum::http::StatusCode;
+use lettre::message::Mailbox;
 use lettre::Transport;
 use serde::Deserialize;
-use serde_json::Value as JsonValue;
 use utoipa::ToSchema;
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub(crate) enum Recipient {
-    One(String),
-    More(Vec<String>),
-}
-
-impl<'s> utoipa::ToSchema<'s> for Recipient {
-    fn schema() -> (
-        &'s str,
-        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
-    ) {
-        (
-            "Recipient",
-            utoipa::openapi::OneOfBuilder::new()
-                .item(
-                    utoipa::openapi::ObjectBuilder::new()
-                        .schema_type(utoipa::openapi::SchemaType::String),
-                )
-                .item(utoipa::openapi::ArrayBuilder::new().items(
-                    utoipa::openapi::Object::with_type(utoipa::openapi::SchemaType::String),
-                ))
-                .into(),
-        )
-    }
-}
-
-impl Recipient {
-    fn into_vec(self) -> Vec<String> {
-        match self {
-            Recipient::One(item) => vec![item],
-            Recipient::More(list) => list,
-        }
-    }
-}
-
-fn option_to_vec(item: Option<Recipient>) -> Vec<String> {
-    if let Some(item) = item {
-        item.into_vec()
-    } else {
-        vec![]
-    }
-}
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct JsonPayload {
-    pub to: Option<Recipient>,
-    pub cc: Option<Recipient>,
-    pub bcc: Option<Recipient>,
-    pub from: String,
+    #[serde(default)]
+    pub to: super::Recipient,
+    #[serde(default)]
+    pub cc: super::Recipient,
+    #[serde(default)]
+    pub bcc: super::Recipient,
+    pub from: Mailbox,
     #[schema(value_type = Object)]
-    pub params: JsonValue,
+    pub params: serde_json::Value,
 }
 
-impl From<JsonPayload> for TemplateOptions {
-    fn from(value: JsonPayload) -> Self {
-        let to = option_to_vec(value.to);
-        let cc = option_to_vec(value.cc);
-        let bcc = option_to_vec(value.bcc);
-        TemplateOptions::new(value.from, to, cc, bcc, value.params, Default::default())
+impl JsonPayload {
+    fn into_request(self, name: String) -> catapulte_engine::Request {
+        catapulte_engine::Request {
+            name,
+            from: self.from,
+            to: self.to.into_vec(),
+            cc: self.cc.into_vec(),
+            bcc: self.bcc.into_vec(),
+            params: self.params,
+            attachments: Default::default(),
+        }
     }
 }
 
@@ -86,19 +47,17 @@ impl From<JsonPayload> for TemplateOptions {
     )
 )]
 pub(crate) async fn handler(
-    Extension(render_service): Extension<RenderService>,
     Extension(smtp_pool): Extension<SmtpPool>,
-    Extension(template_provider): Extension<TemplateProvider>,
+    Extension(engine): Extension<catapulte_engine::Engine>,
     Path(name): Path<String>,
     Json(body): Json<JsonPayload>,
 ) -> Result<StatusCode, ServerError> {
+    let req = body.into_request(name.clone());
+    let message = engine.handle(req).await?;
+
     metrics::counter!("smtp_send", "method" => "json", "template_name" => name.clone())
         .increment(1);
-    let template = template_provider.find_by_name(name.as_str()).await?;
-    let options: TemplateOptions = body.into();
-    options.validate()?;
-    let email = template.try_into_email(options, render_service.as_ref())?;
-    if let Err(err) = smtp_pool.send(&email) {
+    if let Err(err) = smtp_pool.send(&message) {
         metrics::counter!("smtp_send_error", "method" => "json", "template_name" => name)
             .increment(1);
         Err(err)?
@@ -111,17 +70,19 @@ pub(crate) async fn handler(
 
 #[cfg(test)]
 mod tests {
-    use super::{handler, JsonPayload, Recipient};
+    use super::super::Recipient;
+    use super::{handler, JsonPayload};
     use crate::service::smtp::tests::{create_email, expect_latest_inbox};
     use axum::extract::{Extension, Json, Path};
     use axum::http::StatusCode;
+    use lettre::message::Mailbox;
 
-    fn create_payload(from: &str, to: &str, token: &str) -> JsonPayload {
+    fn create_payload(from: &Mailbox, to: &Mailbox, token: &str) -> JsonPayload {
         JsonPayload {
-            to: Some(Recipient::One(to.to_owned())),
-            from: from.to_owned(),
-            cc: None,
-            bcc: None,
+            from: from.clone(),
+            to: Recipient::One(to.clone()),
+            cc: Recipient::default(),
+            bcc: Recipient::default(),
             params: serde_json::json!({
                 "name": "bob",
                 "token": token,
@@ -132,20 +93,18 @@ mod tests {
     #[tokio::test]
     async fn success() {
         crate::try_init_logs();
-        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider = crate::service::provider::Configuration::default().build();
+        let engine = catapulte_engine::Config::default().into();
 
         let from = create_email();
         let to = create_email();
         let payload = create_payload(&from, &to, "this_is_a_token");
 
         let result = handler(
-            Extension(render_service),
             Extension(smtp_pool),
-            Extension(template_provider),
+            Extension(engine),
             Path("user-login".into()),
             Json(payload),
         )
@@ -164,20 +123,18 @@ mod tests {
     #[tokio::test]
     async fn success_ssl() {
         crate::try_init_logs();
-        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::secure()
             .build()
             .unwrap();
-        let template_provider = crate::service::provider::Configuration::default().build();
+        let engine = catapulte_engine::Config::default().into();
 
         let from = create_email();
         let to = create_email();
         let payload = create_payload(&from, &to, "this_is_a_secure_token");
 
         let result = handler(
-            Extension(render_service),
             Extension(smtp_pool),
-            Extension(template_provider),
+            Extension(engine),
             Path("user-login".into()),
             Json(payload),
         )
@@ -195,11 +152,10 @@ mod tests {
 
     #[tokio::test]
     async fn success_even_missing_params() {
-        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider = crate::service::provider::Configuration::default().build();
+        let engine = catapulte_engine::Config::default().into();
 
         let from = create_email();
         let to = create_email();
@@ -207,9 +163,8 @@ mod tests {
         payload.params = serde_json::json!({ "name": "Alice" });
 
         let result = handler(
-            Extension(render_service),
             Extension(smtp_pool),
-            Extension(template_provider),
+            Extension(engine),
             Path("user-login".into()),
             Json(payload),
         )
@@ -225,11 +180,10 @@ mod tests {
 
     #[tokio::test]
     async fn success_multiple_recipients() {
-        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider = crate::service::provider::Configuration::default().build();
+        let engine = catapulte_engine::Config::default().into();
         //
         let from = create_email();
         let to = vec![create_email(), create_email()];
@@ -237,10 +191,10 @@ mod tests {
         let bcc = vec![create_email(), create_email()];
         //
         let payload = JsonPayload {
-            to: Some(Recipient::More(to.clone())),
+            to: Recipient::Many(to.clone()),
             from: from.to_owned(),
-            cc: Some(Recipient::More(cc.clone())),
-            bcc: Some(Recipient::More(bcc.clone())),
+            cc: Recipient::Many(cc.clone()),
+            bcc: Recipient::Many(bcc.clone()),
             params: serde_json::json!({
                 "name": "bob",
                 "token": "token",
@@ -248,9 +202,8 @@ mod tests {
         };
         //
         let result = handler(
-            Extension(render_service),
             Extension(smtp_pool),
-            Extension(template_provider),
+            Extension(engine),
             Path("user-login".into()),
             Json(payload),
         )
@@ -273,20 +226,18 @@ mod tests {
     #[tokio::test]
     async fn failure_template_not_found() {
         crate::try_init_logs();
-        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider = crate::service::provider::Configuration::default().build();
+        let engine = catapulte_engine::Config::default().into();
 
         let from = create_email();
         let to = create_email();
         let payload = create_payload(&from, &to, "this_is_a_token");
 
         let result = handler(
-            Extension(render_service),
             Extension(smtp_pool),
-            Extension(template_provider),
+            Extension(engine),
             Path("not-found".into()),
             Json(payload),
         )
@@ -299,25 +250,23 @@ mod tests {
     #[tokio::test]
     async fn failure_no_recipient() {
         crate::try_init_logs();
-        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider = crate::service::provider::Configuration::default().build();
+        let engine = catapulte_engine::Config::default().into();
 
         let from = create_email();
         let payload = JsonPayload {
-            to: None,
-            from: from.to_owned(),
-            cc: None,
-            bcc: None,
+            to: Recipient::default(),
+            from: from.clone(),
+            cc: Recipient::default(),
+            bcc: Recipient::default(),
             params: serde_json::json!({}),
         };
 
         let result = handler(
-            Extension(render_service),
             Extension(smtp_pool),
-            Extension(template_provider),
+            Extension(engine),
             Path("user-login".into()),
             Json(payload),
         )

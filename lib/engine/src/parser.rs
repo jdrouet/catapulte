@@ -1,22 +1,19 @@
 use std::{collections::HashMap, path::PathBuf};
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub include_loader: Vec<IncludeLoaderEntry>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum IncludeLoaderFilter {
-    StartsWith { value: String },
+    StartsWith {
+        value: String,
+    },
+    #[default]
     Any,
-}
-
-impl Default for IncludeLoaderFilter {
-    fn default() -> Self {
-        IncludeLoaderFilter::Any
-    }
 }
 
 impl From<IncludeLoaderFilter> for mrml::prelude::parser::multi_loader::MultiIncludeLoaderFilter {
@@ -55,7 +52,7 @@ impl IncludeLoaderConfig {
             ),
             Self::Memory { values } => {
                 Box::new(mrml::prelude::parser::memory_loader::MemoryIncludeLoader(
-                    mrml::prelude::hash::Map::from_iter(values.into_iter()),
+                    mrml::prelude::hash::Map::from_iter(values),
                 ))
             }
         }
@@ -65,22 +62,32 @@ impl IncludeLoaderConfig {
 impl From<Config> for mrml::prelude::parser::AsyncParserOptions {
     fn from(value: Config) -> Self {
         Self {
-            include_loader: Box::new(value.include_loader.into_iter().fold(
-                mrml::prelude::parser::multi_loader::MultiIncludeLoader::<
-                    Box<
-                        dyn mrml::prelude::parser::loader::AsyncIncludeLoader
-                            + Send
-                            + Sync
-                            + 'static,
-                    >,
-                >::new(),
-                |loader, item| match item.filter {
-                    IncludeLoaderFilter::Any => loader.with_any(item.loader.into_async_loader()),
-                    IncludeLoaderFilter::StartsWith { value } => {
-                        loader.with_starts_with(value, item.loader.into_async_loader())
-                    }
-                },
-            )),
+            include_loader: Box::new(
+                value
+                    .include_loader
+                    .into_iter()
+                    .fold(
+                        mrml::prelude::parser::multi_loader::MultiIncludeLoader::<
+                            Box<
+                                dyn mrml::prelude::parser::loader::AsyncIncludeLoader
+                                    + Send
+                                    + Sync
+                                    + 'static,
+                            >,
+                        >::new(),
+                        |loader, item| match item.filter {
+                            IncludeLoaderFilter::Any => {
+                                loader.with_any(item.loader.into_async_loader())
+                            }
+                            IncludeLoaderFilter::StartsWith { value } => {
+                                loader.with_starts_with(value, item.loader.into_async_loader())
+                            }
+                        },
+                    )
+                    .with_any(
+                        Box::<mrml::prelude::parser::noop_loader::NoopIncludeLoader>::default(),
+                    ),
+            ),
         }
     }
 }

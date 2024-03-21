@@ -1,11 +1,8 @@
-use crate::service::provider::TemplateProvider;
 use crate::service::smtp::SmtpPool;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_exporter_prometheus::PrometheusHandle;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::net::TcpListener;
-
-use super::render::RenderService;
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub(crate) struct Configuration {
@@ -14,12 +11,14 @@ pub(crate) struct Configuration {
     #[serde(default = "Configuration::default_port")]
     pub(crate) port: u16,
     //
-    #[serde(default)]
-    pub(crate) render: crate::service::render::Configuration,
+    // #[serde(default)]
+    // pub(crate) render: crate::service::render::Configuration,
     #[serde(default)]
     pub(crate) smtp: crate::service::smtp::Configuration,
-    #[serde(default)]
-    pub(crate) template: crate::service::provider::Configuration,
+    // #[serde(default)]
+    // pub(crate) template: crate::service::provider::Configuration,
+    #[serde(flatten)]
+    pub(crate) engine: catapulte_engine::Config,
 }
 
 impl Configuration {
@@ -48,28 +47,25 @@ impl Configuration {
 
 pub(crate) struct Server {
     socket_address: SocketAddr,
-    render_service: RenderService,
     smtp_pool: SmtpPool,
-    template_provider: TemplateProvider,
     prometheus_handle: PrometheusHandle,
+    engine: catapulte_engine::Engine,
 }
 
 #[cfg(test)]
 impl Server {
     pub fn default_insecure() -> Self {
-        let render_service = crate::service::render::Configuration::default().build();
         let smtp_pool = crate::service::smtp::Configuration::insecure()
             .build()
             .unwrap();
-        let template_provider = crate::service::provider::Configuration::default().build();
         let prometheus_handle = PrometheusBuilder::new().build_recorder().handle();
+        let engine = catapulte_engine::Config::default().into();
 
         Server::new(
             SocketAddr::from((IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 5555)),
-            render_service,
             smtp_pool,
-            template_provider,
             prometheus_handle,
+            engine,
         )
     }
 }
@@ -78,29 +74,26 @@ impl Server {
     #[inline]
     pub(crate) fn new(
         socket_address: SocketAddr,
-        render_service: RenderService,
         smtp_pool: SmtpPool,
-        template_provider: TemplateProvider,
         prometheus_handle: PrometheusHandle,
+        engine: catapulte_engine::Engine,
     ) -> Self {
         Self {
             socket_address,
-            render_service,
             smtp_pool,
-            template_provider,
             prometheus_handle,
+            engine,
         }
     }
 
     pub(crate) fn from_config(config: Configuration) -> Self {
         Self::new(
             config.address(),
-            config.render.build(),
             config.smtp.build().expect("smtp service init"),
-            config.template.build(),
             PrometheusBuilder::new()
                 .install_recorder()
                 .expect("failed to install prometheus recorder"),
+            config.engine.into(),
         )
     }
 
@@ -108,10 +101,9 @@ impl Server {
         use axum::extract::Extension;
 
         crate::controller::create()
-            .layer(Extension(self.render_service))
             .layer(Extension(self.smtp_pool))
-            .layer(Extension(self.template_provider))
             .layer(Extension(self.prometheus_handle))
+            .layer(Extension(self.engine))
             .layer(tower_http::trace::TraceLayer::new_for_http())
     }
 

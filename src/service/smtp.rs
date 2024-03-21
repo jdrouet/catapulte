@@ -190,6 +190,7 @@ impl From<LettreError> for ServerError {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use lettre::{message::Mailbox, Address};
     use reqwest::Url;
     use serde::Deserialize;
     use uuid::Uuid;
@@ -218,7 +219,11 @@ pub(crate) mod tests {
         pub text: String,
     }
 
-    pub(crate) async fn expect_latest_inbox(from: &str, kind: &str, to: &str) -> Vec<Email> {
+    pub(crate) async fn expect_latest_inbox(
+        from: &Mailbox,
+        kind: &str,
+        to: &Mailbox,
+    ) -> Vec<Email> {
         for _ in 0..10 {
             let list = get_latest_inbox(from, kind, to).await;
             if !list.is_empty() {
@@ -229,9 +234,16 @@ pub(crate) mod tests {
         panic!("mailbox is empty");
     }
 
-    pub(crate) async fn get_latest_inbox(from: &str, kind: &str, to: &str) -> Vec<Email> {
-        let url = format!("http://{}:{}/api/emails", inbox_hostname(), inbox_port(),);
-        let url = Url::parse_with_params(&url, [("from", from), (kind, to)]).unwrap();
+    pub(crate) async fn get_latest_inbox(from: &Mailbox, kind: &str, to: &Mailbox) -> Vec<Email> {
+        let url = format!("http://{}:{}/api/emails", inbox_hostname(), inbox_port());
+        let url = Url::parse_with_params(
+            &url,
+            [
+                ("from", from.email.to_string()),
+                (kind, to.email.to_string()),
+            ],
+        )
+        .unwrap();
         reqwest::get(url)
             .await
             .unwrap()
@@ -240,7 +252,10 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    pub(crate) fn create_email() -> String {
-        format!("{}@example.com", Uuid::new_v4())
+    pub(crate) fn create_email() -> Mailbox {
+        Mailbox::new(
+            None,
+            Address::new(Uuid::new_v4().to_string(), "example.org").unwrap(),
+        )
     }
 }
