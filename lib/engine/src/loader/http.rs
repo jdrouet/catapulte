@@ -1,22 +1,20 @@
-use super::prelude::Error;
-use crate::service::template::Template;
-use reqwest::{header::HeaderMap, StatusCode, Url};
+use super::prelude::Template;
+use reqwest::{header::HeaderMap, Url};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, serde::Deserialize)]
-pub(crate) struct Configuration {
+pub struct Config {
     pub url: String,
     pub params: BTreeMap<String, String>,
     pub headers: BTreeMap<String, String>,
 }
 
-impl Configuration {
-    pub(crate) fn build(&self) -> TemplateProvider {
+impl Config {
+    pub fn build(&self) -> HttpLoader {
         tracing::debug!("building template provider");
-        TemplateProvider {
+        HttpLoader {
             client: reqwest::Client::new(),
             url: self.url.clone(),
             params: self
@@ -38,8 +36,40 @@ impl Configuration {
     }
 }
 
+impl From<Config> for HttpLoader {
+    fn from(value: Config) -> Self {
+        HttpLoader {
+            client: reqwest::Client::new(),
+            url: value.url,
+            params: value.params.into_iter().collect(),
+            headers: value
+                .headers
+                .into_iter()
+                .map(|(name, value)| {
+                    (
+                        reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                        reqwest::header::HeaderValue::from_bytes(value.as_bytes()).unwrap(),
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("Unable to load and parse metadata: {0:?}")]
+    MetadataLoadingFailed(reqwest::Error),
+    #[error("Unable to build metadata url: {0:?}")]
+    MetadataUrlInvalid(url::ParseError),
+    #[error("Unable to request file: {0:?}")]
+    RequestFailed(reqwest::Error),
+    #[error("Unable to load and parse template: {0:?}")]
+    TemplateLoadingFailed(reqwest::Error),
+}
+
 #[derive(Debug, Deserialize)]
-pub struct RemoteMetadata {
+struct RemoteMetadata {
     name: String,
     description: String,
     #[serde(flatten)]
@@ -49,50 +79,20 @@ pub struct RemoteMetadata {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum RemoteMetadataTemplate {
+enum RemoteMetadataTemplate {
     Embedded { content: String },
     Remote { template: String },
 }
 
-impl RemoteMetadata {
-    async fn content(&self, provider: &TemplateProvider, name: &str) -> Result<String, Error> {
-        match &self.template {
-            RemoteMetadataTemplate::Embedded { content } => Ok(content.to_string()),
-            RemoteMetadataTemplate::Remote { template } => {
-                let res = provider.build_request(name, template).await?;
-                let status = res.status();
-                if status.is_client_error() {
-                    tracing::error!("unable to load template content: {}", status);
-                    Err(Error::internal(
-                        "http",
-                        Cow::Borrowed("error when loading template"),
-                    ))
-                } else if status.is_server_error() {
-                    tracing::error!("unable to load template content: {}", status);
-                    Err(Error::provider(
-                        "http",
-                        Cow::Borrowed("error when loading template"),
-                    ))
-                } else {
-                    res.text().await.map_err(|err| {
-                        tracing::error!("unable to load template content: {:?}", err);
-                        Error::provider("http", Cow::Borrowed("unable to load template content"))
-                    })
-                }
-            }
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
-pub struct TemplateProvider {
+pub struct HttpLoader {
     client: reqwest::Client,
     url: String,
     params: Vec<(String, String)>,
     headers: HeaderMap,
 }
 
-impl TemplateProvider {
+impl HttpLoader {
     #[cfg(test)]
     fn new(url: String) -> Self {
         Self {
@@ -115,12 +115,7 @@ impl TemplateProvider {
         let base_url = self.interpolate(name, filename);
         Url::parse_with_params(base_url.as_str(), self.params.iter()).map_err(|err| {
             tracing::error!("unable to generate metadata url: {:?}", err);
-            Error::configuration(
-                "http",
-                Cow::Owned(format!(
-                    "unable to build url for template {name} and {filename}"
-                )),
-            )
+            Error::MetadataUrlInvalid(err)
         })
     }
 
@@ -133,45 +128,37 @@ impl TemplateProvider {
             .await
             .map_err(|err| {
                 tracing::error!("unable to request template {}: {:?}", filename, err);
-                Error::configuration("http", Cow::Borrowed("unable to request template"))
+                Error::RequestFailed(err)
             })
     }
 
     pub(super) async fn find_by_name(&self, name: &str) -> Result<Template, Error> {
         tracing::debug!("loading template {}", name);
         let res = self.build_request(name, "metadata.json").await?;
-        let status = res.status();
-        if status == StatusCode::NOT_FOUND {
-            tracing::error!("unable to find template metadata: {}", status);
-            return Err(Error::not_found(
-                "http",
-                Cow::Borrowed("error when loading metadata"),
-            ));
-        } else if status.is_client_error() {
-            tracing::error!("unable to load template metadata: {}", status);
-            return Err(Error::internal(
-                "http",
-                Cow::Borrowed("error when loading metadata"),
-            ));
-        } else if status.is_server_error() {
-            tracing::error!("unable to load template metadata: {}", status);
-            return Err(Error::provider(
-                "http",
-                Cow::Borrowed("error when loading metadata"),
-            ));
-        }
+        let res = res
+            .error_for_status()
+            .map_err(Error::MetadataLoadingFailed)?;
         let metadata: RemoteMetadata = res.json().await.map_err(|err| {
-            tracing::error!("unable to parse template metadata: {:?}", err);
-            Error::provider("http", Cow::Borrowed("unable to parse template metadata"))
+            tracing::error!("unable to load and parse metadata: {:?}", err);
+            Error::MetadataLoadingFailed(err)
         })?;
-        let template_content = metadata.content(self, name).await.map_err(|err| {
-            tracing::error!("unable to load template content: {:?}", err);
-            Error::provider("http", Cow::Borrowed("unable to load template content"))
-        })?;
+        let content = match metadata.template {
+            RemoteMetadataTemplate::Embedded { content } => content,
+            RemoteMetadataTemplate::Remote { template } => {
+                let res = self.build_request(name, &template).await?;
+                let res = res
+                    .error_for_status()
+                    .map_err(Error::TemplateLoadingFailed)?;
+                res.text().await.map_err(|err| {
+                    tracing::error!("unable to load template content: {:?}", err);
+                    Error::TemplateLoadingFailed(err)
+                })?
+            }
+        };
         Ok(Template {
             name: metadata.name,
             description: metadata.description,
-            content: template_content,
+            content,
             attributes: metadata.attributes,
         })
     }
@@ -179,12 +166,12 @@ impl TemplateProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::TemplateProvider;
+    use super::HttpLoader;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn interpolate(url: &str, name: &str) -> String {
-        TemplateProvider::new(url.into()).interpolate(name, "metadata.json")
+        HttpLoader::new(url.into()).interpolate(name, "metadata.json")
     }
 
     #[test]
@@ -200,23 +187,20 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_not_found_template() {
-        crate::try_init_logs();
         let mock_server = MockServer::start().await;
 
-        let provider = TemplateProvider::new(format!("{}/templates/", &mock_server.uri()));
+        let provider = HttpLoader::new(format!("{}/templates/", &mock_server.uri()));
         let result = provider.find_by_name("user-login").await.unwrap_err();
-        assert_eq!(result.provider, "http");
-        assert_eq!(result.message, "error when loading metadata");
+        assert!(matches!(result, super::Error::MetadataLoadingFailed(_)));
     }
 
     #[tokio::test]
     async fn fetch_template_separate_file() {
-        crate::try_init_logs();
-        //
-        let metadata: serde_json::Value =
-            serde_json::from_str(include_str!("../../../template/user-login/metadata.json"))
-                .unwrap();
-        let content = include_str!("../../../template/user-login/template.mjml");
+        let metadata: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../template/user-login/metadata.json"
+        ))
+        .unwrap();
+        let content = include_str!("../../../../template/user-login/template.mjml");
         //
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -230,18 +214,17 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let provider = TemplateProvider::new(format!("{}/templates/", &mock_server.uri()));
+        let provider = HttpLoader::new(format!("{}/templates/", &mock_server.uri()));
         let result = provider.find_by_name("user-login").await.unwrap();
         assert!(result.content.starts_with("<mjml>"));
     }
 
     #[tokio::test]
     async fn fetch_template_separate_file_missing_template() {
-        crate::try_init_logs();
-        //
-        let metadata: serde_json::Value =
-            serde_json::from_str(include_str!("../../../template/user-login/metadata.json"))
-                .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../template/user-login/metadata.json"
+        ))
+        .unwrap();
         //
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -250,17 +233,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let provider = TemplateProvider::new(format!("{}/templates/", &mock_server.uri()));
+        let provider = HttpLoader::new(format!("{}/templates/", &mock_server.uri()));
         let result = provider.find_by_name("user-login").await.unwrap_err();
-        assert_eq!(result.provider, "http");
-        assert_eq!(result.message, "unable to load template content");
+        assert!(matches!(result, super::Error::TemplateLoadingFailed(_)));
     }
 
     #[tokio::test]
     async fn fetch_template_same_file() {
-        crate::try_init_logs();
-        //
-        let content = include_str!("../../../template/user-login/template.mjml");
+        let content = include_str!("../../../../template/user-login/template.mjml");
         let metadata = serde_json::json!({
             "name": "single-file",
             "description": "read from single file",
@@ -284,7 +264,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
             .mount(&mock_server)
             .await;
-        let provider = TemplateProvider::new(format!("{}/templates/", &mock_server.uri()));
+        let provider = HttpLoader::new(format!("{}/templates/", &mock_server.uri()));
         let result = provider.find_by_name("single-file").await.unwrap();
         assert!(result.content.starts_with("<mjml>"));
     }

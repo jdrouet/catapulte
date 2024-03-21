@@ -1,22 +1,28 @@
 [package]
 name = "catapulte"
 version = "1.0.0"
-description = "Catapulte is an open source mailer you can host yourself. You can use it to quickly catapult your transactionnal emails to destination."
+description = """Catapulte is an open source mailer you can host yourself.
+You can use it to quickly catapult your transactionnal emails to destination."""
 authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
 edition = "2021"
 license-file = "license.md"
 
+[workspace]
+members = ["./lib/engine"]
+resolver = "2"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+catapulte-engine = { version = "*", path = "./lib/engine" }
+
 axum = { version = "0.7.4", features = ["multipart"] }
 clap = { version = "4.5.3", features = ["derive", "env"] }
 config = { version = "0.14.0", default-features = false }
-handlebars = { version = "5.1.0" }
 lettre = { default-features = false, features = [
-  "builder",
   "pool",
   "rustls-tls",
+  "serde",
   "smtp-transport",
   "tokio1-rustls-tls",
 ], version = "0.11.4" }
@@ -24,14 +30,8 @@ metrics = { version = "0.22.3" }
 metrics-exporter-prometheus = { version = "0.14.0", default-features = false, features = [
   "http-listener",
 ] }
-mrml = { version = "3.1.0" }
-reqwest = { version = "0.11.26", default-features = false, features = [
-  "json",
-  "rustls-tls",
-] }
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = { version = "1.0.114" }
-tempfile = { version = "3.10.1" }
 thiserror = { version = "1.0.58" }
 tokio = { version = "1.36.0", features = ["full"] }
 tower-http = { version = "0.5.2", default-features = false, features = [
@@ -44,8 +44,10 @@ utoipa-swagger-ui = { version = "6.0.0", features = ["axum"] }
 
 [dev-dependencies]
 http-body-util = "0.1.1"
-lazy_static = "1.4.0"
 multipart = "0.18.0"
+reqwest = { version = "0.11.26", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
 tower = { version = "0.4.13" }
 uuid = { version = "1.8.0", features = ["v4"] }
-wiremock = { version = "0.6.0" }

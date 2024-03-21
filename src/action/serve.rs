@@ -13,12 +13,8 @@ pub(crate) struct Action {
 }
 
 impl Action {
-    fn configuration(&self) -> Configuration {
-        Configuration::from_path(&self.config_path)
-    }
-
     pub(crate) async fn execute(self) {
-        let config = self.configuration();
+        let config = Configuration::from_path(&self.config_path);
         Server::from_config(config).run().await
     }
 }
