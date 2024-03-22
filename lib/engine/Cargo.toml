@@ -12,7 +12,10 @@ lettre = { default-features = false, features = [
 ], version = "0.11.4" }
 metrics = { version = "0.22.3" }
 mrml = { version = "3.1.1", features = ["async", "local-loader"] }
-reqwest = { version = "0.12.0", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.0", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = { version = "1.0.114" }
 thiserror = { version = "1.0.58" }
