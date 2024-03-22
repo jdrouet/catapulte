@@ -5,8 +5,10 @@ ENV USER=root
 
 WORKDIR /code
 RUN cargo init
+RUN cargo init lib/engine
 COPY Cargo.toml /code/Cargo.toml
 COPY Cargo.lock /code/Cargo.lock
+COPY lib/engine/Cargo.toml /code/lib/engine/Cargo.toml
 
 # https://docs.docker.com/engine/reference/builder/#run---mounttypecache
 RUN --mount=type=cache,target=$CARGO_HOME/git,sharing=locked \
@@ -22,6 +24,7 @@ WORKDIR /code
 
 COPY Cargo.toml /code/Cargo.toml
 COPY Cargo.lock /code/Cargo.lock
+COPY lib /code/lib
 COPY src /code/src
 COPY --from=vendor /code/.cargo /code/.cargo
 COPY --from=vendor /code/vendor /code/vendor
