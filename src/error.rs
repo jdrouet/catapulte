@@ -140,9 +140,9 @@ impl From<catapulte_engine::Error> for ErrorResponse {
             catapulte_engine::Error::Building(inner) => inner.into(),
             catapulte_engine::Error::Interpolation(inner) => ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
-                code: "interpolation-error".into(),
-                title: "something went wrong when interpolating values in template".into(),
-                details: Some(format!("{inner}").into()),
+                code: "interpolation-error",
+                title: "something went wrong when interpolating values in template",
+                details: Some(format!("{inner}")),
             },
             catapulte_engine::Error::Loading(inner) => inner.into(),
             catapulte_engine::Error::Parsing(inner) => inner.into(),
@@ -167,27 +167,27 @@ impl From<catapulte_engine::loader::http::Error> for ErrorResponse {
         match value {
             Error::TemplateLoadingFailed(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
-                code: "template-loading-failed".into(),
-                title: "unable to load template file".into(),
-                details: Some(format!("{inner}").into()),
+                code: "template-loading-failed",
+                title: "unable to load template file",
+                details: Some(format!("{inner}")),
             },
             Error::MetadataLoadingFailed(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
-                code: "metadata-loading-failed".into(),
-                title: "unable to load metadata file".into(),
-                details: Some(format!("{inner}").into()),
+                code: "metadata-loading-failed",
+                title: "unable to load metadata file",
+                details: Some(format!("{inner}")),
             },
             Error::MetadataUrlInvalid(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
-                code: "url-building-failed".into(),
-                title: "unable to build url".into(),
-                details: Some(format!("{inner}").into()),
+                code: "url-building-failed",
+                title: "unable to build url",
+                details: Some(format!("{inner}")),
             },
             Error::RequestFailed(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
-                code: "external-request-failed".into(),
-                title: "unable to request external resource".into(),
-                details: Some(format!("{inner}").into()),
+                code: "external-request-failed",
+                title: "unable to request external resource",
+                details: Some(format!("{inner}")),
             },
         }
     }
@@ -200,21 +200,21 @@ impl From<catapulte_engine::loader::local::Error> for ErrorResponse {
         match value {
             Error::TemplateOpenFailed(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
-                code: "template-opening-failed".into(),
-                title: "unable to open template".into(),
-                details: Some(format!("{inner}").into()),
+                code: "template-opening-failed",
+                title: "unable to open template",
+                details: Some(format!("{inner}")),
             },
             Error::MetadataOpenFailed(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
-                code: "metadata-opening-failed".into(),
-                title: "unable to open metadata".into(),
-                details: Some(format!("{inner}").into()),
+                code: "metadata-opening-failed",
+                title: "unable to open metadata",
+                details: Some(format!("{inner}")),
             },
             Error::MetadataFormatInvalid(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
-                code: "metadata-invalid-format".into(),
-                title: "unable to decode metadata".into(),
-                details: Some(format!("{inner}").into()),
+                code: "metadata-invalid-format",
+                title: "unable to decode metadata",
+                details: Some(format!("{inner}")),
             },
         }
     }
