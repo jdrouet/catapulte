@@ -1370,9 +1370,9 @@ checksum = "41f5c9112cb662acd3b204077e0de5bc66305fa8df65c8019d5adb10e9ab6e58"
 
 [[package]]
 name = "mrml"
-version = "3.1.1"
+version = "3.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c50ed3bdc96c67f309fae56adeab019d44a848b61b2cdc2c73a7267e08cad7f3"
+checksum = "4b6f31e38fc879b2dbcca95fd0c03f15351e79e3abcdb8533216cc3bdf14afb5"
 dependencies = [
  "async-trait",
  "indexmap",
