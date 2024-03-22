@@ -11,7 +11,7 @@ use utoipa_swagger_ui::SwaggerUi;
         super::templates::multipart::handler,
     ),
     components(schemas(
-        crate::error::ServerError,
+        crate::error::ErrorResponse,
         super::templates::json::JsonPayload,
         super::templates::Recipient,
         super::templates::multipart::MultipartPayload,

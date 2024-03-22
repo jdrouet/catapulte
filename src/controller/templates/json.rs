@@ -72,6 +72,7 @@ pub(crate) async fn handler(
 mod tests {
     use super::super::Recipient;
     use super::{handler, JsonPayload};
+    use crate::error::ServerError;
     use crate::service::smtp::tests::{create_email, expect_latest_inbox};
     use axum::extract::{Extension, Json, Path};
     use axum::http::StatusCode;
@@ -243,8 +244,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(result.code, StatusCode::BAD_REQUEST);
-        assert_eq!(result.message, "unable to prepare template");
+        assert!(matches!(result, ServerError::Engine(_)));
     }
 
     #[tokio::test]
@@ -272,7 +272,6 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(result.code, StatusCode::BAD_REQUEST);
-        assert_eq!(result.message, "template rendering options invalid");
+        assert!(matches!(result, ServerError::Engine(_)));
     }
 }

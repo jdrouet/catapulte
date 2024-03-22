@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+pub use mrml::prelude::render::Error;
+
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct Config {
     #[serde(default)]
