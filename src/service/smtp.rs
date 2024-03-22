@@ -1,4 +1,3 @@
-use crate::error::ServerError;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::transport::smtp::{
@@ -165,26 +164,6 @@ impl From<LettreError> for ConfigurationError {
     fn from(err: LettreError) -> Self {
         tracing::error!("smtp configuration error: {:?}", err);
         Self(err)
-    }
-}
-
-impl From<LettreError> for ServerError {
-    fn from(err: LettreError) -> Self {
-        if let Some(code) = err.status() {
-            metrics::counter!(
-                "smtp_error",
-                "severity" => code.severity.to_string(),
-                "category" => code.category.to_string(),
-                "detail" => code.detail.to_string(),
-            )
-            .increment(1);
-        } else {
-            metrics::counter!("smtp_error").increment(1);
-        }
-        tracing::error!("smtp error: {:?}", err);
-        ServerError::internal().details(serde_json::json!({
-            "origin": "smtp"
-        }))
     }
 }
 

@@ -1,5 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
+pub use mrml::prelude::parser::Error;
+
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct Config {
     #[serde(default)]
