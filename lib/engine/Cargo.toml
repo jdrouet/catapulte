@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 bytes = { version = "1.6.0" }
-handlebars = { version = "5.1.0" }
+handlebars = { version = "5.1.2" }
 lettre = { default-features = false, features = [
   "builder",
 ], version = "0.11.4" }
