@@ -17,7 +17,7 @@ resolver = "2"
 catapulte-engine = { version = "*", path = "./lib/engine" }
 
 axum = { version = "0.7.5", features = ["multipart"] }
-clap = { version = "4.5.3", features = ["derive", "env"] }
+clap = { version = "4.5.4", features = ["derive", "env"] }
 config = { version = "0.14.0", default-features = false }
 lettre = { default-features = false, features = [
   "pool",
