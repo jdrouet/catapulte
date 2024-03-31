@@ -25,5 +25,5 @@ tracing = { version = "0.1.40" }
 url = { version = "2.5.0" }
 
 [dev-dependencies]
-tokio = { version = "*", features = ["macros"] }
-wiremock = { version = "*" }
+tokio = { version = "1.37.0", features = ["macros"] }
+wiremock = { version = "0.6.0" }
