@@ -49,7 +49,13 @@ impl From<Config> for Engine {
 }
 
 impl Engine {
-    async fn load(&self, name: &str) -> Result<loader::prelude::Template, Error> {
+    async fn load(
+        &self,
+        name: &str,
+    ) -> Result<
+        catapulte_prelude::MetadataWithTemplate<catapulte_prelude::EmbeddedTemplateDefinition>,
+        Error,
+    > {
         self.loader.find_by_name(name).await.map_err(Error::Loading)
     }
 
@@ -72,11 +78,11 @@ impl Engine {
     }
 
     pub async fn handle(&self, req: Request) -> Result<lettre::Message, Error> {
-        let template = self.load(req.name.as_str()).await?;
+        let metadata = self.load(req.name.as_str()).await?;
         // TODO handle embedded attachments
         // TODO validate params with jsonapi from template
 
-        let res = self.interpolate(&template.content, &req.params)?;
+        let res = self.interpolate(&metadata.template.content, &req.params)?;
         let res = self.parse(res).await?;
 
         let title = res.get_title();

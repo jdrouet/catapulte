@@ -1,0 +1,12 @@
+[package]
+name = "catapulte-prelude"
+description = "The package containing the file formats for exchanging templates and metadata files."
+authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
+license = "AGPL-3.0"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0.197", default-features = false }
+serde_json = { version = "1.0.115", default-features = false }
+url = { version = "2.5.0", default-features = false, features = ["serde"] }

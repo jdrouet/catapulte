@@ -8,7 +8,7 @@ edition = "2021"
 license = "AGPL-3.0"
 
 [workspace]
-members = ["./lib/engine"]
+members = ["./lib/engine", "./lib/prelude"]
 resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -333,6 +333,7 @@ name = "catapulte-engine"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "catapulte-prelude",
  "handlebars",
  "lettre",
  "metrics",
@@ -345,6 +346,15 @@ dependencies = [
  "tracing",
  "url 2.5.0",
  "wiremock",
+]
+
+[[package]]
+name = "catapulte-prelude"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "url 2.5.0",
 ]
 
 [[package]]
@@ -2693,6 +2703,7 @@ dependencies = [
  "form_urlencoded",
  "idna 0.5.0",
  "percent-encoding 2.3.1",
+ "serde",
 ]
 
 [[package]]
