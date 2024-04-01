@@ -1,6 +1,7 @@
+use catapulte_prelude::{EmbeddedTemplateDefinition, MetadataWithTemplate};
+
 pub mod http;
 pub mod local;
-pub mod prelude;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -39,7 +40,10 @@ pub enum Loader {
 }
 
 impl Loader {
-    pub async fn find_by_name(&self, name: &str) -> Result<prelude::Template, Error> {
+    pub async fn find_by_name(
+        &self,
+        name: &str,
+    ) -> Result<MetadataWithTemplate<EmbeddedTemplateDefinition>, Error> {
         match self {
             Loader::Local(inner) => inner.find_by_name(name).await.map_err(Error::Local),
             Loader::Http(inner) => inner.find_by_name(name).await.map_err(Error::Http),

@@ -1,6 +1,4 @@
-use super::prelude::Template;
-use serde::Deserialize;
-use serde_json::Value as JsonValue;
+use catapulte_prelude::{EmbeddedTemplateDefinition, MetadataWithTemplate, TemplateDefinition};
 use std::fs::{read_to_string, File};
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -22,19 +20,6 @@ impl From<Config> for LocalLoader {
     fn from(value: Config) -> Self {
         Self::new(value.path)
     }
-}
-
-fn default_template_path() -> String {
-    "template.mjml".into()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LocalMetadata {
-    name: String,
-    description: String,
-    #[serde(default = "default_template_path")]
-    template: String,
-    attributes: JsonValue,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -59,7 +44,10 @@ impl LocalLoader {
 }
 
 impl LocalLoader {
-    pub(super) async fn find_by_name(&self, name: &str) -> Result<Template, Error> {
+    pub(super) async fn find_by_name(
+        &self,
+        name: &str,
+    ) -> Result<MetadataWithTemplate<EmbeddedTemplateDefinition>, Error> {
         tracing::debug!("loading template {}", name);
         let path = self.root.join(name).join("metadata.json");
         let metadata_file = File::open(path).map_err(|err| {
@@ -69,24 +57,30 @@ impl LocalLoader {
             Error::MetadataOpenFailed(err)
         })?;
         let metadata_reader = BufReader::new(metadata_file);
-        let metadata: LocalMetadata = serde_json::from_reader(metadata_reader).map_err(|err| {
-            metrics::counter!("template_provider_error", "reason" => "metadata_invalid")
-                .increment(1);
-            tracing::debug!("template provider error: metadata invalid ({:?})", err);
-            Error::MetadataFormatInvalid(err)
-        })?;
-        let template_path = self.root.join(name).join(metadata.template);
-        let content = read_to_string(template_path).map_err(|err| {
-            metrics::counter!("template_provider_error", "reason" => "template_not_found")
-                .increment(1);
-            tracing::debug!("template provider error: template not found ({:?})", err);
-            Error::TemplateOpenFailed(err)
-        })?;
-        Ok(Template {
-            name: metadata.name,
-            description: metadata.description,
-            content,
-            attributes: metadata.attributes,
+        let metadata: MetadataWithTemplate<TemplateDefinition> =
+            serde_json::from_reader(metadata_reader).map_err(|err| {
+                metrics::counter!("template_provider_error", "reason" => "metadata_invalid")
+                    .increment(1);
+                tracing::debug!("template provider error: metadata invalid ({:?})", err);
+                Error::MetadataFormatInvalid(err)
+            })?;
+        let template = match metadata.template {
+            TemplateDefinition::Embedded(inner) => inner,
+            TemplateDefinition::Local(inner) => {
+                let template_path = self.root.join(name).join(inner.path);
+                let content = read_to_string(template_path).map_err(|err| {
+                    metrics::counter!("template_provider_error", "reason" => "template_not_found")
+                        .increment(1);
+                    tracing::debug!("template provider error: template not found ({:?})", err);
+                    Error::TemplateOpenFailed(err)
+                })?;
+                EmbeddedTemplateDefinition { content }
+            }
+            TemplateDefinition::Remote(_inner) => unimplemented!(),
+        };
+        Ok(MetadataWithTemplate {
+            inner: metadata.inner,
+            template,
         })
     }
 }

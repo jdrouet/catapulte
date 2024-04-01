@@ -1,7 +1,7 @@
-use super::prelude::Template;
+use catapulte_prelude::{
+    Either, EmbeddedTemplateDefinition, MetadataWithTemplate, RemoteTemplateDefinition,
+};
 use reqwest::{header::HeaderMap, Url};
-use serde::Deserialize;
-use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -68,22 +68,6 @@ pub enum Error {
     TemplateLoadingFailed(reqwest::Error),
 }
 
-#[derive(Debug, Deserialize)]
-struct RemoteMetadata {
-    name: String,
-    description: String,
-    #[serde(flatten)]
-    template: RemoteMetadataTemplate,
-    attributes: JsonValue,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum RemoteMetadataTemplate {
-    Embedded { content: String },
-    Remote { template: String },
-}
-
 #[derive(Clone, Debug)]
 pub struct HttpLoader {
     client: reqwest::Client,
@@ -119,47 +103,55 @@ impl HttpLoader {
         })
     }
 
-    async fn build_request(&self, name: &str, filename: &str) -> Result<reqwest::Response, Error> {
-        let url = self.build_url(name, filename)?;
+    async fn query_url(&self, url: Url) -> Result<reqwest::Response, Error> {
         self.client
             .get(url)
             .headers(self.headers.clone())
             .send()
             .await
             .map_err(|err| {
-                tracing::error!("unable to request template {}: {:?}", filename, err);
+                tracing::error!("unable to execute request: {:?}", err);
                 Error::RequestFailed(err)
             })
     }
 
-    pub(super) async fn find_by_name(&self, name: &str) -> Result<Template, Error> {
+    async fn build_request(&self, name: &str, filename: &str) -> Result<reqwest::Response, Error> {
+        let url = self.build_url(name, filename)?;
+        self.query_url(url).await
+    }
+
+    pub(super) async fn find_by_name(
+        &self,
+        name: &str,
+    ) -> Result<MetadataWithTemplate<EmbeddedTemplateDefinition>, Error> {
         tracing::debug!("loading template {}", name);
         let res = self.build_request(name, "metadata.json").await?;
         let res = res
             .error_for_status()
             .map_err(Error::MetadataLoadingFailed)?;
-        let metadata: RemoteMetadata = res.json().await.map_err(|err| {
+        let metadata: MetadataWithTemplate<
+            Either<EmbeddedTemplateDefinition, RemoteTemplateDefinition>,
+        > = res.json().await.map_err(|err| {
             tracing::error!("unable to load and parse metadata: {:?}", err);
             Error::MetadataLoadingFailed(err)
         })?;
-        let content = match metadata.template {
-            RemoteMetadataTemplate::Embedded { content } => content,
-            RemoteMetadataTemplate::Remote { template } => {
-                let res = self.build_request(name, &template).await?;
+        let template = match metadata.template {
+            Either::First(inner) => inner,
+            Either::Second(RemoteTemplateDefinition { url }) => {
+                let res = self.query_url(url).await?;
                 let res = res
                     .error_for_status()
                     .map_err(Error::TemplateLoadingFailed)?;
-                res.text().await.map_err(|err| {
+                let content = res.text().await.map_err(|err| {
                     tracing::error!("unable to load template content: {:?}", err);
                     Error::TemplateLoadingFailed(err)
-                })?
+                })?;
+                EmbeddedTemplateDefinition { content }
             }
         };
-        Ok(Template {
-            name: metadata.name,
-            description: metadata.description,
-            content,
-            attributes: metadata.attributes,
+        Ok(MetadataWithTemplate::<EmbeddedTemplateDefinition> {
+            inner: metadata.inner,
+            template,
         })
     }
 }
@@ -196,16 +188,15 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_template_separate_file() {
-        let metadata: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../template/user-login/metadata.json"
-        ))
-        .unwrap();
         let content = include_str!("../../../../template/user-login/template.mjml");
         //
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/templates/user-login/metadata.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "user-login",
+                "url": format!("{}/templates/user-login/template.mjml", mock_server.uri()),
+            })))
             .mount(&mock_server)
             .await;
         Mock::given(method("GET"))
@@ -216,20 +207,18 @@ mod tests {
 
         let provider = HttpLoader::new(format!("{}/templates/", &mock_server.uri()));
         let result = provider.find_by_name("user-login").await.unwrap();
-        assert!(result.content.starts_with("<mjml>"));
+        assert!(result.template.content.starts_with("<mjml>"));
     }
 
     #[tokio::test]
     async fn fetch_template_separate_file_missing_template() {
-        let metadata: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../template/user-login/metadata.json"
-        ))
-        .unwrap();
-        //
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/templates/user-login/metadata.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "user-login",
+                "url": format!("{}/templates/user-login/template.mjml", mock_server.uri()),
+            })))
             .mount(&mock_server)
             .await;
 
@@ -266,6 +255,6 @@ mod tests {
             .await;
         let provider = HttpLoader::new(format!("{}/templates/", &mock_server.uri()));
         let result = provider.find_by_name("single-file").await.unwrap();
-        assert!(result.content.starts_with("<mjml>"));
+        assert!(result.template.content.starts_with("<mjml>"));
     }
 }
