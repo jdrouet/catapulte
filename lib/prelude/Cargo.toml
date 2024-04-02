@@ -6,6 +6,11 @@ license = "AGPL-3.0"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["std"]
+std = ["serde_json/std"]
+alloc = ["serde_json/alloc"]
+
 [dependencies]
 serde = { version = "1.0.197", default-features = false }
 serde_json = { version = "1.0.115", default-features = false }
