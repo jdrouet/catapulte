@@ -195,7 +195,9 @@ mod tests {
             .and(path("/templates/user-login/metadata.json"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "name": "user-login",
-                "url": format!("{}/templates/user-login/template.mjml", mock_server.uri()),
+                "template": {
+                    "url": format!("{}/templates/user-login/template.mjml", mock_server.uri()),
+                }
             })))
             .mount(&mock_server)
             .await;
@@ -217,7 +219,9 @@ mod tests {
             .and(path("/templates/user-login/metadata.json"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "name": "user-login",
-                "url": format!("{}/templates/user-login/template.mjml", mock_server.uri()),
+                "template": {
+                    "url": format!("{}/templates/user-login/template.mjml", mock_server.uri()),
+                },
             })))
             .mount(&mock_server)
             .await;
@@ -233,7 +237,9 @@ mod tests {
         let metadata = serde_json::json!({
             "name": "single-file",
             "description": "read from single file",
-            "content": content,
+            "template": {
+                "content": content,
+            },
             "attributes": serde_json::json!({
                 "type": "object",
                 "properties": serde_json::json!({
