@@ -67,7 +67,7 @@ impl LocalLoader {
         let template = match metadata.template {
             TemplateDefinition::Embedded(inner) => inner,
             TemplateDefinition::Local(inner) => {
-                let template_path = self.root.join(name).join(inner.path);
+                let template_path = self.root.join(inner.path);
                 let content = read_to_string(template_path).map_err(|err| {
                     metrics::counter!("template_provider_error", "reason" => "template_not_found")
                         .increment(1);

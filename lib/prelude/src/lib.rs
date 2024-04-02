@@ -13,7 +13,6 @@ pub struct Metadata {
 pub struct MetadataWithTemplate<T = TemplateDefinition> {
     #[serde(flatten)]
     pub inner: Metadata,
-    #[serde(flatten)]
     pub template: T,
 }
 
