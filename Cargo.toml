@@ -45,7 +45,7 @@ utoipa-swagger-ui = { version = "6.0.0", features = ["axum"] }
 [dev-dependencies]
 http-body-util = "0.1.1"
 multipart = "0.18.0"
-reqwest = { version = "0.12.2", default-features = false, features = [
+reqwest = { version = "0.12.3", default-features = false, features = [
   "json",
   "rustls-tls",
 ] }

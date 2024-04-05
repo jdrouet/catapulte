@@ -16,7 +16,7 @@ lettre = { default-features = false, features = [
 ], version = "0.11.4" }
 metrics = { version = "0.22.3" }
 mrml = { version = "3.1.3", features = ["async", "local-loader"] }
-reqwest = { version = "0.12.2", default-features = false, features = [
+reqwest = { version = "0.12.3", default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
