@@ -8,8 +8,8 @@ pub(crate) struct ErrorResponse {
     status: StatusCode,
     code: &'static str,
     title: &'static str,
-    #[serde(default)]
-    details: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    details: Vec<String>,
 }
 
 impl<'s> utoipa::ToSchema<'s> for ErrorResponse {
@@ -68,7 +68,7 @@ impl From<lettre::transport::smtp::Error> for ErrorResponse {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "smtp-transport-error",
             title: "unable to send message",
-            details: Some(format!("{value}")),
+            details: vec![format!("{value}")],
         }
     }
 }
@@ -80,55 +80,55 @@ impl From<lettre::error::Error> for ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
                 code: "cannot-parse-filename",
                 title: "unable to parse attachment filename",
-                details: None,
+                details: Vec::with_capacity(0),
             },
             lettre::error::Error::EmailMissingAt => ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
                 code: "invalid-email-address-missing-at",
                 title: "unable to find at in email address",
-                details: None,
+                details: Vec::with_capacity(0),
             },
             lettre::error::Error::EmailMissingDomain => ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
                 code: "invalid-email-address-missing-domain",
                 title: "unable to find domain in email address",
-                details: None,
+                details: Vec::with_capacity(0),
             },
             lettre::error::Error::EmailMissingLocalPart => ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
                 code: "invalid-email-address-missing-local-part",
                 title: "unable to find local part in email address",
-                details: None,
+                details: Vec::with_capacity(0),
             },
             lettre::error::Error::Io(inner) => ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
                 code: "io-error-with-message",
                 title: "io error when building message",
-                details: Some(format!("{inner:?}")),
+                details: vec![format!("{inner:?}")],
             },
             lettre::error::Error::MissingFrom => ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
                 code: "missing-from-in-message",
                 title: "couldn't find from when building message",
-                details: None,
+                details: Vec::with_capacity(0),
             },
             lettre::error::Error::MissingTo => ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
                 code: "missing-to-in-message",
                 title: "couldn't find to when building message",
-                details: None,
+                details: Vec::with_capacity(0),
             },
             lettre::error::Error::NonAsciiChars => ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
                 code: "non-ascii-chars-found",
                 title: "couldn't decode strings when building email",
-                details: None,
+                details: Vec::with_capacity(0),
             },
             lettre::error::Error::TooManyFrom => ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
                 code: "too-many-from-in-message",
                 title: "couldn't define a single from for message",
-                details: None,
+                details: Vec::with_capacity(0),
             },
         }
     }
@@ -142,7 +142,7 @@ impl From<catapulte_engine::Error> for ErrorResponse {
                 status: StatusCode::BAD_REQUEST,
                 code: "interpolation-error",
                 title: "something went wrong when interpolating values in template",
-                details: Some(format!("{inner}")),
+                details: vec![format!("{inner}")],
             },
             catapulte_engine::Error::Loading(inner) => inner.into(),
             catapulte_engine::Error::Parsing(inner) => inner.into(),
@@ -154,6 +154,12 @@ impl From<catapulte_engine::Error> for ErrorResponse {
 impl From<catapulte_engine::loader::Error> for ErrorResponse {
     fn from(value: catapulte_engine::loader::Error) -> Self {
         match value {
+            catapulte_engine::loader::Error::Multiple(inner) => ErrorResponse {
+                status: StatusCode::BAD_REQUEST,
+                code: "loading-error",
+                title: "something went wrong when loading template",
+                details: inner.into_iter().map(|v| format!("{v:?}")).collect(),
+            },
             catapulte_engine::loader::Error::Http(inner) => inner.into(),
             catapulte_engine::loader::Error::Local(inner) => inner.into(),
         }
@@ -169,25 +175,25 @@ impl From<catapulte_engine::loader::http::Error> for ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
                 code: "template-loading-failed",
                 title: "unable to load template file",
-                details: Some(format!("{inner}")),
+                details: vec![format!("{inner}")],
             },
             Error::MetadataLoadingFailed(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
                 code: "metadata-loading-failed",
                 title: "unable to load metadata file",
-                details: Some(format!("{inner}")),
+                details: vec![format!("{inner}")],
             },
             Error::MetadataUrlInvalid(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
                 code: "url-building-failed",
                 title: "unable to build url",
-                details: Some(format!("{inner}")),
+                details: vec![format!("{inner}")],
             },
             Error::RequestFailed(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
                 code: "external-request-failed",
                 title: "unable to request external resource",
-                details: Some(format!("{inner}")),
+                details: vec![format!("{inner}")],
             },
         }
     }
@@ -202,19 +208,19 @@ impl From<catapulte_engine::loader::local::Error> for ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
                 code: "template-opening-failed",
                 title: "unable to open template",
-                details: Some(format!("{inner}")),
+                details: vec![format!("{inner}")],
             },
             Error::MetadataOpenFailed(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
                 code: "metadata-opening-failed",
                 title: "unable to open metadata",
-                details: Some(format!("{inner}")),
+                details: vec![format!("{inner}")],
             },
             Error::MetadataFormatInvalid(inner) => ErrorResponse {
                 status: StatusCode::BAD_GATEWAY,
                 code: "metadata-invalid-format",
                 title: "unable to decode metadata",
-                details: Some(format!("{inner}")),
+                details: vec![format!("{inner}")],
             },
         }
     }
@@ -230,75 +236,75 @@ impl From<catapulte_engine::parser::Error> for ErrorResponse {
             Error::EndOfStream => (
                 "template-format-error",
                 "unable to decode template, reached the end early",
-                None,
+                Vec::with_capacity(0),
             ),
             Error::SizeLimit => (
                 "template-size-exceeded",
                 "unable to decode template, reached size limit",
-                None,
+                Vec::with_capacity(0),
             ),
             Error::NoRootNode => (
                 "template-missing-root",
                 "unable to decode template, no root component",
-                None,
+                Vec::with_capacity(0),
             ),
             Error::UnexpectedToken(span) => (
                 "template-unexpected-token",
                 "unable to decode template, unexpected token",
-                Some(format!(
+                vec![format!(
                     "Unexpected token at position {}:{}",
                     span.start, span.end
-                )),
+                )],
             ),
             Error::IncludeLoaderError { .. } => (
                 "template-include-loading-error",
                 "unable to load included template",
-                None,
+                Vec::with_capacity(0),
             ),
             Error::InvalidAttribute(span) => (
                 "template-invalid-attribute",
                 "unable to decode template, invalid attribute",
-                Some(format!(
+                vec![format!(
                     "Invalid attribute at position {}:{}",
                     span.start, span.end
-                )),
+                )],
             ),
             Error::InvalidFormat(span) => (
                 "template-invalid-format",
                 "unable to decode template, invalid format",
-                Some(format!(
+                vec![format!(
                     "Invalid format at position {}:{}",
                     span.start, span.end
-                )),
+                )],
             ),
             Error::MissingAttribute(name, span) => (
                 "template-missing-attribute",
                 "unable to decode template, missing attribute",
-                Some(format!(
+                vec![format!(
                     "Missing attribute {name:?} at position {}:{}",
                     span.start, span.end
-                )),
+                )],
             ),
             Error::ParserError(inner) => (
                 "template-invalid-xml",
                 "unable to decode template, invalid xml",
-                Some(format!("Parser failed: {inner:?}")),
+                vec![format!("Parser failed: {inner:?}")],
             ),
             Error::UnexpectedAttribute(span) => (
                 "template-unexpected-attribute",
                 "unable to decode template, unexpected attribute",
-                Some(format!(
+                vec![format!(
                     "Unexpected attribute at position {}:{}",
                     span.start, span.end
-                )),
+                )],
             ),
             Error::UnexpectedElement(span) => (
                 "template-unexpected-element",
                 "unable to decode template, unexpected element",
-                Some(format!(
+                vec![format!(
                     "Unexpected element at position {}:{}",
                     span.start, span.end
-                )),
+                )],
             ),
         };
 
@@ -320,7 +326,7 @@ impl From<catapulte_engine::render::Error> for ErrorResponse {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 code: "rendering-unknown-fragment",
                 title: "unknown fragment",
-                details: None,
+                details: Vec::with_capacity(0),
             },
         }
     }
