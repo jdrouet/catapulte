@@ -1,0 +1,8 @@
+{
+  "name": "embedded",
+  "description": "Template for login with magic link",
+  "template": {
+    "content": "<mjml></mjml>"
+  },
+  "attributes": {}
+}

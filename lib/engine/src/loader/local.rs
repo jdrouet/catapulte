@@ -84,3 +84,53 @@ impl LocalLoader {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn success_finds_template() {
+        let loader = super::LocalLoader::new(PathBuf::new().join("..").join("..").join("template"));
+        let meta = loader.find_by_name("user-login").await.unwrap();
+        assert_eq!(meta.inner.name, "user-login");
+        assert_eq!(
+            meta.inner.description.as_deref(),
+            Some("Template for login with magic link")
+        );
+        assert_eq!(meta.template.content, "<mjml>\n  <mj-head>\n    <mj-title>Hello {{name}}!</mj-title>\n    <mj-preview>Hello {{name}}!</mj-preview>\n  </mj-head>\n  <mj-body>\n    <mj-section>\n      <mj-column>\n        <mj-text>Hello {{name}}!</mj-text>\n        <mj-button href=\"http://example.com/login?token={{token}}\">Login</mj-button>\n      </mj-column>\n    </mj-section>\n  </mj-body>\n</mjml>\n");
+    }
+
+    #[tokio::test]
+    async fn fails_metadata_not_found() {
+        let loader = super::LocalLoader::new(PathBuf::new().join("..").join("..").join("template"));
+        let err = loader.find_by_name("not-found").await.unwrap_err();
+        assert!(matches!(err, super::Error::MetadataOpenFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn fails_invalid_metadata() {
+        let loader = super::LocalLoader::new(PathBuf::new().join("..").join("..").join("template"));
+        let err = loader.find_by_name("invalid-metadata").await.unwrap_err();
+        assert!(matches!(err, super::Error::MetadataFormatInvalid(_)));
+    }
+
+    #[tokio::test]
+    async fn success_embedded_template() {
+        let loader = super::LocalLoader::new(PathBuf::new().join("..").join("..").join("template"));
+        let meta = loader.find_by_name("embedded").await.unwrap();
+        assert_eq!(meta.inner.name, "embedded");
+        assert_eq!(
+            meta.inner.description.as_deref(),
+            Some("Template for login with magic link")
+        );
+        assert_eq!(meta.template.content, "<mjml></mjml>");
+    }
+
+    #[tokio::test]
+    async fn fails_template_not_found() {
+        let loader = super::LocalLoader::new(PathBuf::new().join("..").join("..").join("template"));
+        let err = loader.find_by_name("template-not-found").await.unwrap_err();
+        assert!(matches!(err, super::Error::TemplateOpenFailed(_)));
+    }
+}
