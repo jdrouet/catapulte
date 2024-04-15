@@ -5,16 +5,16 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::net::TcpListener;
 
 #[derive(Clone, Debug, serde::Deserialize)]
-pub(crate) struct Configuration {
+pub struct Configuration {
     #[serde(default = "Configuration::default_host")]
-    pub(crate) host: IpAddr,
+    pub host: IpAddr,
     #[serde(default = "Configuration::default_port")]
-    pub(crate) port: u16,
+    pub port: u16,
     //
     #[serde(default)]
-    pub(crate) smtp: crate::service::smtp::Configuration,
+    pub smtp: crate::service::smtp::Configuration,
     #[serde(flatten)]
-    pub(crate) engine: catapulte_engine::Config,
+    pub engine: catapulte_engine::Config,
 }
 
 impl Configuration {
@@ -30,7 +30,7 @@ impl Configuration {
         SocketAddr::from((self.host, self.port))
     }
 
-    pub(crate) fn from_path(path: &str) -> Self {
+    pub fn from_path(path: &str) -> Self {
         config::Config::builder()
             .add_source(config::File::with_name(path).required(false))
             .add_source(config::Environment::default().separator("__"))
@@ -41,7 +41,7 @@ impl Configuration {
     }
 }
 
-pub(crate) struct Server {
+pub struct Server {
     socket_address: SocketAddr,
     smtp_pool: SmtpPool,
     prometheus_handle: PrometheusHandle,
@@ -82,7 +82,7 @@ impl Server {
         }
     }
 
-    pub(crate) fn from_config(config: Configuration) -> Self {
+    pub fn from_config(config: Configuration) -> Self {
         Self::new(
             config.address(),
             config.smtp.build().expect("smtp service init"),
@@ -103,7 +103,7 @@ impl Server {
             .layer(tower_http::trace::TraceLayer::new_for_http())
     }
 
-    pub(crate) async fn run(self) {
+    pub async fn run(self) {
         tracing::info!("starting server on {:?}", self.socket_address);
         let tcp_listener = TcpListener::bind(&self.socket_address).await.unwrap();
 

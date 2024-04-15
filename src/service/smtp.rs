@@ -8,7 +8,7 @@ use std::time::Duration;
 pub type SmtpPool = SmtpTransport;
 
 #[derive(Clone, Debug, serde::Deserialize)]
-pub(crate) struct Configuration {
+pub struct Configuration {
     #[serde(default = "Configuration::default_hostname")]
     pub hostname: String,
     #[serde(default = "Configuration::default_port")]

@@ -1,4 +1,4 @@
-use crate::controller::swagger::ApiDoc;
+use catapulte::service::openapi::ApiDoc;
 use utoipa::OpenApi;
 
 #[derive(clap::Parser)]
