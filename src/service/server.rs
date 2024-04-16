@@ -93,7 +93,7 @@ impl Server {
         )
     }
 
-    pub(crate) fn app(self) -> axum::Router {
+    pub fn app(self) -> axum::Router {
         use axum::extract::Extension;
 
         crate::controller::create()
