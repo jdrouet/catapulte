@@ -11,31 +11,6 @@ pub struct Config {
     pub headers: BTreeMap<String, String>,
 }
 
-impl Config {
-    pub fn build(&self) -> HttpLoader {
-        tracing::debug!("building template provider");
-        HttpLoader {
-            client: reqwest::Client::new(),
-            url: self.url.clone(),
-            params: self
-                .params
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-            headers: self
-                .headers
-                .iter()
-                .map(|(name, value)| {
-                    (
-                        reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
-                        reqwest::header::HeaderValue::from_bytes(value.as_bytes()).unwrap(),
-                    )
-                })
-                .collect(),
-        }
-    }
-}
-
 impl From<Config> for HttpLoader {
     fn from(value: Config) -> Self {
         HttpLoader {
