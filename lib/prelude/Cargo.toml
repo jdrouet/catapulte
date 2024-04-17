@@ -13,5 +13,5 @@ alloc = ["serde_json/alloc"]
 
 [dependencies]
 serde = { version = "1.0.198", default-features = false }
-serde_json = { version = "1.0.115", default-features = false }
+serde_json = { version = "1.0.116", default-features = false }
 url = { version = "2.5.0", default-features = false, features = ["serde"] }
