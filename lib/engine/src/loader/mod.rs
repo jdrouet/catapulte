@@ -1,7 +1,5 @@
 use catapulte_prelude::{EmbeddedTemplateDefinition, MetadataWithTemplate};
 
-use self::http::HttpLoader;
-
 pub mod http;
 pub mod local;
 
@@ -15,36 +13,27 @@ pub enum Error {
     Multiple(Vec<Error>),
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
-pub enum Config {
-    Local(local::Config),
-    Http(http::Config),
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self::Local(local::Config::default())
-    }
+pub struct Config {
+    pub local: local::Config,
+    pub http: Option<http::Config>,
 }
 
 impl From<Config> for Loader {
     fn from(value: Config) -> Self {
-        match value {
-            Config::Local(item) => Loader::Local(item.into()),
-            Config::Http(item) => Loader::Http(item.build()),
+        let mut loaders = Vec::with_capacity(2);
+        loaders.push(AnyLoader::Local(value.local.into()));
+        if let Some(http) = value.http {
+            loaders.push(AnyLoader::Http(http.into()));
         }
+        Self { loaders }
     }
 }
 
 #[derive(Debug)]
-pub enum Loader {
-    Combined {
-        local: local::LocalLoader,
-        http: HttpLoader,
-    },
-    Local(local::LocalLoader),
-    Http(http::HttpLoader),
+pub struct Loader {
+    loaders: Vec<AnyLoader>,
 }
 
 impl Loader {
@@ -52,18 +41,33 @@ impl Loader {
         &self,
         name: &str,
     ) -> Result<MetadataWithTemplate<EmbeddedTemplateDefinition>, Error> {
+        let mut errors = Vec::with_capacity(self.loaders.len());
+        for loader in self.loaders.iter() {
+            match loader.find_by_name(name).await {
+                Ok(found) => return Ok(found),
+                Err(err) => {
+                    errors.push(err);
+                }
+            }
+        }
+        Err(Error::Multiple(errors))
+    }
+}
+
+#[derive(Debug)]
+pub enum AnyLoader {
+    Local(local::LocalLoader),
+    Http(http::HttpLoader),
+}
+
+impl AnyLoader {
+    pub async fn find_by_name(
+        &self,
+        name: &str,
+    ) -> Result<MetadataWithTemplate<EmbeddedTemplateDefinition>, Error> {
         match self {
-            Loader::Combined { local, http } => match local.find_by_name(name).await {
-                Ok(found) => Ok(found),
-                Err(local_error) => match http.find_by_name(name).await {
-                    Ok(found) => Ok(found),
-                    Err(http_error) => {
-                        Err(Error::Multiple(vec![local_error.into(), http_error.into()]))
-                    }
-                },
-            },
-            Loader::Local(inner) => inner.find_by_name(name).await.map_err(Error::Local),
-            Loader::Http(inner) => inner.find_by_name(name).await.map_err(Error::Http),
+            Self::Local(inner) => inner.find_by_name(name).await.map_err(Error::Local),
+            Self::Http(inner) => inner.find_by_name(name).await.map_err(Error::Http),
         }
     }
 }
