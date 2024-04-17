@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct Config {
     pub url: String,
+    #[serde(default)]
     pub params: BTreeMap<String, String>,
+    #[serde(default)]
     pub headers: BTreeMap<String, String>,
 }
 
