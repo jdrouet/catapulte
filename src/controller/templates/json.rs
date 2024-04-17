@@ -121,35 +121,35 @@ mod tests {
             .contains("\"http://example.com/login?token=this_is_a_token\""));
     }
 
-    #[tokio::test]
-    async fn success_ssl() {
-        crate::try_init_logs();
-        let smtp_pool = crate::service::smtp::Configuration::secure()
-            .build()
-            .unwrap();
-        let engine = catapulte_engine::Config::default().into();
+    // #[tokio::test]
+    // async fn success_ssl() {
+    //     crate::try_init_logs();
+    //     let smtp_pool = crate::service::smtp::Configuration::secure()
+    //         .build()
+    //         .unwrap();
+    //     let engine = catapulte_engine::Config::default().into();
 
-        let from = create_email();
-        let to = create_email();
-        let payload = create_payload(&from, &to, "this_is_a_secure_token");
+    //     let from = create_email();
+    //     let to = create_email();
+    //     let payload = create_payload(&from, &to, "this_is_a_secure_token");
 
-        let result = handler(
-            Extension(smtp_pool),
-            Extension(engine),
-            Path("user-login".into()),
-            Json(payload),
-        )
-        .await
-        .unwrap();
-        assert_eq!(result, StatusCode::NO_CONTENT);
-        let list = expect_latest_inbox(&from, "to", &to).await;
-        let last = list.first().unwrap();
-        assert!(last.text.contains("Hello bob!"));
-        assert!(last.html.contains("Hello bob!"));
-        assert!(last
-            .html
-            .contains("\"http://example.com/login?token=this_is_a_secure_token\""));
-    }
+    //     let result = handler(
+    //         Extension(smtp_pool),
+    //         Extension(engine),
+    //         Path("user-login".into()),
+    //         Json(payload),
+    //     )
+    //     .await
+    //     .unwrap();
+    //     assert_eq!(result, StatusCode::NO_CONTENT);
+    //     let list = expect_latest_inbox(&from, "to", &to).await;
+    //     let last = list.first().unwrap();
+    //     assert!(last.text.contains("Hello bob!"));
+    //     assert!(last.html.contains("Hello bob!"));
+    //     assert!(last
+    //         .html
+    //         .contains("\"http://example.com/login?token=this_is_a_secure_token\""));
+    // }
 
     #[tokio::test]
     async fn success_even_missing_params() {

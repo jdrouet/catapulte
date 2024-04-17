@@ -1,13 +1,14 @@
 use std::{net::Ipv4Addr, path::PathBuf};
 
-use catapulte::service::{server, smtp};
-
 use axum::{
     body::Body,
     http::{header, Request, StatusCode},
 };
-// use http_body_util::BodyExt; // for `collect`
-use tower::ServiceExt; // for `call`, `oneshot`, and `ready`
+use catapulte::service::{server, smtp};
+use testcontainers::clients::Cli as DockerCli;
+use testcontainers::core::WaitFor;
+use testcontainers::GenericImage;
+use tower::ServiceExt;
 
 fn engine_config() -> catapulte_engine::Config {
     catapulte_engine::Config {
@@ -22,27 +23,45 @@ fn engine_config() -> catapulte_engine::Config {
     }
 }
 
-fn smtp_config() -> smtp::Configuration {
+fn smtp_config(port: u16) -> smtp::Configuration {
     smtp::Configuration {
         hostname: "localhost".into(),
-        port: 1025,
+        port,
         ..Default::default()
     }
 }
 
-fn server_config() -> server::Configuration {
+fn server_config(
+    engine: catapulte_engine::Config,
+    smtp: smtp::Configuration,
+) -> server::Configuration {
     server::Configuration {
         host: Ipv4Addr::new(127, 0, 0, 1).into(),
         port: 3000,
-        engine: engine_config(),
-        smtp: smtp_config(),
+        engine,
+        smtp,
     }
 }
 
 #[tokio::test]
 async fn should_submit_simple() {
-    let _ = catapulte::init_logs("trace", false);
-    let app = server::Server::from_config(server_config()).app();
+    let _ = catapulte::init_logs("debug", false);
+
+    let docker = DockerCli::default();
+    let smtp_server = GenericImage::new("rnwood/smtp4dev", "v3")
+        .with_wait_for(WaitFor::message_on_stdout(
+            "Application started. Press Ctrl+C to shut down.",
+        ))
+        .with_env_var("ServerOptions__BasePath", "/")
+        .with_env_var("ServerOptions__TlsMode", "None")
+        .with_exposed_port(25)
+        .with_exposed_port(80);
+
+    let smtp_node = docker.run(smtp_server);
+    let smtp_port = smtp_node.get_host_port_ipv4(25);
+
+    let app =
+        server::Server::from_config(server_config(engine_config(), smtp_config(smtp_port))).app();
 
     let response = app
         .oneshot(
