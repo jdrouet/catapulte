@@ -3,8 +3,23 @@
 ## The port on which the server listens
 # port = 3000
 
+## Section about loading templates
+# [engine.loader]
+
+# When loading locally, this is required
+# local.path = "/templates"
+
+# When loading remotely, optional
+# http.url = "https://jolimail.io/api/templates"
+# http.params = {}
+# http.headers = {}
+
+## Section about parsing the template
+# [engine.parser]
+# TODO
+
 ## Section related to rendering the template
-# [render]
+# [engine.render]
 ## When disabled, the comments will not be rendered
 # disable_comments = false
 ## The base url to download the social icons

@@ -11,12 +11,8 @@ pub(crate) struct Configuration {
     #[serde(default = "Configuration::default_port")]
     pub(crate) port: u16,
     //
-    // #[serde(default)]
-    // pub(crate) render: crate::service::render::Configuration,
     #[serde(default)]
     pub(crate) smtp: crate::service::smtp::Configuration,
-    // #[serde(default)]
-    // pub(crate) template: crate::service::provider::Configuration,
     #[serde(flatten)]
     pub(crate) engine: catapulte_engine::Config,
 }
