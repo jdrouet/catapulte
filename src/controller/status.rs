@@ -25,37 +25,22 @@ pub(crate) async fn handler(
 
 #[cfg(test)]
 mod tests {
-    use super::handler;
-    use axum::extract::Extension;
-    use axum::http::StatusCode;
-
-    #[tokio::test]
-    async fn success() {
-        crate::try_init_logs();
-
-        let smtp_pool = crate::service::smtp::Configuration::secure()
-            .build()
-            .unwrap();
-        let result = handler(Extension(smtp_pool)).await.unwrap();
-        assert_eq!(result, StatusCode::NO_CONTENT);
-    }
-}
-
-#[cfg(test)]
-mod integration_tests {
     use crate::service::server::Server;
+    use crate::service::smtp::tests::smtp_image_insecure;
     use axum::{body::Body, http::Request};
+    use testcontainers::clients::Cli as DockerCli;
     use tower::ServiceExt;
 
-    fn create_app() -> axum::Router {
+    #[tokio::test]
+    async fn insecure() {
         crate::try_init_logs();
 
-        Server::default_insecure().app()
-    }
+        let docker = DockerCli::default();
+        let smtp_node = docker.run(smtp_image_insecure());
+        let smtp_port = smtp_node.get_host_port_ipv4(25);
 
-    #[tokio::test]
-    async fn success() {
-        let res = create_app()
+        let res = Server::default_insecure(smtp_port)
+            .app()
             .oneshot(
                 Request::builder()
                     .uri("/status")

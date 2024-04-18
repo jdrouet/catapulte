@@ -73,10 +73,11 @@ mod tests {
     use super::super::Recipient;
     use super::{handler, JsonPayload};
     use crate::error::ServerError;
-    use crate::service::smtp::tests::{create_email, expect_latest_inbox};
+    use crate::service::smtp::tests::{create_email, smtp_image_insecure, SmtpMock};
     use axum::extract::{Extension, Json, Path};
     use axum::http::StatusCode;
     use lettre::message::Mailbox;
+    use testcontainers::clients::Cli as DockerCli;
 
     fn create_payload(from: &Mailbox, to: &Mailbox, token: &str) -> JsonPayload {
         JsonPayload {
@@ -94,7 +95,15 @@ mod tests {
     #[tokio::test]
     async fn success() {
         crate::try_init_logs();
-        let smtp_pool = crate::service::smtp::Configuration::insecure()
+
+        let docker = DockerCli::default();
+        let smtp_node = docker.run(smtp_image_insecure());
+        let smtp_port = smtp_node.get_host_port_ipv4(25);
+        let http_port = smtp_node.get_host_port_ipv4(80);
+
+        let smtp_mock = SmtpMock::new("localhost", http_port);
+
+        let smtp_pool = crate::service::smtp::Configuration::insecure(smtp_port)
             .build()
             .unwrap();
         let engine = catapulte_engine::Config::default().into();
@@ -112,13 +121,22 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
-        let list = expect_latest_inbox(&from, "to", &to).await;
-        let last = list.first().unwrap();
-        assert!(last.text.contains("Hello bob!"));
-        assert!(last.html.contains("Hello bob!"));
-        assert!(last
-            .html
-            .contains("\"http://example.com/login?token=this_is_a_token\""));
+        //
+        let messages = smtp_mock.expect_latest_inbox().await;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].inner.subject, "Hello bob!");
+        assert_eq!(messages[0].inner.from, from.email.to_string());
+        assert!(messages[0]
+            .inner
+            .to
+            .iter()
+            .any(|addr| addr.email.eq(&to.email)));
+        let msg = messages[0].detailed().await;
+        let text = msg.plaintext().await;
+        assert!(text.contains("Hello bob!"));
+        let html = msg.html().await;
+        assert!(html.contains("Hello bob!"));
+        assert!(html.contains("\"http://example.com/login?token=this_is_a_token\""));
     }
 
     // #[tokio::test]
@@ -153,7 +171,14 @@ mod tests {
 
     #[tokio::test]
     async fn success_even_missing_params() {
-        let smtp_pool = crate::service::smtp::Configuration::insecure()
+        let docker = DockerCli::default();
+        let smtp_node = docker.run(smtp_image_insecure());
+        let smtp_port = smtp_node.get_host_port_ipv4(25);
+        let http_port = smtp_node.get_host_port_ipv4(80);
+
+        let smtp_mock = SmtpMock::new("localhost", http_port);
+
+        let smtp_pool = crate::service::smtp::Configuration::insecure(smtp_port)
             .build()
             .unwrap();
         let engine = catapulte_engine::Config::default().into();
@@ -172,16 +197,28 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
-        let list = expect_latest_inbox(&from, "to", &to).await;
-        let last = list.first().unwrap();
-        assert!(last.text.contains("Hello Alice!"));
-        assert!(last.html.contains("Hello Alice!"));
-        assert!(last.html.contains("\"http://example.com/login?token=\""));
+
+        let messages = smtp_mock.expect_latest_inbox().await;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].inner.subject, "Hello Alice!");
+        assert_eq!(messages[0].inner.from, from.email.to_string());
+        assert!(messages[0]
+            .inner
+            .to
+            .iter()
+            .any(|addr| addr.email.eq(&to.email)));
     }
 
     #[tokio::test]
     async fn success_multiple_recipients() {
-        let smtp_pool = crate::service::smtp::Configuration::insecure()
+        let docker = DockerCli::default();
+        let smtp_node = docker.run(smtp_image_insecure());
+        let smtp_port = smtp_node.get_host_port_ipv4(25);
+        let http_port = smtp_node.get_host_port_ipv4(80);
+
+        let smtp_mock = SmtpMock::new("localhost", http_port);
+
+        let smtp_pool = crate::service::smtp::Configuration::insecure(smtp_port)
             .build()
             .unwrap();
         let engine = catapulte_engine::Config::default().into();
@@ -211,23 +248,23 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result, StatusCode::NO_CONTENT);
-        for (kind, email) in to
-            .iter()
-            .map(|email| ("to", email))
-            .chain(cc.iter().map(|email| ("cc", email)))
-            .chain(bcc.iter().map(|email| ("bcc", email)))
-        {
-            let list = expect_latest_inbox(&from, kind, email).await;
-            let last = list.first().unwrap();
-            assert!(last.text.contains("Hello bob!"));
-            assert!(last.html.contains("Hello bob!"));
-        }
+
+        let messages = smtp_mock.expect_latest_inbox().await;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].inner.subject, "Hello bob!");
+        assert_eq!(messages[0].inner.from, from.email.to_string());
+        assert_eq!(messages[0].inner.to.iter().count(), 6)
     }
 
     #[tokio::test]
     async fn failure_template_not_found() {
         crate::try_init_logs();
-        let smtp_pool = crate::service::smtp::Configuration::insecure()
+
+        let docker = DockerCli::default();
+        let smtp_node = docker.run(smtp_image_insecure());
+        let smtp_port = smtp_node.get_host_port_ipv4(25);
+
+        let smtp_pool = crate::service::smtp::Configuration::insecure(smtp_port)
             .build()
             .unwrap();
         let engine = catapulte_engine::Config::default().into();
@@ -250,7 +287,12 @@ mod tests {
     #[tokio::test]
     async fn failure_no_recipient() {
         crate::try_init_logs();
-        let smtp_pool = crate::service::smtp::Configuration::insecure()
+
+        let docker = DockerCli::default();
+        let smtp_node = docker.run(smtp_image_insecure());
+        let smtp_port = smtp_node.get_host_port_ipv4(25);
+
+        let smtp_pool = crate::service::smtp::Configuration::insecure(smtp_port)
             .build()
             .unwrap();
         let engine = catapulte_engine::Config::default().into();

@@ -50,8 +50,8 @@ pub struct Server {
 
 #[cfg(test)]
 impl Server {
-    pub fn default_insecure() -> Self {
-        let smtp_pool = crate::service::smtp::Configuration::insecure()
+    pub fn default_insecure(port: u16) -> Self {
+        let smtp_pool = crate::service::smtp::Configuration::insecure(port)
             .build()
             .unwrap();
         let prometheus_handle = PrometheusBuilder::new().build_recorder().handle();
