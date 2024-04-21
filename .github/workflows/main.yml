@@ -10,8 +10,6 @@ on:
 # Make sure CI fails on all warnings, including Clippy lints
 env:
   RUSTFLAGS: "-Dwarnings"
-  COMPOSE_DOCKER_CLI_BUILD: "1"
-  DOCKER_BUILDKIT: "1"
 
 jobs:
   code-checking:
@@ -26,7 +24,6 @@ jobs:
           toolchain: stable
           profile: minimal
           components: rustfmt,clippy
-
       - uses: actions/cache@v3
         with:
           path: |
@@ -36,43 +33,26 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
       - name: run lint
         run: cargo fmt --check
-
       - name: run check
         run: cargo check --all-features --tests
-
       - name: run clippy
         run: cargo clippy --all-targets --all-features --tests
 
   testing:
     runs-on: ubuntu-latest
-    container: rust:1-bullseye
-
-    services:
-      smtp:
-        image: reachfive/fake-smtp-server
-        ports:
-          - 1025:1025
-      smtp-tls:
-        # this image can be built using script/smtp-tls.Dockerfile
-        image: jdrouet/catapulte:testing-smtp-tls-proxy
-        ports:
-          - 1026:1026
-
     concurrency:
       group: ${{ github.ref }}-testing
       cancel-in-progress: true
-
     steps:
+      - name: setup docker
+        uses: crazy-max/ghaction-setup-docker@v3
       - uses: actions/checkout@v3
-
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           profile: minimal
-
       - uses: actions/cache@v3
         with:
           path: |
@@ -82,14 +62,5 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
       - name: run tests
         run: cargo test
-        env:
-          LOG: debug
-          TEST_INBOX_HOSTNAME: smtp
-          TEST_INBOX_PORT: 1080
-          TEST_SMTP_HOSTNAME: smtp
-          TEST_SMTP_PORT: 1025
-          TEST_SMTPS_HOSTNAME: smtp-tls
-          TEST_SMTPS_PORT: 1026
