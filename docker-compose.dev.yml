@@ -2,28 +2,19 @@ version: "2"
 
 services:
   smtp:
-    image: reachfive/fake-smtp-server
-    networks:
-      - backend
+    image: rnwood/smtp4dev
     ports:
-      - 1025:1025
-      - 1080:1080
+      - "1025:25"
+      - "1080:80"
 
   smtp-tls:
-    image: namshi/smtp
+    image: rnwood/smtp4dev
     environment:
-      - CERTIFICATE_PATH=/selfsigned.crt
-      - KEY_PATH=/selfsigned.key
-      - PORT=1026
-      - SMARTHOST_ADDRESS=smtp
-      - SMARTHOST_PORT=1025
-    networks:
-      - backend
+      - ServerOptions__TlsMode=StartTls
+      - ServerOptions__TlsCertificate=/mnt/asset/selfsigned.crt
+      - ServerOptions__TlsCertificatePrivateKey=/mnt/asset/selfsigned.key
     ports:
-      - 1026:1026
+      - "1125:25"
+      - "1180:80"
     volumes:
-      - ./asset/selfsigned.key:/selfsigned.key:ro
-      - ./asset/selfsigned.crt:/selfsigned.crt:ro
-
-networks:
-  backend: {}
+      - ./asset:/mnt/asset:ro

@@ -1,4 +1,4 @@
-use crate::service::server::{Configuration, Server};
+use catapulte::service::server::{Configuration, Server};
 
 #[derive(clap::Parser)]
 pub(crate) struct Action {

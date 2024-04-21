@@ -1,7 +1,7 @@
 use lettre::message::Mailbox;
 
-pub(super) mod json;
-pub(super) mod multipart;
+pub(crate) mod json;
+pub(crate) mod multipart;
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(untagged)]
