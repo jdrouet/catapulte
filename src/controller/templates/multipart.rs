@@ -303,7 +303,9 @@ pub(crate) async fn handler(
 #[cfg(test)]
 mod integration_tests {
     use crate::service::server::Server;
-    use crate::service::smtp::tests::{create_email, smtp_image_insecure, SmtpMock};
+    use crate::service::smtp::tests::{
+        create_email, smtp_image_insecure, SmtpMock, HTTP_PORT, SMTP_PORT,
+    };
     use axum::body::Body;
     use axum::http::{Method, Request};
     use multipart::client::lazy::Multipart;
@@ -351,8 +353,8 @@ mod integration_tests {
 
         let docker = DockerCli::default();
         let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(25);
-        let http_port = smtp_node.get_host_port_ipv4(80);
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
+        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT);
 
         let smtp_mock = SmtpMock::new("localhost", http_port);
 
@@ -390,8 +392,8 @@ mod integration_tests {
 
         let docker = DockerCli::default();
         let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(25);
-        let http_port = smtp_node.get_host_port_ipv4(80);
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
+        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT);
 
         let smtp_mock = SmtpMock::new("localhost", http_port);
 
@@ -430,8 +432,8 @@ mod integration_tests {
 
         let docker = DockerCli::default();
         let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(25);
-        let http_port = smtp_node.get_host_port_ipv4(80);
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
+        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT);
 
         let smtp_mock = SmtpMock::new("localhost", http_port);
 

@@ -73,7 +73,9 @@ mod tests {
     use super::super::Recipient;
     use super::{handler, JsonPayload};
     use crate::error::ServerError;
-    use crate::service::smtp::tests::{create_email, smtp_image_insecure, SmtpMock};
+    use crate::service::smtp::tests::{
+        create_email, smtp_image_insecure, smtp_image_secure, SmtpMock, HTTP_PORT, SMTP_PORT,
+    };
     use axum::extract::{Extension, Json, Path};
     use axum::http::StatusCode;
     use lettre::message::Mailbox;
@@ -98,8 +100,8 @@ mod tests {
 
         let docker = DockerCli::default();
         let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(25);
-        let http_port = smtp_node.get_host_port_ipv4(80);
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
+        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT);
 
         let smtp_mock = SmtpMock::new("localhost", http_port);
 
@@ -139,42 +141,59 @@ mod tests {
         assert!(html.contains("\"http://example.com/login?token=this_is_a_token\""));
     }
 
-    // #[tokio::test]
-    // async fn success_ssl() {
-    //     crate::try_init_logs();
-    //     let smtp_pool = crate::service::smtp::Configuration::secure()
-    //         .build()
-    //         .unwrap();
-    //     let engine = catapulte_engine::Config::default().into();
+    #[tokio::test]
+    async fn success_ssl() {
+        crate::try_init_logs();
 
-    //     let from = create_email();
-    //     let to = create_email();
-    //     let payload = create_payload(&from, &to, "this_is_a_secure_token");
+        let docker = DockerCli::default();
+        let smtp_node = docker.run(smtp_image_secure());
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
+        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT);
 
-    //     let result = handler(
-    //         Extension(smtp_pool),
-    //         Extension(engine),
-    //         Path("user-login".into()),
-    //         Json(payload),
-    //     )
-    //     .await
-    //     .unwrap();
-    //     assert_eq!(result, StatusCode::NO_CONTENT);
-    //     let list = expect_latest_inbox(&from, "to", &to).await;
-    //     let last = list.first().unwrap();
-    //     assert!(last.text.contains("Hello bob!"));
-    //     assert!(last.html.contains("Hello bob!"));
-    //     assert!(last
-    //         .html
-    //         .contains("\"http://example.com/login?token=this_is_a_secure_token\""));
-    // }
+        let smtp_mock = SmtpMock::new("localhost", http_port);
+
+        let smtp_pool = crate::service::smtp::Configuration::secure(smtp_port)
+            .build()
+            .unwrap();
+        let engine = catapulte_engine::Config::default().into();
+
+        let from = create_email();
+        let to = create_email();
+        let payload = create_payload(&from, &to, "this_is_a_secure_token");
+
+        let result = handler(
+            Extension(smtp_pool),
+            Extension(engine),
+            Path("user-login".into()),
+            Json(payload),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, StatusCode::NO_CONTENT);
+        //
+        let messages = smtp_mock.expect_latest_inbox().await;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].inner.subject, "Hello bob!");
+        assert_eq!(messages[0].inner.from, from.email.to_string());
+        assert!(messages[0]
+            .inner
+            .to
+            .iter()
+            .any(|addr| addr.email.eq(&to.email)));
+        let msg = messages[0].detailed().await;
+        let text = msg.plaintext().await;
+        assert!(text.contains("Hello bob!"));
+        let html = msg.html().await;
+        assert!(html.contains("Hello bob!"));
+        assert!(html.contains("\"http://example.com/login?token=this_is_a_secure_token\""));
+    }
 
     #[tokio::test]
     async fn success_even_missing_params() {
         let docker = DockerCli::default();
         let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(25);
-        let http_port = smtp_node.get_host_port_ipv4(80);
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
+        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT);
 
         let smtp_mock = SmtpMock::new("localhost", http_port);
 
@@ -213,8 +232,8 @@ mod tests {
     async fn success_multiple_recipients() {
         let docker = DockerCli::default();
         let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(25);
-        let http_port = smtp_node.get_host_port_ipv4(80);
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
+        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT);
 
         let smtp_mock = SmtpMock::new("localhost", http_port);
 
@@ -262,7 +281,7 @@ mod tests {
 
         let docker = DockerCli::default();
         let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(25);
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
 
         let smtp_pool = crate::service::smtp::Configuration::insecure(smtp_port)
             .build()
@@ -290,7 +309,7 @@ mod tests {
 
         let docker = DockerCli::default();
         let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(25);
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
 
         let smtp_pool = crate::service::smtp::Configuration::insecure(smtp_port)
             .build()

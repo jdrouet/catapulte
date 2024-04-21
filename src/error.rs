@@ -64,6 +64,7 @@ impl From<ServerError> for ErrorResponse {
 
 impl From<lettre::transport::smtp::Error> for ErrorResponse {
     fn from(value: lettre::transport::smtp::Error) -> Self {
+        tracing::error!("smtp transport error: {value:?}");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "smtp-transport-error",

@@ -64,6 +64,21 @@ impl Server {
             engine,
         )
     }
+
+    pub fn default_secure(port: u16) -> Self {
+        let smtp_pool = crate::service::smtp::Configuration::secure(port)
+            .build()
+            .unwrap();
+        let prometheus_handle = PrometheusBuilder::new().build_recorder().handle();
+        let engine = catapulte_engine::Config::default().into();
+
+        Server::new(
+            SocketAddr::from((IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 5555)),
+            smtp_pool,
+            prometheus_handle,
+            engine,
+        )
+    }
 }
 
 impl Server {

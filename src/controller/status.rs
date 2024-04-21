@@ -25,8 +25,8 @@ pub(crate) async fn handler(
 
 #[cfg(test)]
 mod tests {
-    use crate::service::server::Server;
-    use crate::service::smtp::tests::smtp_image_insecure;
+    use crate::service::smtp::tests::{smtp_image_insecure, SMTP_PORT};
+    use crate::service::{server::Server, smtp::tests::smtp_image_secure};
     use axum::{body::Body, http::Request};
     use testcontainers::clients::Cli as DockerCli;
     use tower::ServiceExt;
@@ -37,9 +37,31 @@ mod tests {
 
         let docker = DockerCli::default();
         let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(25);
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
 
         let res = Server::default_insecure(smtp_port)
+            .app()
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .method("HEAD")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn secure() {
+        crate::try_init_logs();
+
+        let docker = DockerCli::default();
+        let smtp_node = docker.run(smtp_image_secure());
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
+
+        let res = Server::default_secure(smtp_port)
             .app()
             .oneshot(
                 Request::builder()

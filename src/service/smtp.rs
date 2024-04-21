@@ -75,19 +75,18 @@ impl Configuration {
         }
     }
 
-    // pub(crate) fn secure(port: u16) -> Self {
-    //     Self {
-    //         hostname: tests::env_str("TEST_SMTPS_HOSTNAME")
-    //             .unwrap_or_else(|| "localhost".to_string()),
-    //         port,
-    //         username: None,
-    //         password: None,
-    //         max_pool_size: Self::default_max_pool_size(),
-    //         tls_enabled: true,
-    //         timeout: Self::default_timeout(),
-    //         accept_invalid_cert: true,
-    //     }
-    // }
+    pub(crate) fn secure(port: u16) -> Self {
+        Self {
+            hostname: "localhost".to_string(),
+            port,
+            username: None,
+            password: None,
+            max_pool_size: Self::default_max_pool_size(),
+            tls_enabled: true,
+            timeout: Self::default_timeout(),
+            accept_invalid_cert: true,
+        }
+    }
 }
 
 impl Configuration {
@@ -179,15 +178,25 @@ pub(crate) mod tests {
     use testcontainers::{core::WaitFor, GenericImage};
     use uuid::Uuid;
 
+    pub const SMTP_PORT: u16 = 25;
+    pub const HTTP_PORT: u16 = 80;
+
     pub fn smtp_image_insecure() -> GenericImage {
-        GenericImage::new("rnwood/smtp4dev", "v3")
-            .with_wait_for(WaitFor::message_on_stdout(
-                "Application started. Press Ctrl+C to shut down.",
-            ))
-            .with_env_var("ServerOptions__BasePath", "/")
-            .with_env_var("ServerOptions__TlsMode", "None")
-            .with_exposed_port(25)
-            .with_exposed_port(80)
+        GenericImage::new("rnwood/smtp4dev", "latest")
+            .with_wait_for(WaitFor::message_on_stdout("Application started."))
+            .with_exposed_port(SMTP_PORT)
+            .with_exposed_port(HTTP_PORT)
+    }
+
+    pub fn smtp_image_secure() -> GenericImage {
+        smtp_image_insecure()
+            .with_volume("./asset", "/mnt/asset")
+            .with_env_var("ServerOptions__TlsMode", "StartTls")
+            .with_env_var("ServerOptions__TlsCertificate", "/mnt/asset/selfsigned.crt")
+            .with_env_var(
+                "ServerOptions__TlsCertificatePrivateKey",
+                "/mnt/asset/selfsigned.key",
+            )
     }
 
     #[derive(Debug)]
@@ -231,7 +240,7 @@ pub(crate) mod tests {
         }
 
         pub async fn latest_inbox(&self) -> Vec<AbstractEmail> {
-            self.client.query_json("/api/Messages").await
+            self.client.query_json("/api/messages").await
         }
 
         pub async fn expect_latest_inbox(&self) -> Vec<Wrapped<AbstractEmail>> {
@@ -291,17 +300,12 @@ pub(crate) mod tests {
     impl Wrapped<Email> {
         async fn child_part_source_with_content_type(&self, content_type: &str) -> Option<String> {
             let part = self.inner.parts.iter().find_map(|part| {
-                part.child_parts.iter().find_map(|child| {
-                    if child
+                part.child_parts.iter().find(|child| {
+                    child
                         .headers
                         .iter()
                         .find(|h| h.name == "Content-Type" && h.value.starts_with(content_type))
                         .is_some()
-                    {
-                        Some(child)
-                    } else {
-                        None
-                    }
                 })
             })?;
             let path = format!("/api/Messages/{}/part/{}/source", self.inner.id, part.id);
