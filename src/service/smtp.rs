@@ -304,8 +304,7 @@ pub(crate) mod tests {
                     child
                         .headers
                         .iter()
-                        .find(|h| h.name == "Content-Type" && h.value.starts_with(content_type))
-                        .is_some()
+                        .any(|h| h.name == "Content-Type" && h.value.starts_with(content_type))
                 })
             })?;
             let path = format!("/api/Messages/{}/part/{}/source", self.inner.id, part.id);
