@@ -22,7 +22,7 @@ reqwest = { version = "0.12.4", default-features = false, features = [
 ] }
 serde = { version = "1.0.198", features = ["derive"] }
 serde_json = { version = "1.0.116" }
-thiserror = { version = "1.0.58" }
+thiserror = { version = "1.0.59" }
 tracing = { version = "0.1.40" }
 url = { version = "2.5.0" }
 
