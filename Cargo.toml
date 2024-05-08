@@ -30,7 +30,7 @@ metrics = { version = "0.22.3" }
 metrics-exporter-prometheus = { version = "0.14.0", default-features = false, features = [
   "http-listener",
 ] }
-serde = { version = "1.0.200", features = ["derive"] }
+serde = { version = "1.0.201", features = ["derive"] }
 serde_json = { version = "1.0.116" }
 thiserror = { version = "1.0.59" }
 tokio = { version = "1.37.0", features = ["full"] }
