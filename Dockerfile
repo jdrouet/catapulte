@@ -46,7 +46,7 @@ FROM scratch AS binary
 
 COPY --from=builder /code/target/release/catapulte /catapulte
 
-FROM debian:bookworm-slim
+FROM debian:12.6-slim
 
 LABEL org.label-schema.schema-version="1.0"
 LABEL org.label-schema.docker.cmd="docker run -d -p 3000:3000 -e TEMPLATE__TYPE=LOCAL -e TEMPLATE__PATH=/templates -e SMTP__HOSTNAME=localhost -e SMTP__PORT=25 -e SMTP__USERNAME=username -e SMTP__PASSWORD=password -e SMTP__MAX_POOL_SIZE=10 jdrouet/catapulte"
