@@ -20,7 +20,7 @@ reqwest = { version = "0.12.4", default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
-serde = { version = "1.0.200", features = ["derive"] }
+serde = { version = "1.0.204", features = ["derive"] }
 serde_json = { version = "1.0.116" }
 thiserror = { version = "1.0.59" }
 tracing = { version = "0.1.40" }
