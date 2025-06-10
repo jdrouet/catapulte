@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=$CARGO_HOME/git,sharing=locked \
 
 FROM rust:1-alpine AS base
 
-RUN apk add --no-cache musl-dev
+RUN apk add --no-cache curl musl-dev
 
 ENV USER=root
 
