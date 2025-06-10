@@ -18,11 +18,10 @@ jobs:
       group: ${{ github.ref }}-code-checking
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-          profile: minimal
           components: rustfmt,clippy
       - uses: actions/cache@v3
         with:
@@ -48,11 +47,10 @@ jobs:
     steps:
       - name: setup docker
         uses: crazy-max/ghaction-setup-docker@v3
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-          profile: minimal
       - uses: actions/cache@v3
         with:
           path: |

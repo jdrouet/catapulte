@@ -14,12 +14,10 @@ jobs:
     name: release-plz
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
       - name: Run release-plz
         uses: MarcoIeni/release-plz-action@v0.5
         env:
