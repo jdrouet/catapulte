@@ -6,7 +6,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use catapulte_engine::Attachment;
 use lettre::message::{header::ContentType, Mailbox};
-use lettre::Transport;
+use lettre::AsyncTransport;
+use utoipa::openapi::Type;
 
 async fn field_to_bytes(field: Field<'_>) -> Result<Bytes, MultipartError> {
     field.bytes().await.map_err(MultipartError::FailedMultipart)
@@ -87,7 +88,6 @@ impl IntoResponse for MultipartError {
     }
 }
 
-#[axum::async_trait]
 impl<S> FromRequest<S> for MultipartPayload
 where
     S: Send + Sync,
@@ -103,40 +103,40 @@ where
     }
 }
 
-impl<'s> utoipa::ToSchema<'s> for MultipartPayload {
-    fn schema() -> (
-        &'s str,
-        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
-    ) {
-        (
-            "MultipartPayload",
-            utoipa::openapi::ObjectBuilder::new()
-                .property(
-                    "from",
+impl utoipa::ToSchema for MultipartPayload {
+    fn name() -> std::borrow::Cow<'static, str> {
+        "MultipartPayload".into()
+    }
+}
+
+impl utoipa::PartialSchema for MultipartPayload {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .property(
+                "from",
+                utoipa::openapi::ObjectBuilder::new()
+                    .schema_type(utoipa::openapi::schema::SchemaType::Type(Type::String)),
+            )
+            .required("from")
+            .property("to", super::Recipient::schema())
+            .property("cc", super::Recipient::schema())
+            .property("bcc", super::Recipient::schema())
+            .property(
+                "params",
+                utoipa::openapi::ObjectBuilder::new()
+                    .schema_type(utoipa::openapi::schema::SchemaType::AnyValue),
+            )
+            .property(
+                "attachments",
+                utoipa::openapi::ArrayBuilder::new().items(
                     utoipa::openapi::ObjectBuilder::new()
-                        .schema_type(utoipa::openapi::SchemaType::String),
-                )
-                .required("from")
-                .property("to", super::Recipient::schema().1)
-                .property("cc", super::Recipient::schema().1)
-                .property("bcc", super::Recipient::schema().1)
-                .property(
-                    "params",
-                    utoipa::openapi::ObjectBuilder::new()
-                        .schema_type(utoipa::openapi::SchemaType::Object),
-                )
-                .property(
-                    "attachments",
-                    utoipa::openapi::ArrayBuilder::new().items(
-                        utoipa::openapi::ObjectBuilder::new()
-                            .schema_type(utoipa::openapi::SchemaType::String)
-                            .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
-                                utoipa::openapi::KnownFormat::Binary,
-                            ))),
-                    ),
-                )
-                .into(),
-        )
+                        .schema_type(utoipa::openapi::schema::SchemaType::Type(Type::String))
+                        .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
+                            utoipa::openapi::KnownFormat::Binary,
+                        ))),
+                ),
+            )
+            .into()
     }
 }
 
@@ -275,7 +275,7 @@ impl MultipartPayload {
         content_type = "multipart/form-data",
     ),
     responses(
-        (status = 204, description = "Your email has been sent.", body = None),
+        (status = 204, description = "Your email has been sent.", body = ()),
     )
 )]
 pub(crate) async fn handler(
@@ -289,7 +289,7 @@ pub(crate) async fn handler(
 
     let req = body.into_request(name.clone());
     let message = engine.handle(req).await?;
-    if let Err(err) = smtp_pool.send(&message) {
+    if let Err(err) = smtp_pool.send(message).await {
         metrics::counter!("smtp_send_error", "method" => "multipart", "template_name" => name)
             .increment(1);
         Err(err)?
@@ -311,7 +311,7 @@ mod integration_tests {
     use multipart::client::lazy::Multipart;
     use std::io::{BufReader, Read};
     use std::path::{Path, PathBuf};
-    use testcontainers::clients::Cli as DockerCli;
+    use testcontainers::runners::AsyncRunner;
     use tower::ServiceExt;
 
     fn build_request<'a>(
@@ -351,10 +351,9 @@ mod integration_tests {
     async fn success_without_attachment() {
         crate::try_init_logs();
 
-        let docker = DockerCli::default();
-        let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
-        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT);
+        let smtp_node = smtp_image_insecure().start().await.unwrap();
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT).await.unwrap();
+        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT).await.unwrap();
 
         let smtp_mock = SmtpMock::new("localhost", http_port);
 
@@ -390,10 +389,9 @@ mod integration_tests {
     async fn success_with_attachment() {
         crate::try_init_logs();
 
-        let docker = DockerCli::default();
-        let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
-        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT);
+        let smtp_node = smtp_image_insecure().start().await.unwrap();
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT).await.unwrap();
+        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT).await.unwrap();
 
         let smtp_mock = SmtpMock::new("localhost", http_port);
 
@@ -430,10 +428,9 @@ mod integration_tests {
     async fn success_multiple_recipients() {
         crate::try_init_logs();
 
-        let docker = DockerCli::default();
-        let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
-        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT);
+        let smtp_node = smtp_image_insecure().start().await.unwrap();
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT).await.unwrap();
+        let http_port = smtp_node.get_host_port_ipv4(HTTP_PORT).await.unwrap();
 
         let smtp_mock = SmtpMock::new("localhost", http_port);
 

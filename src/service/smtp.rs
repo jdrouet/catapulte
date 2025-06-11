@@ -1,11 +1,12 @@
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::transport::smtp::{
-    Error as LettreError, PoolConfig, SmtpTransport, SmtpTransportBuilder,
+    AsyncSmtpTransport, AsyncSmtpTransportBuilder, Error as LettreError, PoolConfig,
 };
+use lettre::Tokio1Executor;
 use std::time::Duration;
 
-pub type SmtpPool = SmtpTransport;
+pub type SmtpPool = AsyncSmtpTransport<Tokio1Executor>;
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct Configuration {
@@ -121,6 +122,7 @@ impl Configuration {
             tracing::debug!("with tls enabled");
             let parameteres = TlsParameters::builder(self.hostname.to_string())
                 .dangerous_accept_invalid_certs(self.accept_invalid_cert)
+                .dangerous_accept_invalid_hostnames(true)
                 .build_rustls()?;
             Ok(Tls::Required(parameteres))
         } else {
@@ -130,17 +132,18 @@ impl Configuration {
     }
 
     // TODO allow to specify authentication mechanism
-    fn get_transport(&self) -> Result<SmtpTransportBuilder, ConfigurationError> {
+    fn get_transport(&self) -> Result<AsyncSmtpTransportBuilder, ConfigurationError> {
         tracing::debug!(
             "connecting to hostname {:?} on port {}",
             self.hostname,
             self.port
         );
-        let result = SmtpTransport::builder_dangerous(self.hostname.as_str())
-            .port(self.port)
-            .timeout(Some(self.get_timeout()))
-            .pool_config(self.get_pool_config())
-            .tls(self.get_tls()?);
+        let result =
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(self.hostname.as_str())
+                .port(self.port)
+                .timeout(Some(self.get_timeout()))
+                .pool_config(self.get_pool_config())
+                .tls(self.get_tls()?);
         let result = if let Some(creds) = self.get_credentials() {
             result.credentials(creds)
         } else {
@@ -149,7 +152,7 @@ impl Configuration {
         Ok(result)
     }
 
-    pub(crate) fn build(&self) -> Result<SmtpTransport, ConfigurationError> {
+    pub(crate) fn build(&self) -> Result<AsyncSmtpTransport<Tokio1Executor>, ConfigurationError> {
         tracing::debug!("building smtp pool");
         let mailer = self.get_transport()?;
         Ok(mailer.build())
@@ -175,7 +178,10 @@ pub(crate) mod tests {
         Address,
     };
     use serde::Deserialize;
-    use testcontainers::{core::WaitFor, GenericImage};
+    use testcontainers::{
+        core::{ContainerPort, Mount, WaitFor},
+        ContainerRequest, GenericImage, ImageExt,
+    };
     use uuid::Uuid;
 
     pub const SMTP_PORT: u16 = 25;
@@ -183,14 +189,21 @@ pub(crate) mod tests {
 
     pub fn smtp_image_insecure() -> GenericImage {
         GenericImage::new("rnwood/smtp4dev", "latest")
-            .with_wait_for(WaitFor::message_on_stdout("Application started."))
-            .with_exposed_port(SMTP_PORT)
-            .with_exposed_port(HTTP_PORT)
+            .with_wait_for(WaitFor::message_on_stdout(
+                "Now listening on: http://[::]:80",
+            ))
+            .with_exposed_port(ContainerPort::Sctp(SMTP_PORT))
+            .with_exposed_port(ContainerPort::Sctp(HTTP_PORT))
     }
 
-    pub fn smtp_image_secure() -> GenericImage {
+    pub fn smtp_image_secure() -> ContainerRequest<GenericImage> {
+        let pwd = std::env::current_dir()
+            .unwrap()
+            .join("asset")
+            .to_string_lossy()
+            .to_string();
         smtp_image_insecure()
-            .with_volume("./asset", "/mnt/asset")
+            .with_mount(Mount::bind_mount(pwd, "/mnt/asset"))
             .with_env_var("ServerOptions__TlsMode", "StartTls")
             .with_env_var("ServerOptions__TlsCertificate", "/mnt/asset/selfsigned.crt")
             .with_env_var(
@@ -239,13 +252,13 @@ pub(crate) mod tests {
             }
         }
 
-        pub async fn latest_inbox(&self) -> Vec<AbstractEmail> {
+        pub async fn latest_inbox(&self) -> Response<Vec<AbstractEmail>> {
             self.client.query_json("/api/messages").await
         }
 
         pub async fn expect_latest_inbox(&self) -> Vec<Wrapped<AbstractEmail>> {
             for _ in 0..10 {
-                let list = self.latest_inbox().await;
+                let list = self.latest_inbox().await.results;
                 if !list.is_empty() {
                     return list
                         .into_iter()
@@ -259,6 +272,11 @@ pub(crate) mod tests {
             }
             panic!("mailbox is empty");
         }
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    pub struct Response<T> {
+        results: T,
     }
 
     #[derive(Debug)]
@@ -285,6 +303,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[allow(unused)]
     #[derive(Debug, Deserialize)]
     pub struct Email {
         pub id: String,
@@ -330,6 +349,7 @@ pub(crate) mod tests {
         pub value: String,
     }
 
+    #[allow(unused)]
     #[derive(Debug, Deserialize)]
     pub struct EmailPart {
         pub id: String,

@@ -1,8 +1,9 @@
 use axum::extract::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use tokio::time::error::Elapsed;
 
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Debug, Default, serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct ErrorResponse {
     #[serde(skip)]
     status: StatusCode,
@@ -10,36 +11,6 @@ pub(crate) struct ErrorResponse {
     title: &'static str,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     details: Vec<String>,
-}
-
-impl<'s> utoipa::ToSchema<'s> for ErrorResponse {
-    fn schema() -> (
-        &'s str,
-        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
-    ) {
-        (
-            "ServerError",
-            utoipa::openapi::ObjectBuilder::new()
-                .property(
-                    "code",
-                    utoipa::openapi::ObjectBuilder::new()
-                        .schema_type(utoipa::openapi::SchemaType::String),
-                )
-                .required("code")
-                .property(
-                    "title",
-                    utoipa::openapi::ObjectBuilder::new()
-                        .schema_type(utoipa::openapi::SchemaType::String),
-                )
-                .required("title")
-                .property(
-                    "details",
-                    utoipa::openapi::ObjectBuilder::new()
-                        .schema_type(utoipa::openapi::SchemaType::String),
-                )
-                .into(),
-        )
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +21,8 @@ pub(crate) enum ServerError {
     Smtp(#[from] lettre::error::Error),
     #[error("Unable to perform smtp transport action: {0}")]
     SmtpTransport(#[from] lettre::transport::smtp::Error),
+    #[error("Internal timeout error: {0}")]
+    Timeout(#[from] Elapsed),
 }
 
 impl From<ServerError> for ErrorResponse {
@@ -58,6 +31,7 @@ impl From<ServerError> for ErrorResponse {
             ServerError::Engine(inner) => inner.into(),
             ServerError::Smtp(inner) => inner.into(),
             ServerError::SmtpTransport(inner) => inner.into(),
+            ServerError::Timeout(inner) => inner.into(),
         }
     }
 }
@@ -70,6 +44,17 @@ impl From<lettre::transport::smtp::Error> for ErrorResponse {
             code: "smtp-transport-error",
             title: "unable to send message",
             details: vec![format!("{value}")],
+        }
+    }
+}
+
+impl From<Elapsed> for ErrorResponse {
+    fn from(_: Elapsed) -> Self {
+        ErrorResponse {
+            status: StatusCode::GATEWAY_TIMEOUT,
+            code: "internal-timeout",
+            title: "unable to contact smtp",
+            details: Vec::default(),
         }
     }
 }

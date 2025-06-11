@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::error::ServerError;
 use crate::service::smtp::SmtpPool;
 use axum::extract::Extension;
@@ -19,7 +21,8 @@ pub(crate) async fn handler(
     Extension(smtp_pool): Extension<SmtpPool>,
 ) -> Result<StatusCode, ServerError> {
     metrics::counter!("status_check").increment(1);
-    smtp_pool.test_connection()?;
+    let future = smtp_pool.test_connection();
+    tokio::time::timeout(Duration::from_secs(1), future).await??;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -28,16 +31,15 @@ mod tests {
     use crate::service::smtp::tests::{smtp_image_insecure, SMTP_PORT};
     use crate::service::{server::Server, smtp::tests::smtp_image_secure};
     use axum::{body::Body, http::Request};
-    use testcontainers::clients::Cli as DockerCli;
+    use testcontainers::runners::AsyncRunner;
     use tower::ServiceExt;
 
     #[tokio::test]
     async fn insecure() {
         crate::try_init_logs();
 
-        let docker = DockerCli::default();
-        let smtp_node = docker.run(smtp_image_insecure());
-        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
+        let smtp_node = smtp_image_insecure().start().await.unwrap();
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT).await.unwrap();
 
         let res = Server::default_insecure(smtp_port)
             .app()
@@ -57,9 +59,8 @@ mod tests {
     async fn secure() {
         crate::try_init_logs();
 
-        let docker = DockerCli::default();
-        let smtp_node = docker.run(smtp_image_secure());
-        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT);
+        let smtp_node = smtp_image_secure().start().await.unwrap();
+        let smtp_port = smtp_node.get_host_port_ipv4(SMTP_PORT).await.unwrap();
 
         let res = Server::default_secure(smtp_port)
             .app()

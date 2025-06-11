@@ -5,9 +5,9 @@ use axum::{
     http::{header, Request, StatusCode},
 };
 use catapulte::service::{server, smtp};
-use testcontainers::clients::Cli as DockerCli;
-use testcontainers::core::WaitFor;
-use testcontainers::GenericImage;
+use testcontainers::core::{ContainerPort, WaitFor};
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{GenericImage, ImageExt};
 use tower::ServiceExt;
 
 fn engine_config() -> catapulte_engine::Config {
@@ -47,18 +47,19 @@ fn server_config(
 async fn should_submit_simple() {
     let _ = catapulte::init_logs("debug", false);
 
-    let docker = DockerCli::default();
-    let smtp_server = GenericImage::new("rnwood/smtp4dev", "v3")
+    let smtp_node = GenericImage::new("rnwood/smtp4dev", "latest")
         .with_wait_for(WaitFor::message_on_stdout(
-            "Application started. Press Ctrl+C to shut down.",
+            "Now listening on: http://[::]:80",
         ))
+        .with_exposed_port(ContainerPort::Tcp(25))
+        .with_exposed_port(ContainerPort::Tcp(80))
         .with_env_var("ServerOptions__BasePath", "/")
         .with_env_var("ServerOptions__TlsMode", "None")
-        .with_exposed_port(25)
-        .with_exposed_port(80);
+        .start()
+        .await
+        .unwrap();
 
-    let smtp_node = docker.run(smtp_server);
-    let smtp_port = smtp_node.get_host_port_ipv4(25);
+    let smtp_port = smtp_node.get_host_port_ipv4(25).await.unwrap();
 
     let app =
         server::Server::from_config(server_config(engine_config(), smtp_config(smtp_port))).app();
