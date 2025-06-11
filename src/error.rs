@@ -219,12 +219,12 @@ impl From<catapulte_engine::parser::Error> for ErrorResponse {
         let status = StatusCode::INTERNAL_SERVER_ERROR;
 
         let (code, title, details) = match value {
-            Error::EndOfStream => (
+            Error::EndOfStream { .. } => (
                 "template-format-error",
                 "unable to decode template, reached the end early",
                 Vec::with_capacity(0),
             ),
-            Error::SizeLimit => (
+            Error::SizeLimit { .. } => (
                 "template-size-exceeded",
                 "unable to decode template, reached size limit",
                 Vec::with_capacity(0),
@@ -234,12 +234,15 @@ impl From<catapulte_engine::parser::Error> for ErrorResponse {
                 "unable to decode template, no root component",
                 Vec::with_capacity(0),
             ),
-            Error::UnexpectedToken(span) => (
+            Error::UnexpectedToken {
+                origin: _,
+                position,
+            } => (
                 "template-unexpected-token",
                 "unable to decode template, unexpected token",
                 vec![format!(
                     "Unexpected token at position {}:{}",
-                    span.start, span.end
+                    position.start, position.end
                 )],
             ),
             Error::IncludeLoaderError { .. } => (
@@ -247,49 +250,54 @@ impl From<catapulte_engine::parser::Error> for ErrorResponse {
                 "unable to load included template",
                 Vec::with_capacity(0),
             ),
-            Error::InvalidAttribute(span) => (
+            Error::InvalidAttribute {
+                position,
+                origin: _,
+            } => (
                 "template-invalid-attribute",
                 "unable to decode template, invalid attribute",
                 vec![format!(
                     "Invalid attribute at position {}:{}",
-                    span.start, span.end
+                    position.start, position.end
                 )],
             ),
-            Error::InvalidFormat(span) => (
+            Error::InvalidFormat {
+                position,
+                origin: _,
+            } => (
                 "template-invalid-format",
                 "unable to decode template, invalid format",
                 vec![format!(
                     "Invalid format at position {}:{}",
-                    span.start, span.end
+                    position.start, position.end
                 )],
             ),
-            Error::MissingAttribute(name, span) => (
+            Error::MissingAttribute {
+                name,
+                position,
+                origin: _,
+            } => (
                 "template-missing-attribute",
                 "unable to decode template, missing attribute",
                 vec![format!(
                     "Missing attribute {name:?} at position {}:{}",
-                    span.start, span.end
+                    position.start, position.end
                 )],
             ),
-            Error::ParserError(inner) => (
+            Error::ParserError { origin: _, source } => (
                 "template-invalid-xml",
                 "unable to decode template, invalid xml",
-                vec![format!("Parser failed: {inner:?}")],
+                vec![format!("Parser failed: {source:?}")],
             ),
-            Error::UnexpectedAttribute(span) => (
-                "template-unexpected-attribute",
-                "unable to decode template, unexpected attribute",
-                vec![format!(
-                    "Unexpected attribute at position {}:{}",
-                    span.start, span.end
-                )],
-            ),
-            Error::UnexpectedElement(span) => (
+            Error::UnexpectedElement {
+                position,
+                origin: _,
+            } => (
                 "template-unexpected-element",
                 "unable to decode template, unexpected element",
                 vec![format!(
                     "Unexpected element at position {}:{}",
-                    span.start, span.end
+                    position.start, position.end
                 )],
             ),
         };
@@ -308,6 +316,12 @@ impl From<catapulte_engine::render::Error> for ErrorResponse {
         use catapulte_engine::render::Error;
 
         match value {
+            Error::Format(_) => ErrorResponse {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "invalid-template-format",
+                title: "invalid template format",
+                details: Vec::with_capacity(0),
+            },
             Error::UnknownFragment(_) => ErrorResponse {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 code: "rendering-unknown-fragment",
