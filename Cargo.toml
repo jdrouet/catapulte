@@ -14,7 +14,7 @@ members = ["./lib/engine", "./lib/prelude"]
 resolver = "2"
 
 [workspace.dependencies]
-catapulte-engine = { path = "./lib/engine", version = "0.1" }
+catapulte-engine = { path = "./lib/engine", version = "0.2" }
 catapulte-prelude = { path = "./lib/prelude", version = "0.1" }
 lettre = { version = "0.11", default-features = false }
 metrics = { version = "0.24" }
