@@ -8,9 +8,9 @@ pub fn create() -> Router {
     Router::new()
         .route("/status", head(status::handler))
         .route("/metrics", get(metrics::handler))
-        .route("/templates/:name/json", post(templates::json::handler))
+        .route("/templates/{name}/json", post(templates::json::handler))
         .route(
-            "/templates/:name/multipart",
+            "/templates/{name}/multipart",
             post(templates::multipart::handler),
         )
         .merge(crate::service::openapi::service())

@@ -70,6 +70,7 @@ impl Engine {
     async fn parse(&self, input: String) -> Result<mrml::mjml::Mjml, Error> {
         mrml::async_parse_with_options(input, self.parser.clone())
             .await
+            .map(|root| root.element)
             .map_err(Error::from)
     }
 

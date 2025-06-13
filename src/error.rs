@@ -1,8 +1,9 @@
 use axum::extract::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use tokio::time::error::Elapsed;
 
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Debug, Default, serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct ErrorResponse {
     #[serde(skip)]
     status: StatusCode,
@@ -10,36 +11,6 @@ pub(crate) struct ErrorResponse {
     title: &'static str,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     details: Vec<String>,
-}
-
-impl<'s> utoipa::ToSchema<'s> for ErrorResponse {
-    fn schema() -> (
-        &'s str,
-        utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
-    ) {
-        (
-            "ServerError",
-            utoipa::openapi::ObjectBuilder::new()
-                .property(
-                    "code",
-                    utoipa::openapi::ObjectBuilder::new()
-                        .schema_type(utoipa::openapi::SchemaType::String),
-                )
-                .required("code")
-                .property(
-                    "title",
-                    utoipa::openapi::ObjectBuilder::new()
-                        .schema_type(utoipa::openapi::SchemaType::String),
-                )
-                .required("title")
-                .property(
-                    "details",
-                    utoipa::openapi::ObjectBuilder::new()
-                        .schema_type(utoipa::openapi::SchemaType::String),
-                )
-                .into(),
-        )
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +21,8 @@ pub(crate) enum ServerError {
     Smtp(#[from] lettre::error::Error),
     #[error("Unable to perform smtp transport action: {0}")]
     SmtpTransport(#[from] lettre::transport::smtp::Error),
+    #[error("Internal timeout error: {0}")]
+    Timeout(#[from] Elapsed),
 }
 
 impl From<ServerError> for ErrorResponse {
@@ -58,6 +31,7 @@ impl From<ServerError> for ErrorResponse {
             ServerError::Engine(inner) => inner.into(),
             ServerError::Smtp(inner) => inner.into(),
             ServerError::SmtpTransport(inner) => inner.into(),
+            ServerError::Timeout(inner) => inner.into(),
         }
     }
 }
@@ -70,6 +44,17 @@ impl From<lettre::transport::smtp::Error> for ErrorResponse {
             code: "smtp-transport-error",
             title: "unable to send message",
             details: vec![format!("{value}")],
+        }
+    }
+}
+
+impl From<Elapsed> for ErrorResponse {
+    fn from(_: Elapsed) -> Self {
+        ErrorResponse {
+            status: StatusCode::GATEWAY_TIMEOUT,
+            code: "internal-timeout",
+            title: "unable to contact smtp",
+            details: Vec::default(),
         }
     }
 }
@@ -234,12 +219,12 @@ impl From<catapulte_engine::parser::Error> for ErrorResponse {
         let status = StatusCode::INTERNAL_SERVER_ERROR;
 
         let (code, title, details) = match value {
-            Error::EndOfStream => (
+            Error::EndOfStream { .. } => (
                 "template-format-error",
                 "unable to decode template, reached the end early",
                 Vec::with_capacity(0),
             ),
-            Error::SizeLimit => (
+            Error::SizeLimit { .. } => (
                 "template-size-exceeded",
                 "unable to decode template, reached size limit",
                 Vec::with_capacity(0),
@@ -249,12 +234,15 @@ impl From<catapulte_engine::parser::Error> for ErrorResponse {
                 "unable to decode template, no root component",
                 Vec::with_capacity(0),
             ),
-            Error::UnexpectedToken(span) => (
+            Error::UnexpectedToken {
+                origin: _,
+                position,
+            } => (
                 "template-unexpected-token",
                 "unable to decode template, unexpected token",
                 vec![format!(
                     "Unexpected token at position {}:{}",
-                    span.start, span.end
+                    position.start, position.end
                 )],
             ),
             Error::IncludeLoaderError { .. } => (
@@ -262,49 +250,54 @@ impl From<catapulte_engine::parser::Error> for ErrorResponse {
                 "unable to load included template",
                 Vec::with_capacity(0),
             ),
-            Error::InvalidAttribute(span) => (
+            Error::InvalidAttribute {
+                position,
+                origin: _,
+            } => (
                 "template-invalid-attribute",
                 "unable to decode template, invalid attribute",
                 vec![format!(
                     "Invalid attribute at position {}:{}",
-                    span.start, span.end
+                    position.start, position.end
                 )],
             ),
-            Error::InvalidFormat(span) => (
+            Error::InvalidFormat {
+                position,
+                origin: _,
+            } => (
                 "template-invalid-format",
                 "unable to decode template, invalid format",
                 vec![format!(
                     "Invalid format at position {}:{}",
-                    span.start, span.end
+                    position.start, position.end
                 )],
             ),
-            Error::MissingAttribute(name, span) => (
+            Error::MissingAttribute {
+                name,
+                position,
+                origin: _,
+            } => (
                 "template-missing-attribute",
                 "unable to decode template, missing attribute",
                 vec![format!(
                     "Missing attribute {name:?} at position {}:{}",
-                    span.start, span.end
+                    position.start, position.end
                 )],
             ),
-            Error::ParserError(inner) => (
+            Error::ParserError { origin: _, source } => (
                 "template-invalid-xml",
                 "unable to decode template, invalid xml",
-                vec![format!("Parser failed: {inner:?}")],
+                vec![format!("Parser failed: {source:?}")],
             ),
-            Error::UnexpectedAttribute(span) => (
-                "template-unexpected-attribute",
-                "unable to decode template, unexpected attribute",
-                vec![format!(
-                    "Unexpected attribute at position {}:{}",
-                    span.start, span.end
-                )],
-            ),
-            Error::UnexpectedElement(span) => (
+            Error::UnexpectedElement {
+                position,
+                origin: _,
+            } => (
                 "template-unexpected-element",
                 "unable to decode template, unexpected element",
                 vec![format!(
                     "Unexpected element at position {}:{}",
-                    span.start, span.end
+                    position.start, position.end
                 )],
             ),
         };
@@ -323,6 +316,12 @@ impl From<catapulte_engine::render::Error> for ErrorResponse {
         use catapulte_engine::render::Error;
 
         match value {
+            Error::Format(_) => ErrorResponse {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                code: "invalid-template-format",
+                title: "invalid template format",
+                details: Vec::with_capacity(0),
+            },
             Error::UnknownFragment(_) => ErrorResponse {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 code: "rendering-unknown-fragment",

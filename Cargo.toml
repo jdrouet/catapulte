@@ -7,51 +7,62 @@ authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
 edition = "2021"
 license = "AGPL-3.0"
 
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
 [workspace]
 members = ["./lib/engine", "./lib/prelude"]
 resolver = "2"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace.dependencies]
+catapulte-engine = { path = "./lib/engine", version = "0.1" }
+catapulte-prelude = { path = "./lib/prelude", version = "0.1" }
+lettre = { version = "0.11", default-features = false }
+metrics = { version = "0.24" }
+reqwest = { version = "0.12", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0", default-features = false }
+thiserror = { version = "2.0" }
+tokio = { version = "1.37", default-features = false }
+tracing = { version = "0.1" }
+url = { version = "2.5", default-features = false }
 
 [dependencies]
-catapulte-engine = { version = "*", path = "./lib/engine" }
+catapulte-engine = { workspace = true }
 
-axum = { version = "0.7.5", features = ["multipart"] }
-clap = { version = "4.5.4", features = ["derive", "env"] }
-config = { version = "0.14.0", default-features = false }
+axum = { version = "0.8", features = ["multipart"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+config = { version = "0.15", default-features = false }
 lettre = { default-features = false, features = [
   "pool",
   "rustls-tls",
   "serde",
   "smtp-transport",
   "tokio1-rustls-tls",
-], version = "0.11.4" }
-metrics = { version = "0.22.3" }
-metrics-exporter-prometheus = { version = "0.14.0", default-features = false, features = [
+], workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { version = "0.17", default-features = false, features = [
   "http-listener",
 ] }
-serde = { version = "1.0.200", features = ["derive"] }
-serde_json = { version = "1.0.116" }
-thiserror = { version = "1.0.59" }
-tokio = { version = "1.37.0", features = ["full"] }
-tower-http = { version = "0.5.2", default-features = false, features = [
-  "trace",
-] }
-tracing = { version = "0.1.40" }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-utoipa = { version = "4.2.0", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "6.0.0", features = ["axum"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tower-http = { version = "0.6", default-features = false, features = ["trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+utoipa = { version = "5.3", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
 
 [dev-dependencies]
-http-body-util = "0.1.1"
-multipart = "0.18.0"
-reqwest = { version = "0.12.4", default-features = false, features = [
+http-body-util = "0.1"
+multipart = "0.18"
+reqwest = { workspace = true, default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
-testcontainers = { version = "0.15.0" }
-tower = { version = "0.4.13" }
-uuid = { version = "1.8.0", features = ["v4"] }
+testcontainers = { version = "0.24" }
+tower = { version = "0.5" }
+uuid = { version = "1.8", features = ["v4"] }
 
 [profile.release]
 lto = true

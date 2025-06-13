@@ -7,25 +7,23 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-catapulte-prelude = { path = "../prelude", version = "0.1.0" }
+catapulte-prelude = { workspace = true }
 
-bytes = { version = "1.6.0" }
-handlebars = { version = "5.1.2" }
-lettre = { default-features = false, features = [
-  "builder",
-], version = "0.11.4" }
-metrics = { version = "0.22.3" }
-mrml = { version = "3.1.5", features = ["async", "local-loader"] }
-reqwest = { version = "0.12.4", default-features = false, features = [
+bytes = { version = "1.6" }
+handlebars = { version = "6.3" }
+lettre = { default-features = false, features = ["builder"], workspace = true }
+metrics = { workspace = true }
+mrml = { version = "5.0", features = ["async", "local-loader"] }
+reqwest = { workspace = true, default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
-serde = { version = "1.0.200", features = ["derive"] }
-serde_json = { version = "1.0.116" }
-thiserror = { version = "1.0.59" }
-tracing = { version = "0.1.40" }
-url = { version = "2.5.0" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1.37.0", features = ["macros"] }
-wiremock = { version = "0.6.0" }
+tokio = { workspace = true, features = ["macros"] }
+wiremock = { version = "0.6" }
