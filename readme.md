@@ -48,7 +48,7 @@ docker run -d \
   -e TEMPLATE__TYPE=local \
   -e TEMPLATE__PATH=/templates \
   -p 3000:3000 \
-  -v /path/to/your/templates:/templates:ro \
+  -v /path/to/your/templates:/template:ro \
   jdrouet/catapulte:latest
 ```
 
