@@ -3,7 +3,7 @@ name = "catapulte-engine"
 description = "The core engine of catapulte with template loading, interpolation and rendering."
 authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
 license = "AGPL-3.0"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
