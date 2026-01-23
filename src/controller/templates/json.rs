@@ -70,11 +70,11 @@ pub(crate) async fn handler(
 #[cfg(test)]
 mod tests {
     use super::super::Recipient;
-    use super::{handler, JsonPayload};
+    use super::{JsonPayload, handler};
     use crate::controller::templates::Mailbox;
     use crate::error::ServerError;
     use crate::service::smtp::tests::{
-        create_email, smtp_image_insecure, smtp_image_secure, SmtpMock, HTTP_PORT, SMTP_PORT,
+        HTTP_PORT, SMTP_PORT, SmtpMock, create_email, smtp_image_insecure, smtp_image_secure,
     };
     use axum::extract::{Extension, Json, Path};
     use axum::http::StatusCode;
@@ -126,11 +126,13 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].inner.subject, "Hello bob!");
         assert_eq!(messages[0].inner.from, from.0.email.to_string());
-        assert!(messages[0]
-            .inner
-            .to
-            .iter()
-            .any(|addr| addr.email.eq(&to.0.email)));
+        assert!(
+            messages[0]
+                .inner
+                .to
+                .iter()
+                .any(|addr| addr.email.eq(&to.0.email))
+        );
         let msg = messages[0].detailed().await;
         let text = msg.plaintext().await;
         assert!(text.contains("Hello bob!"));
@@ -172,11 +174,13 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].inner.subject, "Hello bob!");
         assert_eq!(messages[0].inner.from, from.0.email.to_string());
-        assert!(messages[0]
-            .inner
-            .to
-            .iter()
-            .any(|addr| addr.email.eq(&to.0.email)));
+        assert!(
+            messages[0]
+                .inner
+                .to
+                .iter()
+                .any(|addr| addr.email.eq(&to.0.email))
+        );
         let msg = messages[0].detailed().await;
         let text = msg.plaintext().await;
         assert!(text.contains("Hello bob!"));
@@ -217,11 +221,13 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].inner.subject, "Hello Alice!");
         assert_eq!(messages[0].inner.from, from.0.email.to_string());
-        assert!(messages[0]
-            .inner
-            .to
-            .iter()
-            .any(|addr| addr.email.eq(&to.0.email)));
+        assert!(
+            messages[0]
+                .inner
+                .to
+                .iter()
+                .any(|addr| addr.email.eq(&to.0.email))
+        );
     }
 
     #[tokio::test]

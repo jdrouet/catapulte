@@ -4,8 +4,8 @@ pub mod render;
 
 use std::sync::Arc;
 
-use lettre::message::header::ContentType;
 use lettre::message::Body;
+use lettre::message::header::ContentType;
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct Config {

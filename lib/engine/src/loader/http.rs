@@ -1,7 +1,7 @@
 use catapulte_prelude::{
     Either, EmbeddedTemplateDefinition, MetadataWithTemplate, RemoteTemplateDefinition,
 };
-use reqwest::{header::HeaderMap, Url};
+use reqwest::{Url, header::HeaderMap};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, serde::Deserialize)]

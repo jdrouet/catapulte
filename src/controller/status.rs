@@ -28,7 +28,7 @@ pub(crate) async fn handler(
 
 #[cfg(test)]
 mod tests {
-    use crate::service::smtp::tests::{smtp_image_insecure, SMTP_PORT};
+    use crate::service::smtp::tests::{SMTP_PORT, smtp_image_insecure};
     use crate::service::{server::Server, smtp::tests::smtp_image_secure};
     use axum::{body::Body, http::Request};
     use testcontainers::runners::AsyncRunner;

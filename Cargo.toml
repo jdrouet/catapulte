@@ -4,7 +4,7 @@ version = "1.0.0"
 description = """Catapulte is an open source mailer you can host yourself.
 You can use it to quickly catapult your transactionnal emails to destination."""
 authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
-edition = "2021"
+edition = "2024"
 license = "AGPL-3.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

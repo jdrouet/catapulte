@@ -2,7 +2,7 @@ use std::{net::Ipv4Addr, path::PathBuf};
 
 use axum::{
     body::Body,
-    http::{header, Request, StatusCode},
+    http::{Request, StatusCode, header},
 };
 use catapulte::service::{server, smtp};
 use testcontainers::core::{ContainerPort, WaitFor};

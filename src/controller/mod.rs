@@ -2,7 +2,7 @@ pub(crate) mod metrics;
 pub(crate) mod status;
 pub(crate) mod templates;
 
-use axum::routing::{get, head, post, Router};
+use axum::routing::{Router, get, head, post};
 
 pub fn create() -> Router {
     Router::new()

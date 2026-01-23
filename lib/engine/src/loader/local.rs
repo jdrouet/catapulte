@@ -1,5 +1,5 @@
 use catapulte_prelude::{EmbeddedTemplateDefinition, MetadataWithTemplate, TemplateDefinition};
-use std::fs::{read_to_string, File};
+use std::fs::{File, read_to_string};
 use std::io::BufReader;
 use std::path::PathBuf;
 
@@ -98,7 +98,10 @@ mod tests {
             meta.inner.description.as_deref(),
             Some("Template for login with magic link")
         );
-        assert_eq!(meta.template.content, "<mjml>\n  <mj-head>\n    <mj-title>Hello {{name}}!</mj-title>\n    <mj-preview>Hello {{name}}!</mj-preview>\n  </mj-head>\n  <mj-body>\n    <mj-section>\n      <mj-column>\n        <mj-text>Hello {{name}}!</mj-text>\n        <mj-button href=\"http://example.com/login?token={{token}}\">Login</mj-button>\n      </mj-column>\n    </mj-section>\n  </mj-body>\n</mjml>\n");
+        assert_eq!(
+            meta.template.content,
+            "<mjml>\n  <mj-head>\n    <mj-title>Hello {{name}}!</mj-title>\n    <mj-preview>Hello {{name}}!</mj-preview>\n  </mj-head>\n  <mj-body>\n    <mj-section>\n      <mj-column>\n        <mj-text>Hello {{name}}!</mj-text>\n        <mj-button href=\"http://example.com/login?token={{token}}\">Login</mj-button>\n      </mj-column>\n    </mj-section>\n  </mj-body>\n</mjml>\n"
+        );
     }
 
     #[tokio::test]

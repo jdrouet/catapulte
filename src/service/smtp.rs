@@ -1,9 +1,9 @@
+use lettre::Tokio1Executor;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::transport::smtp::{
     AsyncSmtpTransport, AsyncSmtpTransportBuilder, Error as LettreError, PoolConfig,
 };
-use lettre::Tokio1Executor;
 use std::time::Duration;
 
 pub type SmtpPool = AsyncSmtpTransport<Tokio1Executor>;
@@ -174,13 +174,13 @@ pub(crate) mod tests {
     use std::sync::Arc;
 
     use lettre::{
-        message::{Mailbox, Mailboxes},
         Address,
+        message::{Mailbox, Mailboxes},
     };
     use serde::Deserialize;
     use testcontainers::{
-        core::{ContainerPort, Mount, WaitFor},
         ContainerRequest, GenericImage, ImageExt,
+        core::{ContainerPort, Mount, WaitFor},
     };
     use uuid::Uuid;
 

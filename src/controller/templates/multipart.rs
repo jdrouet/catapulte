@@ -5,8 +5,8 @@ use axum::extract::{Extension, FromRequest, Multipart, Path, Request};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use catapulte_engine::Attachment;
-use lettre::message::{header::ContentType, Mailbox};
 use lettre::AsyncTransport;
+use lettre::message::{Mailbox, header::ContentType};
 use utoipa::openapi::Type;
 
 async fn field_to_bytes(field: Field<'_>) -> Result<Bytes, MultipartError> {
@@ -304,7 +304,7 @@ pub(crate) async fn handler(
 mod integration_tests {
     use crate::service::server::Server;
     use crate::service::smtp::tests::{
-        create_email, smtp_image_insecure, SmtpMock, HTTP_PORT, SMTP_PORT,
+        HTTP_PORT, SMTP_PORT, SmtpMock, create_email, smtp_image_insecure,
     };
     use axum::body::Body;
     use axum::http::{Method, Request};

@@ -4,7 +4,7 @@ description = "The package containing the file formats for exchanging templates 
 authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
 license = "AGPL-3.0"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [features]
 default = ["std"]
