@@ -392,6 +392,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "catapulte-adapter-http"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "catapulte-domain",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "utoipa",
+ "utoipa-swagger-ui",
+]
+
+[[package]]
 name = "catapulte-adapter-smtp"
 version = "0.1.0"
 dependencies = [
