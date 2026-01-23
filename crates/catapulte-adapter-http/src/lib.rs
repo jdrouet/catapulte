@@ -6,4 +6,5 @@ pub mod controller;
 pub mod error;
 pub mod server;
 
+pub use controller::ApiDoc;
 pub use server::{HttpConfig, HttpServer};

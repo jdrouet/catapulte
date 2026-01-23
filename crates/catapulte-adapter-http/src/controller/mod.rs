@@ -30,7 +30,7 @@ use crate::error::ErrorResponse;
         (name = "templates", description = "Template-based email sending endpoints")
     )
 )]
-struct ApiDoc;
+pub struct ApiDoc;
 
 pub fn create_router<L, R, S>(
     service: Arc<SendEmailService<L, R, S>>,

@@ -1,46 +1,36 @@
-use std::{net::Ipv4Addr, path::PathBuf};
+use std::path::PathBuf;
 
 use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
-use catapulte::service::{server, smtp};
+use catapulte_adapter_http::HttpServer;
+use catapulte_adapter_smtp::{SmtpConfig, SmtpSender};
+use catapulte_adapter_template::{
+    LocalLoader, LocalLoaderConfig, MrmlRenderer, MrmlRendererConfig, MultiLoader,
+};
+use catapulte_domain::service::SendEmailService;
 use testcontainers::core::{ContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{GenericImage, ImageExt};
 use tower::ServiceExt;
 
-fn engine_config() -> catapulte_engine::Config {
-    catapulte_engine::Config {
-        loader: catapulte_engine::loader::Config {
-            local: catapulte_engine::loader::local::Config {
-                path: PathBuf::from("template"),
-            },
-            http: None,
-        },
-        parser: Default::default(),
-        render: Default::default(),
-    }
-}
+fn create_service(smtp_port: u16) -> SendEmailService<MultiLoader, MrmlRenderer, SmtpSender> {
+    let loader_config = LocalLoaderConfig {
+        path: PathBuf::from("template"),
+    };
+    let loader = MultiLoader::new().with_local(LocalLoader::new(&loader_config));
 
-fn smtp_config(port: u16) -> smtp::Configuration {
-    smtp::Configuration {
+    let renderer = MrmlRenderer::new(&MrmlRendererConfig::default());
+
+    let smtp_config = SmtpConfig {
         hostname: "localhost".into(),
-        port,
+        port: smtp_port,
         ..Default::default()
-    }
-}
+    };
+    let sender = SmtpSender::new(&smtp_config).expect("failed to build SMTP sender");
 
-fn server_config(
-    engine: catapulte_engine::Config,
-    smtp: smtp::Configuration,
-) -> server::Configuration {
-    server::Configuration {
-        host: Ipv4Addr::new(127, 0, 0, 1).into(),
-        port: 3000,
-        engine,
-        smtp,
-    }
+    SendEmailService::new(loader, renderer, sender)
 }
 
 #[tokio::test]
@@ -61,8 +51,9 @@ async fn should_submit_simple() {
 
     let smtp_port = smtp_node.get_host_port_ipv4(25).await.unwrap();
 
-    let app =
-        server::Server::from_config(server_config(engine_config(), smtp_config(smtp_port))).app();
+    let service = create_service(smtp_port);
+    let server = HttpServer::new(Default::default(), service);
+    let app = server.router();
 
     let response = app
         .oneshot(
