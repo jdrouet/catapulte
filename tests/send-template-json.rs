@@ -17,7 +17,7 @@ use tower::ServiceExt;
 
 fn create_service(smtp_port: u16) -> SendEmailService<MultiLoader, MrmlRenderer, SmtpSender> {
     let loader_config = LocalLoaderConfig {
-        path: PathBuf::from("template"),
+        path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("template"),
     };
     let loader = MultiLoader::new().with_local(LocalLoader::new(&loader_config));
 
