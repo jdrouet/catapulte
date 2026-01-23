@@ -405,35 +405,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "catapulte-engine"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "catapulte-prelude",
- "handlebars",
- "lettre",
- "metrics",
- "mrml",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.12",
- "tokio",
- "tracing",
- "url",
- "wiremock",
-]
-
-[[package]]
-name = "catapulte-prelude"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "url",
-]
-
-[[package]]
 name = "cc"
 version = "1.2.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
