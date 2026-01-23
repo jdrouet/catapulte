@@ -1,0 +1,20 @@
+[package]
+name = "catapulte-adapter-smtp"
+description = "SMTP adapter for catapulte - implements EmailSender using Lettre"
+authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
+license = "AGPL-3.0"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+catapulte-domain = { workspace = true }
+lettre = { workspace = true, features = [
+  "builder",
+  "pool",
+  "rustls-tls",
+  "smtp-transport",
+  "tokio1-rustls-tls",
+] }
+serde = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }

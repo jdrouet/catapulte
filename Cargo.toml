@@ -4,18 +4,26 @@ version = "1.0.0"
 description = """Catapulte is an open source mailer you can host yourself.
 You can use it to quickly catapult your transactionnal emails to destination."""
 authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
-edition = "2021"
+edition = "2024"
 license = "AGPL-3.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [workspace]
-members = ["./lib/engine", "./lib/prelude"]
+members = [
+  "./crates/catapulte-adapter-http",
+  "./crates/catapulte-adapter-smtp",
+  "./crates/catapulte-adapter-template",
+  "./crates/catapulte-domain",
+]
 resolver = "2"
 
 [workspace.dependencies]
-catapulte-engine = { path = "./lib/engine", version = "0.1" }
-catapulte-prelude = { path = "./lib/prelude", version = "0.1" }
+anyhow = { version = "1.0" }
+catapulte-adapter-http = { path = "./crates/catapulte-adapter-http", version = "0.1" }
+catapulte-adapter-smtp = { path = "./crates/catapulte-adapter-smtp", version = "0.1" }
+catapulte-adapter-template = { path = "./crates/catapulte-adapter-template", version = "0.1" }
+catapulte-domain = { path = "./crates/catapulte-domain", version = "0.1" }
 lettre = { version = "0.11", default-features = false }
 metrics = { version = "0.24" }
 reqwest = { version = "0.12", default-features = false }
@@ -27,42 +35,32 @@ tracing = { version = "0.1" }
 url = { version = "2.5", default-features = false }
 
 [dependencies]
-catapulte-engine = { workspace = true }
+catapulte-adapter-http = { workspace = true }
+catapulte-adapter-smtp = { workspace = true }
+catapulte-adapter-template = { workspace = true }
+catapulte-domain = { workspace = true }
 
-axum = { version = "0.8", features = ["multipart"] }
 clap = { version = "4.5", features = ["derive", "env"] }
-config = { version = "0.15", default-features = false }
-lettre = { default-features = false, features = [
-  "pool",
-  "rustls-tls",
-  "serde",
-  "smtp-transport",
-  "tokio1-rustls-tls",
-], workspace = true }
-metrics = { workspace = true }
-metrics-exporter-prometheus = { version = "0.17", default-features = false, features = [
-  "http-listener",
-] }
+config = { version = "0.15", default-features = false, features = ["toml"] }
 serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
-tower-http = { version = "0.6", default-features = false, features = ["trace"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-utoipa = { version = "5.3", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
+utoipa = { version = "5.3" }
 
 [dev-dependencies]
-http-body-util = "0.1"
-multipart = "0.18"
+axum = { version = "0.8" }
+catapulte-adapter-http = { workspace = true }
+catapulte-adapter-smtp = { workspace = true }
+catapulte-adapter-template = { workspace = true }
+catapulte-domain = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
+serde_json = { workspace = true, features = ["std"] }
 testcontainers = { version = "0.24" }
 tower = { version = "0.5" }
-uuid = { version = "1.8", features = ["v4"] }
 
 [profile.release]
 lto = true

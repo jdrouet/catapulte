@@ -1,0 +1,13 @@
+[package]
+name = "catapulte-domain"
+description = "Core domain layer for catapulte - business logic and port traits"
+authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
+license = "AGPL-3.0"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }

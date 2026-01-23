@@ -1,4 +1,4 @@
-use catapulte::service::openapi::ApiDoc;
+use catapulte_adapter_http::ApiDoc;
 use utoipa::OpenApi;
 
 #[derive(clap::Parser)]

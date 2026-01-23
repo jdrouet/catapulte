@@ -23,7 +23,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt,clippy
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/
@@ -45,13 +45,11 @@ jobs:
       group: ${{ github.ref }}-testing
       cancel-in-progress: true
     steps:
-      - name: setup docker
-        uses: crazy-max/ghaction-setup-docker@v3
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/
