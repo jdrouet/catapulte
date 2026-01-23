@@ -77,6 +77,37 @@ Below are areas where contributions would be valuable.
   .map_err(|err| anyhow::anyhow!("Failed: {err}"))
   ```
 
+- When defining error enums with `thiserror`, preserve error context by wrapping
+  `anyhow::Error` instead of converting to `String`:
+  ```rust
+  // Bad - loses error chain context
+  #[derive(Debug, thiserror::Error)]
+  pub enum SendError {
+      #[error("failed to send email: {0}")]
+      TransportError(String),
+  }
+
+  // Good - preserves full error chain
+  #[derive(Debug, thiserror::Error)]
+  pub enum SendError {
+      #[error("failed to send email")]
+      TransportError(#[source] anyhow::Error),
+  }
+  ```
+
+- Use `#[source]` attribute instead of `{0}` in error messages to enable proper
+  error chain traversal. This allows tools and logging to display the full
+  causal chain:
+  ```rust
+  // Bad - embeds source in message, breaks error chain
+  #[error("failed to parse template: {0}")]
+  Parse(SomeError),
+
+  // Good - proper error chain with #[source]
+  #[error("failed to parse template")]
+  Parse(#[source] SomeError),
+  ```
+
 ### Code Coverage
 
 Generate code coverage reports with:
