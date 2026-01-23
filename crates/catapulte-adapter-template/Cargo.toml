@@ -1,0 +1,24 @@
+[package]
+name = "catapulte-adapter-template"
+description = "Template adapter for catapulte - implements TemplateLoader and TemplateRenderer"
+authors = ["Jérémie Drouet <jeremie.drouet@gmail.com>"]
+license = "AGPL-3.0"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+catapulte-domain = { workspace = true }
+handlebars = { version = "6.3" }
+metrics = { workspace = true }
+mrml = { version = "5.0", features = ["async", "local-loader"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { version = "0.6" }

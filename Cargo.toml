@@ -10,11 +10,19 @@ license = "AGPL-3.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [workspace]
-members = ["./crates/catapulte-domain", "./lib/engine", "./lib/prelude"]
+members = [
+  "./crates/catapulte-adapter-smtp",
+  "./crates/catapulte-adapter-template",
+  "./crates/catapulte-domain",
+  "./lib/engine",
+  "./lib/prelude",
+]
 resolver = "2"
 
 [workspace.dependencies]
 anyhow = { version = "1.0" }
+catapulte-adapter-smtp = { path = "./crates/catapulte-adapter-smtp", version = "0.1" }
+catapulte-adapter-template = { path = "./crates/catapulte-adapter-template", version = "0.1" }
 catapulte-domain = { path = "./crates/catapulte-domain", version = "0.1" }
 catapulte-engine = { path = "./lib/engine", version = "0.1" }
 catapulte-prelude = { path = "./lib/prelude", version = "0.1" }

@@ -392,6 +392,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "catapulte-adapter-smtp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "catapulte-domain",
+ "lettre",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "catapulte-adapter-template"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "catapulte-domain",
+ "handlebars",
+ "metrics",
+ "mrml",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "tokio",
+ "tracing",
+ "url 2.5.4",
+ "wiremock",
+]
+
+[[package]]
 name = "catapulte-domain"
 version = "0.1.0"
 dependencies = [
