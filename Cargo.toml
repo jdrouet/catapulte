@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "adapter/outbound-mjml",
     "binary",
     "domain",
 ]
