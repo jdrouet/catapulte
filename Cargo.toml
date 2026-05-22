@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "adapter/outbound-mjml",
+    "adapter/outbound-sqlite",
     "binary",
     "domain",
 ]
@@ -14,6 +15,7 @@ publish = false
 [workspace.dependencies]
 anyhow = { version = "1.0" }
 serde_json = { version = "1.0" }
+sqlx = { version = "0.8", default-features = false, features = ["json", "macros", "migrate", "runtime-tokio", "sqlite"] }
 tokio = { version = "1.0", features = ["macros", "rt"] }
 uuid = { version = "1.23", default-features = false, features = ["std", "v7"] }
 
