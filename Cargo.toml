@@ -4,6 +4,7 @@ members = [
     "adapter/inbound-http",
     "adapter/outbound-interpolator",
     "adapter/outbound-mjml",
+    "adapter/outbound-resolver",
     "adapter/outbound-smtp",
     "adapter/outbound-sqlite",
     "binary",
@@ -17,6 +18,8 @@ publish = false
 
 [workspace.dependencies]
 anyhow = { version = "1.0" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+url = { version = "2.5" }
 minijinja = { version = "2.0", default-features = false, features = ["builtins", "serde"] }
 lettre = { version = "0.11", default-features = false, features = ["tokio1-native-tls", "smtp-transport", "builder", "hostname"] }
 axum = { version = "0.8" }
