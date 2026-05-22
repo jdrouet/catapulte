@@ -1,0 +1,14 @@
+[package]
+name = "catapulte-outbound-smtp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+catapulte-domain = { path = "../../domain" }
+lettre = { workspace = true }

@@ -77,6 +77,16 @@ impl RenderedBody {
     pub fn into_plain(self) -> Plain {
         self.0
     }
+
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        self.0.text()
+    }
+
+    #[must_use]
+    pub fn html(&self) -> Option<&str> {
+        self.0.html()
+    }
 }
 
 #[cfg(test)]

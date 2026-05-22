@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "adapter/inbound-http",
     "adapter/outbound-mjml",
+    "adapter/outbound-smtp",
     "adapter/outbound-sqlite",
     "binary",
     "domain",
@@ -15,6 +16,7 @@ publish = false
 
 [workspace.dependencies]
 anyhow = { version = "1.0" }
+lettre = { version = "0.11", default-features = false, features = ["tokio1-native-tls", "smtp-transport", "builder", "hostname"] }
 axum = { version = "0.8" }
 serde_json = { version = "1.0" }
 sqlx = { version = "0.8", default-features = false, features = ["json", "macros", "migrate", "runtime-tokio", "sqlite"] }
