@@ -18,9 +18,10 @@ anyhow = { version = "1.0" }
 axum = { version = "0.8" }
 serde_json = { version = "1.0" }
 sqlx = { version = "0.8", default-features = false, features = ["json", "macros", "migrate", "runtime-tokio", "sqlite"] }
-tokio = { version = "1.0", features = ["macros", "rt"] }
+tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.23", default-features = false, features = ["std", "v7"] }
 
 [workspace.lints.rust]

@@ -9,3 +9,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+catapulte-domain = { path = "../domain" }
+catapulte-inbound-http = { path = "../adapter/inbound-http" }
+catapulte-outbound-sqlite = { path = "../adapter/outbound-sqlite" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
