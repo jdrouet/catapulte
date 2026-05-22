@@ -1,13 +1,5 @@
-use crate::entity::body::BodySource;
-use crate::entity::email::{EmailId, RecipientKind};
-
-pub struct Envelope {
-    pub idempotency_key: Option<String>,
-    pub sender: String,
-    pub recipients: Vec<(RecipientKind, String)>,
-    pub body: BodySource,
-    pub variables: serde_json::Map<String, serde_json::Value>,
-}
+use crate::entity::email::EmailId;
+use crate::entity::envelope::Envelope;
 
 pub struct SubmitParams {}
 
@@ -32,7 +24,9 @@ mod tests {
     use crate::entity::body::Plain;
     use crate::entity::email::{EmailId, RecipientKind};
 
-    use super::{Envelope, SubmitEmailService, SubmitParams};
+    use crate::entity::envelope::Envelope;
+
+    use super::{SubmitEmailService, SubmitParams};
 
     #[tokio::test]
     async fn execute_returns_an_email_id() {
