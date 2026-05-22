@@ -11,6 +11,7 @@ rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
+serde_json = { version = "1.0" }
 uuid = { version = "1.23", default-features = false, features = ["std", "v7"] }
 
 [workspace.lints.rust]

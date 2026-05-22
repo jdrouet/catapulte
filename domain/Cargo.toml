@@ -9,4 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+serde_json = { workspace = true }
+thiserror = { version = "2.0" }
+url = { version = "2.5" }
 uuid = { workspace = true }
