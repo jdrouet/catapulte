@@ -1,0 +1,27 @@
+[package]
+name = "catapulte-inbound-http"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+catapulte-domain = { path = "../../domain" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { version = "2.0" }
+tokio = { workspace = true, features = ["net"] }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+url = { version = "2.5" }
+
+[dev-dependencies]
+http-body-util = { version = "0.1" }
+tokio = { workspace = true }
+tower = { version = "0.5" }
+uuid = { workspace = true }

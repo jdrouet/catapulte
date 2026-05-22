@@ -1,0 +1,65 @@
+pub mod dto;
+pub mod error;
+pub mod routes;
+
+use std::net::SocketAddr;
+
+use anyhow::Context;
+use axum::Router;
+use axum::routing::post;
+use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
+use tower_http::trace::TraceLayer;
+
+pub trait HttpServerState: Clone + Send + Sync + 'static {
+    fn submit_email(&self) -> &impl SubmitEmailUseCase;
+}
+
+pub fn router<S: HttpServerState>(state: S) -> Router {
+    Router::new()
+        .route("/emails", post(crate::routes::submit_email::<S>))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+pub struct InboundHttpConfig {
+    pub address: SocketAddr,
+}
+
+impl InboundHttpConfig {
+    /// # Errors
+    ///
+    /// Returns an error when `CATAPULTE_HTTP_ADDRESS` is unset or cannot be parsed as a socket address.
+    pub fn from_env() -> anyhow::Result<Self> {
+        let raw = std::env::var("CATAPULTE_HTTP_ADDRESS")
+            .context("missing env var CATAPULTE_HTTP_ADDRESS")?;
+        let address: SocketAddr = raw.parse().context("invalid CATAPULTE_HTTP_ADDRESS")?;
+        Ok(Self { address })
+    }
+
+    #[must_use]
+    pub fn build(self) -> InboundHttpServer {
+        InboundHttpServer {
+            address: self.address,
+        }
+    }
+}
+
+pub struct InboundHttpServer {
+    address: SocketAddr,
+}
+
+impl InboundHttpServer {
+    /// # Errors
+    ///
+    /// Returns an error when the listener fails to bind or `axum::serve` exits with an error.
+    pub async fn run<S: HttpServerState>(self, state: S) -> anyhow::Result<()> {
+        let listener = tokio::net::TcpListener::bind(self.address)
+            .await
+            .context("binding http listener")?;
+        tracing::info!(address = %self.address, "http server listening");
+        axum::serve(listener, router(state))
+            .await
+            .context("http server stopped")?;
+        Ok(())
+    }
+}
