@@ -11,10 +11,12 @@ pub enum EventPublisherError {
     },
 }
 
-#[allow(async_fn_in_trait)]
 pub trait EventPublisher {
     /// # Errors
     ///
     /// Returns an `EventPublisherError` when the event cannot be published.
-    async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError>;
+    fn publish(
+        &self,
+        event: &LifecycleEvent,
+    ) -> impl std::future::Future<Output = Result<(), EventPublisherError>> + Send;
 }

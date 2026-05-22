@@ -16,6 +16,17 @@ pub enum SubmitEmailError {
     Publish(#[from] EventPublisherError),
 }
 
+pub trait SubmitEmailUseCase: Send + Sync + 'static {
+    /// # Errors
+    ///
+    /// Returns a `SubmitEmailError` if persistence or event publishing fails.
+    fn execute(
+        &self,
+        envelope: Envelope,
+        params: SubmitParams,
+    ) -> impl std::future::Future<Output = Result<EmailId, SubmitEmailError>> + Send;
+}
+
 pub struct SubmitEmailService<R, P> {
     repository: R,
     publisher: P,
@@ -50,6 +61,20 @@ where
             .publish(&LifecycleEvent::Queued { id })
             .await?;
         Ok(id)
+    }
+}
+
+impl<R, P> SubmitEmailUseCase for SubmitEmailService<R, P>
+where
+    R: EmailRepository + Send + Sync + 'static,
+    P: EventPublisher + Send + Sync + 'static,
+{
+    fn execute(
+        &self,
+        envelope: Envelope,
+        params: SubmitParams,
+    ) -> impl std::future::Future<Output = Result<EmailId, SubmitEmailError>> + Send {
+        Self::execute(self, envelope, params)
     }
 }
 
@@ -173,9 +198,9 @@ mod tests {
             .execute(make_envelope("sender@example.com"), SubmitParams {})
             .await
             .unwrap();
-        let published = publisher.published.lock().unwrap();
-        assert_eq!(published.len(), 1);
-        assert_eq!(published[0], LifecycleEvent::Queued { id });
+        let events = publisher.published.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0], LifecycleEvent::Queued { id });
     }
 
     #[tokio::test]

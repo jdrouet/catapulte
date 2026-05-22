@@ -12,10 +12,13 @@ pub enum EmailRepositoryError {
     },
 }
 
-#[allow(async_fn_in_trait)]
 pub trait EmailRepository {
     /// # Errors
     ///
     /// Returns an `EmailRepositoryError` when persistence fails.
-    async fn save(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailRepositoryError>;
+    fn save(
+        &self,
+        id: EmailId,
+        envelope: &Envelope,
+    ) -> impl std::future::Future<Output = Result<(), EmailRepositoryError>> + Send;
 }
