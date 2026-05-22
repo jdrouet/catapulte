@@ -27,7 +27,7 @@ impl AppConfig {
     /// Returns an error when any sub-config cannot be loaded from environment variables.
     pub fn from_env() -> anyhow::Result<Self> {
         let sqlite = SqliteConfig::from_env("CATAPULTE_SQLITE").context("loading sqlite config")?;
-        let http = InboundHttpConfig::from_env().context("loading http config")?;
+        let http = InboundHttpConfig::from_env("CATAPULTE_HTTP").context("loading http config")?;
         Ok(Self { sqlite, http })
     }
 

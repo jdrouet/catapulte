@@ -28,11 +28,14 @@ pub struct InboundHttpConfig {
 impl InboundHttpConfig {
     /// # Errors
     ///
-    /// Returns an error when `CATAPULTE_HTTP_ADDRESS` is unset or cannot be parsed as a socket address.
-    pub fn from_env() -> anyhow::Result<Self> {
-        let raw = std::env::var("CATAPULTE_HTTP_ADDRESS")
-            .context("missing env var CATAPULTE_HTTP_ADDRESS")?;
-        let address: SocketAddr = raw.parse().context("invalid CATAPULTE_HTTP_ADDRESS")?;
+    /// Returns an error when `<prefix>_ADDRESS` is unset or cannot be parsed as a socket address.
+    pub fn from_env(prefix: &str) -> anyhow::Result<Self> {
+        let address_key = format!("{prefix}_ADDRESS");
+        let raw = std::env::var(&address_key)
+            .with_context(|| format!("missing env var {address_key}"))?;
+        let address: SocketAddr = raw
+            .parse()
+            .with_context(|| format!("invalid {address_key}"))?;
         Ok(Self { address })
     }
 
