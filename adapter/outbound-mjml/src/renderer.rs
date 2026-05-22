@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn render_mjml_with_preview_produces_text_and_html() {
         let renderer = MjmlRenderer::new();
-        let source = r#"<mjml>
+        let source = r"<mjml>
   <mj-head>
     <mj-preview>preview text</mj-preview>
   </mj-head>
@@ -89,7 +89,7 @@ mod tests {
       </mj-column>
     </mj-section>
   </mj-body>
-</mjml>"#;
+</mjml>";
         let body = InterpolatedBody::Mjml(source.to_string());
         let result = renderer.render(body).unwrap();
         let output = result.into_plain();
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn render_mjml_without_preview_produces_html_only() {
         let renderer = MjmlRenderer::new();
-        let source = r#"<mjml>
+        let source = r"<mjml>
   <mj-body>
     <mj-section>
       <mj-column>
@@ -110,7 +110,7 @@ mod tests {
       </mj-column>
     </mj-section>
   </mj-body>
-</mjml>"#;
+</mjml>";
         let body = InterpolatedBody::Mjml(source.to_string());
         let result = renderer.render(body).unwrap();
         let output = result.into_plain();
