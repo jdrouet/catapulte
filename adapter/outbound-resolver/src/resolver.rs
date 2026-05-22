@@ -20,25 +20,31 @@ impl TemplateResolverAdapter {
             http_client: reqwest::Client::new(),
         }
     }
-}
 
-fn resolve_named(templates: &HashMap<String, String>, name: &str) -> Result<String, ResolveError> {
-    templates
-        .get(name)
-        .cloned()
-        .ok_or_else(|| ResolveError::NotFound {
-            name: name.to_owned(),
-        })
-}
+    fn check_domain(&self, url: &url::Url) -> Result<(), ResolveError> {
+        let host = url.host_str().unwrap_or("");
+        if self.allowed_domains.contains(host) {
+            Ok(())
+        } else {
+            Err(ResolveError::DomainNotAllowed {
+                url: url.to_string(),
+            })
+        }
+    }
 
-fn check_domain(allowed_domains: &HashSet<String>, url: &url::Url) -> Result<(), ResolveError> {
-    let host = url.host_str().unwrap_or("");
-    if allowed_domains.contains(host) {
-        Ok(())
-    } else {
-        Err(ResolveError::DomainNotAllowed {
-            url: url.to_string(),
-        })
+    async fn resolve_mjml(&self, source: MjmlSource) -> Result<String, ResolveError> {
+        match source {
+            MjmlSource::Inline(s) => Ok(s),
+            MjmlSource::Named(name) => self
+                .templates
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| ResolveError::NotFound { name }),
+            MjmlSource::Remote(url) => {
+                self.check_domain(&url)?;
+                resolve_remote(&self.http_client, url).await
+            }
+        }
     }
 }
 
@@ -69,34 +75,11 @@ async fn resolve_remote(client: &reqwest::Client, url: url::Url) -> Result<Strin
         })
 }
 
-async fn resolve_mjml(
-    templates: &HashMap<String, String>,
-    allowed_domains: &HashSet<String>,
-    http_client: &reqwest::Client,
-    source: MjmlSource,
-) -> Result<String, ResolveError> {
-    match source {
-        MjmlSource::Inline(s) => Ok(s),
-        MjmlSource::Named(name) => resolve_named(templates, &name),
-        MjmlSource::Remote(url) => {
-            check_domain(allowed_domains, &url)?;
-            resolve_remote(http_client, url).await
-        }
-    }
-}
-
 impl TemplateResolver for TemplateResolverAdapter {
     async fn resolve(&self, body: BodySource) -> Result<ResolvedBody, ResolveError> {
         match body {
             BodySource::Plain(plain) => Ok(ResolvedBody::Plain(plain)),
-            BodySource::Mjml(source) => resolve_mjml(
-                &self.templates,
-                &self.allowed_domains,
-                &self.http_client,
-                source,
-            )
-            .await
-            .map(ResolvedBody::Mjml),
+            BodySource::Mjml(source) => self.resolve_mjml(source).await.map(ResolvedBody::Mjml),
         }
     }
 }
