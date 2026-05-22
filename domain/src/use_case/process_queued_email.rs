@@ -1,6 +1,7 @@
 use thiserror::Error;
 
-use crate::entity::body::{BodySource, RenderedBody};
+use crate::entity::envelope::Envelope;
+use crate::port::email_sender::{EmailSender, SendError};
 use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
 use crate::port::template_renderer::{RenderError, TemplateRenderer};
 use crate::port::template_resolver::{ResolveError, TemplateResolver};
@@ -13,41 +14,50 @@ pub enum ProcessQueuedEmailError {
     Interpolate(#[from] InterpolateError),
     #[error(transparent)]
     Render(#[from] RenderError),
+    #[error(transparent)]
+    Send(#[from] SendError),
 }
 
-pub struct ProcessQueuedEmailService<R, I, P> {
+pub struct ProcessQueuedEmailService<R, I, P, S> {
     resolver: R,
     interpolator: I,
     renderer: P,
+    sender: S,
 }
 
-impl<R, I, P> ProcessQueuedEmailService<R, I, P>
+impl<R, I, P, S> ProcessQueuedEmailService<R, I, P, S>
 where
     R: TemplateResolver,
     I: TemplateInterpolator,
     P: TemplateRenderer,
+    S: EmailSender,
 {
-    pub fn new(resolver: R, interpolator: I, renderer: P) -> Self {
+    pub fn new(resolver: R, interpolator: I, renderer: P, sender: S) -> Self {
         Self {
             resolver,
             interpolator,
             renderer,
+            sender,
         }
     }
 
     /// # Errors
     ///
-    /// Returns a `ProcessQueuedEmailError` if the body fails to resolve, interpolate, or render.
-    pub async fn execute(
-        &self,
-        body: BodySource,
-        variables: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<RenderedBody, ProcessQueuedEmailError> {
+    /// Returns a `ProcessQueuedEmailError` if the body fails to resolve, interpolate, render, or send.
+    pub async fn execute(&self, envelope: Envelope) -> Result<(), ProcessQueuedEmailError> {
         // TODO: persist failures, emit lifecycle events, requeue retryable errors.
+        let Envelope {
+            sender,
+            recipients,
+            body,
+            variables,
+            ..
+        } = envelope;
         let resolved = self.resolver.resolve(body).await?;
-        let interpolated = self.interpolator.interpolate(resolved, variables)?;
+        let interpolated = self.interpolator.interpolate(resolved, &variables)?;
         let rendered = self.renderer.render(interpolated)?;
-        Ok(rendered)
+        self.sender.send(&sender, &recipients, &rendered).await?;
+        Ok(())
     }
 }
 
@@ -58,6 +68,9 @@ mod tests {
     use crate::entity::body::{
         BodySource, InterpolatedBody, MjmlSource, Plain, RenderedBody, ResolvedBody,
     };
+    use crate::entity::email::RecipientKind;
+    use crate::entity::envelope::Envelope;
+    use crate::port::email_sender::{EmailSender, SendError};
     use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
     use crate::port::template_renderer::{RenderError, TemplateRenderer};
     use crate::port::template_resolver::{ResolveError, TemplateResolver};
@@ -147,14 +160,63 @@ mod tests {
         }
     }
 
-    fn default_service() -> ProcessQueuedEmailService<FakeResolver, FakeInterpolator, FakeRenderer>
-    {
+    struct FakeSender;
+
+    impl EmailSender for FakeSender {
+        async fn send(
+            &self,
+            _sender: &str,
+            _recipients: &[(RecipientKind, String)],
+            _body: &RenderedBody,
+        ) -> Result<(), SendError> {
+            Ok(())
+        }
+    }
+
+    struct FailingSender;
+
+    impl EmailSender for FailingSender {
+        async fn send(
+            &self,
+            _sender: &str,
+            _recipients: &[(RecipientKind, String)],
+            _body: &RenderedBody,
+        ) -> Result<(), SendError> {
+            Err(SendError::Send {
+                source: anyhow::anyhow!("connection refused"),
+            })
+        }
+    }
+
+    fn default_envelope(body: BodySource) -> Envelope {
+        Envelope {
+            idempotency_key: None,
+            sender: "sender@example.com".into(),
+            recipients: vec![(RecipientKind::To, "to@example.com".into())],
+            body,
+            variables: Map::new(),
+        }
+    }
+
+    fn default_envelope_with_vars(body: BodySource, variables: Map<String, Value>) -> Envelope {
+        Envelope {
+            idempotency_key: None,
+            sender: "sender@example.com".into(),
+            recipients: vec![(RecipientKind::To, "to@example.com".into())],
+            body,
+            variables,
+        }
+    }
+
+    fn default_service()
+    -> ProcessQueuedEmailService<FakeResolver, FakeInterpolator, FakeRenderer, FakeSender> {
         ProcessQueuedEmailService::new(
             FakeResolver {
                 inline_mjml: String::new(),
             },
             FakeInterpolator,
             FakeRenderer,
+            FakeSender,
         )
     }
 
@@ -164,7 +226,8 @@ mod tests {
         let mut vars = Map::new();
         vars.insert("name".into(), Value::String("Jeremie".into()));
         let body = BodySource::Plain(Plain::try_new(Some("hi {{ name }}".into()), None).unwrap());
-        service.execute(body, &vars).await.unwrap();
+        let envelope = default_envelope_with_vars(body, vars);
+        service.execute(envelope).await.unwrap();
     }
 
     #[tokio::test]
@@ -179,7 +242,8 @@ mod tests {
             )
             .unwrap(),
         );
-        service.execute(body, &vars).await.unwrap();
+        let envelope = default_envelope_with_vars(body, vars);
+        service.execute(envelope).await.unwrap();
     }
 
     #[tokio::test]
@@ -187,7 +251,8 @@ mod tests {
         let mjml = "<mjml><mj-preview>Preview text</mj-preview></mjml>".to_owned();
         let service = default_service();
         let body = BodySource::Mjml(MjmlSource::Inline(mjml));
-        service.execute(body, &Map::new()).await.unwrap();
+        let envelope = default_envelope(body);
+        service.execute(envelope).await.unwrap();
     }
 
     #[tokio::test]
@@ -195,7 +260,8 @@ mod tests {
         let mjml = "<mjml><mj-body></mj-body></mjml>".to_owned();
         let service = default_service();
         let body = BodySource::Mjml(MjmlSource::Inline(mjml));
-        service.execute(body, &Map::new()).await.unwrap();
+        let envelope = default_envelope(body);
+        service.execute(envelope).await.unwrap();
     }
 
     #[tokio::test]
@@ -206,17 +272,40 @@ mod tests {
             },
             FakeInterpolator,
             FakeRenderer,
+            FakeSender,
         );
         let body = BodySource::Mjml(MjmlSource::Named("welcome".into()));
-        service.execute(body, &Map::new()).await.unwrap();
+        let envelope = default_envelope(body);
+        service.execute(envelope).await.unwrap();
     }
 
     #[tokio::test]
     async fn resolver_failure_propagates_as_process_queued_email_error() {
-        let service =
-            ProcessQueuedEmailService::new(FailingResolver, FakeInterpolator, FakeRenderer);
+        let service = ProcessQueuedEmailService::new(
+            FailingResolver,
+            FakeInterpolator,
+            FakeRenderer,
+            FakeSender,
+        );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
-        let err = service.execute(body, &Map::new()).await.unwrap_err();
+        let envelope = default_envelope(body);
+        let err = service.execute(envelope).await.unwrap_err();
         assert!(matches!(err, ProcessQueuedEmailError::Resolve(_)));
+    }
+
+    #[tokio::test]
+    async fn send_failure_propagates_as_process_queued_email_error() {
+        let service = ProcessQueuedEmailService::new(
+            FakeResolver {
+                inline_mjml: String::new(),
+            },
+            FakeInterpolator,
+            FakeRenderer,
+            FailingSender,
+        );
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let envelope = default_envelope(body);
+        let err = service.execute(envelope).await.unwrap_err();
+        assert!(matches!(err, ProcessQueuedEmailError::Send(_)));
     }
 }
