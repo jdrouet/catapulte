@@ -6,6 +6,8 @@ use crate::entity::body::{BodySource, ResolvedBody};
 pub enum ResolveError {
     #[error("template {name:?} not found")]
     NotFound { name: String },
+    #[error("domain not allowed for remote template: {url:?}")]
+    DomainNotAllowed { url: String },
     #[error("failed to fetch template from {url:?}")]
     Fetch {
         url: String,
