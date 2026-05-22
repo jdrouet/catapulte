@@ -9,3 +9,4 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+uuid = { workspace = true }

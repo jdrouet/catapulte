@@ -10,6 +10,9 @@ edition = "2024"
 rust-version = "1.95"
 publish = false
 
+[workspace.dependencies]
+uuid = { version = "1.23", default-features = false, features = ["std", "v7"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
