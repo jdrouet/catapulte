@@ -14,3 +14,6 @@ serde_json = { workspace = true }
 thiserror = { version = "2.0" }
 url = { version = "2.5" }
 uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
