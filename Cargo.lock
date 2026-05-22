@@ -225,6 +225,7 @@ dependencies = [
  "anyhow",
  "catapulte-domain",
  "reqwest",
+ "tempfile",
  "tokio",
  "url",
 ]

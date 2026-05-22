@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use anyhow::Context;
 use catapulte_domain::entity::body::{BodySource, MjmlSource, ResolvedBody};
@@ -100,14 +101,84 @@ impl TemplateResolver for TemplateResolverAdapter {
     }
 }
 
+fn load_template_entry(
+    raw: std::io::Result<std::fs::DirEntry>,
+) -> anyhow::Result<Option<(String, String)>> {
+    let entry = raw.context("reading directory entry")?;
+    let path = entry.path();
+    if path.extension().and_then(|e| e.to_str()) != Some("mjml") {
+        return Ok(None);
+    }
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .with_context(|| format!("invalid template filename: {path:?}"))?
+        .to_owned();
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("reading template {path:?}"))?;
+    Ok(Some((name, content)))
+}
+
+fn load_templates_from_dir(dir: &std::path::Path) -> anyhow::Result<HashMap<String, String>> {
+    std::fs::read_dir(dir)
+        .with_context(|| format!("reading templates directory {dir:?}"))?
+        .filter_map(|raw| load_template_entry(raw).transpose())
+        .collect()
+}
+
+pub struct TemplateResolverConfig {
+    pub allowed_domains: HashSet<String>,
+    pub templates_dir: Option<PathBuf>,
+}
+
+impl TemplateResolverConfig {
+    /// # Errors
+    ///
+    /// Never fails; env vars are optional and defaults are used when absent.
+    pub fn from_env(prefix: &str) -> anyhow::Result<Self> {
+        let allowed_domains = std::env::var(format!("{prefix}_ALLOWED_DOMAINS"))
+            .ok()
+            .map(|v| {
+                v.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let templates_dir = std::env::var(format!("{prefix}_TEMPLATES_DIR"))
+            .ok()
+            .map(PathBuf::from);
+        Ok(Self {
+            allowed_domains,
+            templates_dir,
+        })
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the templates directory cannot be read.
+    pub fn build(self) -> anyhow::Result<TemplateResolverAdapter> {
+        let templates = match self.templates_dir {
+            None => HashMap::new(),
+            Some(ref dir) => load_templates_from_dir(dir)?,
+        };
+        Ok(TemplateResolverAdapter::new(
+            templates,
+            self.allowed_domains,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
 
     use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain, ResolvedBody};
     use catapulte_domain::port::template_resolver::{ResolveError, TemplateResolver};
 
-    use super::TemplateResolverAdapter;
+    use super::{TemplateResolverAdapter, TemplateResolverConfig};
 
     #[tokio::test]
     async fn resolve_plain_passthrough() {
@@ -192,5 +263,49 @@ mod tests {
             !matches!(result, Err(ResolveError::DomainNotAllowed { .. })),
             "expected whitelist check to pass, got DomainNotAllowed"
         );
+    }
+
+    #[test]
+    fn config_from_env_defaults_to_empty() {
+        let config = TemplateResolverConfig::from_env("RESOLVER_TEST_EMPTY").unwrap();
+        assert!(config.allowed_domains.is_empty());
+        assert!(config.templates_dir.is_none());
+    }
+
+    #[test]
+    fn config_build_no_dir_returns_adapter() {
+        let config = TemplateResolverConfig {
+            allowed_domains: HashSet::new(),
+            templates_dir: None,
+        };
+        assert!(config.build().is_ok());
+    }
+
+    #[test]
+    fn config_build_invalid_dir_returns_error() {
+        let config = TemplateResolverConfig {
+            allowed_domains: HashSet::new(),
+            templates_dir: Some(PathBuf::from("/nonexistent/resolver/templates")),
+        };
+        assert!(config.build().is_err());
+    }
+
+    #[test]
+    fn config_build_with_dir_loads_mjml_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("welcome.mjml"), "<mjml/>").unwrap();
+        std::fs::write(dir.path().join("ignored.txt"), "not a template").unwrap();
+        let config = TemplateResolverConfig {
+            allowed_domains: HashSet::new(),
+            templates_dir: Some(dir.path().to_owned()),
+        };
+        let adapter = config.build().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let body = BodySource::Mjml(MjmlSource::Named("welcome".to_owned()));
+        let result = rt.block_on(adapter.resolve(body)).unwrap();
+        match result {
+            ResolvedBody::Mjml(s) => assert_eq!(s, "<mjml/>"),
+            _ => panic!("expected Mjml variant"),
+        }
     }
 }

@@ -15,4 +15,5 @@ reqwest = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+tempfile = { version = "3" }
 tokio = { workspace = true }
