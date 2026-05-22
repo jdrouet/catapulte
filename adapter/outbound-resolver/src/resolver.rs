@@ -32,6 +32,34 @@ impl TemplateResolverAdapter {
         }
     }
 
+    async fn resolve_remote(&self, url: url::Url) -> Result<String, ResolveError> {
+        let url_str = url.to_string();
+        let response = self
+            .http_client
+            .get(url)
+            .send()
+            .await
+            .context("http request failed")
+            .map_err(|source| ResolveError::Fetch {
+                url: url_str.clone(),
+                source,
+            })?
+            .error_for_status()
+            .context("http error response")
+            .map_err(|source| ResolveError::Fetch {
+                url: url_str.clone(),
+                source,
+            })?;
+        response
+            .text()
+            .await
+            .context("reading response body")
+            .map_err(|source| ResolveError::Fetch {
+                url: url_str,
+                source,
+            })
+    }
+
     async fn resolve_mjml(&self, source: MjmlSource) -> Result<String, ResolveError> {
         match source {
             MjmlSource::Inline(s) => Ok(s),
@@ -42,37 +70,10 @@ impl TemplateResolverAdapter {
                 .ok_or_else(|| ResolveError::NotFound { name }),
             MjmlSource::Remote(url) => {
                 self.check_domain(&url)?;
-                resolve_remote(&self.http_client, url).await
+                self.resolve_remote(url).await
             }
         }
     }
-}
-
-async fn resolve_remote(client: &reqwest::Client, url: url::Url) -> Result<String, ResolveError> {
-    let url_str = url.to_string();
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .context("http request failed")
-        .map_err(|source| ResolveError::Fetch {
-            url: url_str.clone(),
-            source,
-        })?
-        .error_for_status()
-        .context("http error response")
-        .map_err(|source| ResolveError::Fetch {
-            url: url_str.clone(),
-            source,
-        })?;
-    response
-        .text()
-        .await
-        .context("reading response body")
-        .map_err(|source| ResolveError::Fetch {
-            url: url_str,
-            source,
-        })
 }
 
 impl TemplateResolver for TemplateResolverAdapter {
