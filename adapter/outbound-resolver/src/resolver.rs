@@ -96,16 +96,16 @@ fn load_template_entry(
     let name = path
         .file_stem()
         .and_then(|s| s.to_str())
-        .with_context(|| format!("invalid template filename: {path:?}"))?
+        .with_context(|| format!("invalid template filename: {}", path.display()))?
         .to_owned();
-    let content =
-        std::fs::read_to_string(&path).with_context(|| format!("reading template {path:?}"))?;
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading template {}", path.display()))?;
     Ok(Some((name, content)))
 }
 
 fn load_templates_from_dir(dir: &std::path::Path) -> anyhow::Result<HashMap<String, String>> {
     std::fs::read_dir(dir)
-        .with_context(|| format!("reading templates directory {dir:?}"))?
+        .with_context(|| format!("reading templates directory {}", dir.display()))?
         .filter_map(|raw| load_template_entry(raw).transpose())
         .collect()
 }
