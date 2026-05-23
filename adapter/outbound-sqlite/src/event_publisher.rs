@@ -13,6 +13,9 @@ impl EventPublisher for SqliteAdapter {
             LifecycleEvent::Queued { id } => {
                 (id.as_uuid().as_bytes().to_vec(), "queued", None::<String>)
             }
+            LifecycleEvent::Sent { id } => {
+                (id.as_uuid().as_bytes().to_vec(), "sent", None::<String>)
+            }
         };
 
         let event_id_bytes = uuid::Uuid::now_v7().as_bytes().to_vec();

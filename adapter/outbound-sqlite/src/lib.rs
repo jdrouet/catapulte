@@ -1,4 +1,5 @@
 pub mod dto;
+pub mod email_queue;
 pub mod email_repository;
 pub mod event_publisher;
 

@@ -1,4 +1,5 @@
-use catapulte_domain::entity::body::{BodySource, MjmlSource};
+use anyhow::Context;
+use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain};
 use catapulte_domain::entity::email::RecipientKind;
 use serde::{Deserialize, Serialize};
 
@@ -66,5 +67,42 @@ pub fn recipients_to_dto(recipients: &[(RecipientKind, String)]) -> Vec<Recipien
             kind: (*k).into(),
             address: a.clone(),
         })
+        .collect()
+}
+
+impl TryFrom<BodySourceDto> for BodySource {
+    type Error = anyhow::Error;
+
+    fn try_from(dto: BodySourceDto) -> Result<Self, Self::Error> {
+        match dto {
+            BodySourceDto::Plain { text, html } => Plain::try_new(text, html)
+                .context("invalid plain body")
+                .map(BodySource::Plain),
+            BodySourceDto::MjmlInline { source } => {
+                Ok(BodySource::Mjml(MjmlSource::Inline(source)))
+            }
+            BodySourceDto::MjmlNamed { name } => Ok(BodySource::Mjml(MjmlSource::Named(name))),
+            BodySourceDto::MjmlRemote { url } => url
+                .parse()
+                .context("invalid remote url")
+                .map(|u| BodySource::Mjml(MjmlSource::Remote(u))),
+        }
+    }
+}
+
+impl From<RecipientKindDto> for RecipientKind {
+    fn from(dto: RecipientKindDto) -> Self {
+        match dto {
+            RecipientKindDto::To => RecipientKind::To,
+            RecipientKindDto::Cc => RecipientKind::Cc,
+            RecipientKindDto::Bcc => RecipientKind::Bcc,
+        }
+    }
+}
+
+#[must_use]
+pub fn recipients_from_dto(dtos: Vec<RecipientDto>) -> Vec<(RecipientKind, String)> {
+    dtos.into_iter()
+        .map(|d| (d.kind.into(), d.address))
         .collect()
 }
