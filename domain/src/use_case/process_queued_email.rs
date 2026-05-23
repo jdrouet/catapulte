@@ -6,6 +6,16 @@ use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator}
 use crate::port::template_renderer::{RenderError, TemplateRenderer};
 use crate::port::template_resolver::{ResolveError, TemplateResolver};
 
+pub trait ProcessQueuedEmailUseCase: Send + Sync + 'static {
+    /// # Errors
+    ///
+    /// Returns a `ProcessQueuedEmailError` if resolve, interpolate, render, or send fails.
+    fn execute(
+        &self,
+        envelope: Envelope,
+    ) -> impl std::future::Future<Output = Result<(), ProcessQueuedEmailError>> + Send;
+}
+
 #[derive(Debug, Error)]
 pub enum ProcessQueuedEmailError {
     #[error(transparent)]
@@ -58,6 +68,21 @@ where
         let rendered = self.renderer.render(interpolated)?;
         self.sender.send(&sender, &recipients, &rendered).await?;
         Ok(())
+    }
+}
+
+impl<R, I, P, S> ProcessQueuedEmailUseCase for ProcessQueuedEmailService<R, I, P, S>
+where
+    R: TemplateResolver + Send + Sync + 'static,
+    I: TemplateInterpolator + Send + Sync + 'static,
+    P: TemplateRenderer + Send + Sync + 'static,
+    S: EmailSender + Send + Sync + 'static,
+{
+    fn execute(
+        &self,
+        envelope: Envelope,
+    ) -> impl std::future::Future<Output = Result<(), ProcessQueuedEmailError>> + Send {
+        Self::execute(self, envelope)
     }
 }
 

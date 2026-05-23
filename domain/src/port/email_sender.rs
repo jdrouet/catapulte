@@ -12,15 +12,14 @@ pub enum SendError {
     },
 }
 
-#[allow(async_fn_in_trait)]
 pub trait EmailSender {
     /// # Errors
     ///
     /// Returns a `SendError` when the email cannot be delivered.
-    async fn send(
+    fn send(
         &self,
         sender: &str,
         recipients: &[(RecipientKind, String)],
         body: &RenderedBody,
-    ) -> Result<(), SendError>;
+    ) -> impl std::future::Future<Output = Result<(), SendError>> + Send;
 }

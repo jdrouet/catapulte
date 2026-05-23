@@ -16,10 +16,12 @@ pub enum ResolveError {
     },
 }
 
-#[allow(async_fn_in_trait)]
 pub trait TemplateResolver {
     /// # Errors
     ///
     /// Returns a `ResolveError` when the template cannot be found or fetched.
-    async fn resolve(&self, body: BodySource) -> Result<ResolvedBody, ResolveError>;
+    fn resolve(
+        &self,
+        body: BodySource,
+    ) -> impl std::future::Future<Output = Result<ResolvedBody, ResolveError>> + Send;
 }
