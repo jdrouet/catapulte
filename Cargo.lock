@@ -162,6 +162,11 @@ dependencies = [
  "anyhow",
  "catapulte-domain",
  "catapulte-inbound-http",
+ "catapulte-inbound-worker",
+ "catapulte-outbound-interpolator",
+ "catapulte-outbound-mjml",
+ "catapulte-outbound-resolver",
+ "catapulte-outbound-smtp",
  "catapulte-outbound-sqlite",
  "tokio",
  "tracing",
@@ -197,6 +202,16 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "catapulte-inbound-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "catapulte-domain",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
