@@ -87,7 +87,9 @@ mod tests {
                 assert_eq!(p.text(), Some("hello world"));
                 assert_eq!(p.html(), None);
             }
-            _ => panic!("expected Plain variant"),
+            catapulte_domain::entity::body::InterpolatedBody::Mjml(_) => {
+                panic!("expected Plain variant")
+            }
         }
     }
 
@@ -106,7 +108,9 @@ mod tests {
                 assert_eq!(p.html(), Some("<p>hi</p>"));
                 assert_eq!(p.text(), None);
             }
-            _ => panic!("expected Plain variant"),
+            catapulte_domain::entity::body::InterpolatedBody::Mjml(_) => {
+                panic!("expected Plain variant")
+            }
         }
     }
 
@@ -129,7 +133,9 @@ mod tests {
                 assert_eq!(p.text(), Some("text: ok"));
                 assert_eq!(p.html(), Some("html: ok"));
             }
-            _ => panic!("expected Plain variant"),
+            catapulte_domain::entity::body::InterpolatedBody::Mjml(_) => {
+                panic!("expected Plain variant")
+            }
         }
     }
 
@@ -146,7 +152,9 @@ mod tests {
             catapulte_domain::entity::body::InterpolatedBody::Mjml(s) => {
                 assert!(s.contains("hello"), "expected 'hello' in rendered output");
             }
-            _ => panic!("expected Mjml variant"),
+            catapulte_domain::entity::body::InterpolatedBody::Plain(_) => {
+                panic!("expected Mjml variant")
+            }
         }
     }
 
@@ -163,7 +171,9 @@ mod tests {
             catapulte_domain::entity::body::InterpolatedBody::Plain(p) => {
                 assert_eq!(p.text(), Some("no variables here"));
             }
-            _ => panic!("expected Plain variant"),
+            catapulte_domain::entity::body::InterpolatedBody::Mjml(_) => {
+                panic!("expected Plain variant")
+            }
         }
     }
 

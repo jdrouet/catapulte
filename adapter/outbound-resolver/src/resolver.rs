@@ -289,7 +289,7 @@ mod tests {
         let result = rt.block_on(adapter.resolve(body)).unwrap();
         match result {
             ResolvedBody::Mjml(s) => assert_eq!(s, "<mjml/>"),
-            _ => panic!("expected Mjml variant"),
+            ResolvedBody::Plain(_) => panic!("expected Mjml variant"),
         }
     }
 }

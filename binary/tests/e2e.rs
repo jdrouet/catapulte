@@ -111,11 +111,10 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
             .unwrap()
             .json::<serde_json::Value>()
             .await
+            && body["messages"].as_array().is_some_and(|a| !a.is_empty())
         {
-            if body["messages"].as_array().is_some_and(|a| !a.is_empty()) {
-                delivered = true;
-                break;
-            }
+            delivered = true;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -215,11 +214,10 @@ async fn submit_plain_email_with_memory_queue_is_delivered() {
             .unwrap()
             .json::<serde_json::Value>()
             .await
+            && body["messages"].as_array().is_some_and(|a| !a.is_empty())
         {
-            if body["messages"].as_array().is_some_and(|a| !a.is_empty()) {
-                delivered = true;
-                break;
-            }
+            delivered = true;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
