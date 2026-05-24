@@ -1,6 +1,8 @@
+use std::time::Duration;
+
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
-use catapulte_domain::port::email_queue::{EmailQueue, EmailQueueError};
+use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
 use catapulte_outbound_postgres::PostgresAdapter;
 use catapulte_outbound_queue_memory::MemoryQueue;
 use catapulte_outbound_sqlite::SqliteAdapter;
@@ -23,7 +25,7 @@ impl EmailQueue for QueueAdapter {
         }
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
+    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
         match self {
             Self::Sqlite(a) => a.dequeue().await,
             Self::Postgres(a) => a.dequeue().await,
@@ -31,11 +33,19 @@ impl EmailQueue for QueueAdapter {
         }
     }
 
-    async fn ack(&self, id: EmailId) -> Result<(), EmailQueueError> {
+    async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
         match self {
-            Self::Sqlite(a) => a.ack(id).await,
-            Self::Postgres(a) => a.ack(id).await,
-            Self::Memory(q) => q.ack(id).await,
+            Self::Sqlite(a) => a.ack(token).await,
+            Self::Postgres(a) => a.ack(token).await,
+            Self::Memory(q) => q.ack(token).await,
+        }
+    }
+
+    async fn nack(&self, token: AckToken, delay: Duration) -> Result<(), EmailQueueError> {
+        match self {
+            Self::Sqlite(a) => a.nack(token, delay).await,
+            Self::Postgres(a) => a.nack(token, delay).await,
+            Self::Memory(q) => q.nack(token, delay).await,
         }
     }
 }

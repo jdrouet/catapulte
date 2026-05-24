@@ -180,11 +180,25 @@ mod tests {
             Ok(())
         }
 
-        async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
+        async fn dequeue(
+            &self,
+        ) -> Result<(EmailId, Envelope, u32, crate::port::email_queue::AckToken), EmailQueueError>
+        {
             std::future::pending().await
         }
 
-        async fn ack(&self, _id: EmailId) -> Result<(), EmailQueueError> {
+        async fn ack(
+            &self,
+            _token: crate::port::email_queue::AckToken,
+        ) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        async fn nack(
+            &self,
+            _token: crate::port::email_queue::AckToken,
+            _delay: std::time::Duration,
+        ) -> Result<(), EmailQueueError> {
             Ok(())
         }
     }
@@ -199,11 +213,25 @@ mod tests {
             })
         }
 
-        async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
+        async fn dequeue(
+            &self,
+        ) -> Result<(EmailId, Envelope, u32, crate::port::email_queue::AckToken), EmailQueueError>
+        {
             std::future::pending().await
         }
 
-        async fn ack(&self, _id: EmailId) -> Result<(), EmailQueueError> {
+        async fn ack(
+            &self,
+            _token: crate::port::email_queue::AckToken,
+        ) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        async fn nack(
+            &self,
+            _token: crate::port::email_queue::AckToken,
+            _delay: std::time::Duration,
+        ) -> Result<(), EmailQueueError> {
             Ok(())
         }
     }

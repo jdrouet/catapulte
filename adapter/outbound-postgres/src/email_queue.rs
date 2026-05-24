@@ -1,8 +1,10 @@
+use std::time::Duration;
+
 use anyhow::Context;
 use catapulte_domain::entity::body::BodySource;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
-use catapulte_domain::port::email_queue::{EmailQueue, EmailQueueError};
+use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
 
 use crate::PostgresAdapter;
 use crate::dto::{BodySourceDto, RecipientDto, recipients_from_dto};
@@ -15,11 +17,6 @@ fn now_ms() -> i64 {
             .as_millis(),
     )
     .unwrap_or(i64::MAX)
-}
-
-fn backoff_ms(attempt: u32) -> i64 {
-    let seconds: u64 = (30u64 * (1u64 << attempt.saturating_sub(1))).min(3600);
-    i64::try_from(seconds * 1000).unwrap_or(i64::MAX)
 }
 
 fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Envelope> {
@@ -46,7 +43,9 @@ fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Envelope> {
 }
 
 impl PostgresAdapter {
-    async fn try_dequeue(&self) -> Result<Option<(EmailId, Envelope, u32)>, EmailQueueError> {
+    async fn try_dequeue(
+        &self,
+    ) -> Result<Option<(EmailId, Envelope, u32, AckToken)>, EmailQueueError> {
         let now = now_ms();
 
         let mut tx = self
@@ -98,7 +97,8 @@ impl PostgresAdapter {
         };
 
         let new_attempt = current_attempt + 1;
-        let claim_until = now + backoff_ms(new_attempt);
+        let processing_timeout_ms: i64 = 300_000;
+        let claim_until = now + processing_timeout_ms;
 
         sqlx::query(
             "UPDATE email_queue SET claimed_until = $1, attempt_count = attempt_count + 1 WHERE id = $2",
@@ -129,7 +129,13 @@ impl PostgresAdapter {
             Some(row) => {
                 let envelope =
                     parse_envelope(&row).map_err(|source| EmailQueueError::Storage { source })?;
-                Ok(Some((EmailId::from(email_id_uuid), envelope, new_attempt)))
+                let token = AckToken::new(email_id_uuid.as_bytes().to_vec());
+                Ok(Some((
+                    EmailId::from(email_id_uuid),
+                    envelope,
+                    new_attempt,
+                    token,
+                )))
             }
         }
     }
@@ -149,7 +155,7 @@ impl EmailQueue for PostgresAdapter {
         Ok(())
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
+    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
         for _ in 0..10 {
             if let Some(item) = self.try_dequeue().await? {
                 return Ok(item);
@@ -161,13 +167,32 @@ impl EmailQueue for PostgresAdapter {
         })
     }
 
-    async fn ack(&self, id: EmailId) -> Result<(), EmailQueueError> {
-        let email_id = id.as_uuid();
+    async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
+        let email_id_uuid = uuid::Uuid::from_slice(&token.0)
+            .context("invalid ack token")
+            .map_err(|source| EmailQueueError::Storage { source })?;
         sqlx::query("DELETE FROM email_queue WHERE email_id = $1")
-            .bind(email_id)
+            .bind(email_id_uuid)
             .execute(self.pool())
             .await
             .context("deleting from email_queue")
+            .map_err(|source| EmailQueueError::Storage { source })?;
+        Ok(())
+    }
+
+    async fn nack(&self, token: AckToken, delay: Duration) -> Result<(), EmailQueueError> {
+        let now_ms = now_ms();
+        let delay_ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
+        let claimed_until = now_ms.saturating_add(delay_ms);
+        let email_id_uuid = uuid::Uuid::from_slice(&token.0)
+            .context("invalid nack token")
+            .map_err(|source| EmailQueueError::Storage { source })?;
+        sqlx::query("UPDATE email_queue SET claimed_until = $1 WHERE email_id = $2")
+            .bind(claimed_until)
+            .bind(email_id_uuid)
+            .execute(self.pool())
+            .await
+            .context("nacking email_queue entry")
             .map_err(|source| EmailQueueError::Storage { source })?;
         Ok(())
     }
@@ -230,7 +255,7 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (returned_id, _, _) = adapter.dequeue().await.unwrap();
+        let (returned_id, _, _, _token) = adapter.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
     }
 
@@ -240,15 +265,32 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (returned_id, _, _) = adapter.dequeue().await.unwrap();
+        let (returned_id, _, _, token) = adapter.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
 
-        adapter.ack(id).await.unwrap();
+        adapter.ack(token).await.unwrap();
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM email_queue")
             .fetch_one(adapter.pool())
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn nack_updates_claimed_until() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+
+        let (_returned_id, _, _, token) = adapter.dequeue().await.unwrap();
+
+        adapter
+            .nack(token, std::time::Duration::from_secs(10))
+            .await
+            .unwrap();
+
+        // Item is still claimed; try_dequeue should return None immediately
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
     }
 }

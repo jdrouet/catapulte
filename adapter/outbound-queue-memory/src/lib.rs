@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
-use catapulte_domain::port::email_queue::{EmailQueue, EmailQueueError};
+use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
 use tokio::sync::mpsc;
 
 struct MemoryQueueInner {
@@ -44,20 +45,24 @@ impl EmailQueue for MemoryQueue {
             })
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
+    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
         self.inner
             .receiver
             .lock()
             .await
             .recv()
             .await
-            .map(|(id, env)| (id, env, 1u32))
+            .map(|(id, env)| (id, env, 1u32, AckToken::new(vec![])))
             .ok_or_else(|| EmailQueueError::Storage {
                 source: anyhow::anyhow!("memory queue channel closed"),
             })
     }
 
-    async fn ack(&self, _id: EmailId) -> Result<(), EmailQueueError> {
+    async fn ack(&self, _token: AckToken) -> Result<(), EmailQueueError> {
+        Ok(())
+    }
+
+    async fn nack(&self, _token: AckToken, _delay: Duration) -> Result<(), EmailQueueError> {
         Ok(())
     }
 }
@@ -87,15 +92,27 @@ mod tests {
         let queue = MemoryQueue::new();
         let id = EmailId::default();
         queue.enqueue(id, &sample_envelope()).await.unwrap();
-        let (returned_id, _, _) = queue.dequeue().await.unwrap();
+        let (returned_id, _, _, _token) = queue.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
     }
 
     #[tokio::test]
     async fn ack_is_noop() {
+        use catapulte_domain::port::email_queue::AckToken;
         let queue = MemoryQueue::new();
-        let id = EmailId::default();
-        assert!(queue.ack(id).await.is_ok());
+        assert!(queue.ack(AckToken::new(vec![])).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn nack_is_noop() {
+        use catapulte_domain::port::email_queue::AckToken;
+        let queue = MemoryQueue::new();
+        assert!(
+            queue
+                .nack(AckToken::new(vec![]), std::time::Duration::from_secs(1))
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -105,8 +122,8 @@ mod tests {
         let id2 = EmailId::default();
         queue.enqueue(id1, &sample_envelope()).await.unwrap();
         queue.enqueue(id2, &sample_envelope()).await.unwrap();
-        let (r1, _, _) = queue.dequeue().await.unwrap();
-        let (r2, _, _) = queue.dequeue().await.unwrap();
+        let (r1, _, _, _) = queue.dequeue().await.unwrap();
+        let (r2, _, _, _) = queue.dequeue().await.unwrap();
         assert_eq!(r1, id1);
         assert_eq!(r2, id2);
     }

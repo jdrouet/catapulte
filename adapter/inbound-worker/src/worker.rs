@@ -1,5 +1,5 @@
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
-use catapulte_domain::port::email_queue::EmailQueue;
+use catapulte_domain::port::email_queue::{AckToken, EmailQueue};
 use catapulte_domain::port::event_publisher::EventPublisher;
 use catapulte_domain::use_case::process_queued_email::ProcessQueuedEmailUseCase;
 
@@ -29,11 +29,18 @@ impl WorkerConfig {
 
 pub struct Worker {}
 
+fn backoff(attempt: u32) -> std::time::Duration {
+    let secs = (30u64 * (1u64 << attempt.saturating_sub(1))).min(3600);
+    std::time::Duration::from_secs(secs)
+}
+
 impl Worker {
     pub async fn run<S: WorkerState>(self, state: S) {
         loop {
             match state.email_queue().dequeue().await {
-                Ok((id, envelope, attempt)) => process_one(&state, id, envelope, attempt).await,
+                Ok((id, envelope, attempt, token)) => {
+                    process_one(&state, id, envelope, attempt, token).await;
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to dequeue");
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -48,10 +55,11 @@ async fn process_one<S: WorkerState>(
     id: catapulte_domain::entity::email::EmailId,
     envelope: catapulte_domain::entity::envelope::Envelope,
     attempt: u32,
+    token: AckToken,
 ) {
     match state.process_queued_email().execute(envelope).await {
         Ok(()) => {
-            if let Err(e) = state.email_queue().ack(id).await {
+            if let Err(e) = state.email_queue().ack(token).await {
                 tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to ack email");
                 return;
             }
@@ -70,10 +78,15 @@ async fn process_one<S: WorkerState>(
                 attempt,
                 "failed to process email"
             );
-            if attempt >= MAX_ATTEMPTS
-                && let Err(ack_err) = state.email_queue().ack(id).await
-            {
-                tracing::error!(error = %ack_err, "failed to ack permanently failed email");
+            if attempt >= MAX_ATTEMPTS {
+                if let Err(ack_err) = state.email_queue().ack(token).await {
+                    tracing::error!(error = %ack_err, "failed to ack permanently failed email");
+                }
+            } else {
+                let delay = backoff(attempt);
+                if let Err(nack_err) = state.email_queue().nack(token, delay).await {
+                    tracing::error!(error = %nack_err, "failed to nack transiently failed email");
+                }
             }
             if let Err(pub_err) = state
                 .event_publisher()
