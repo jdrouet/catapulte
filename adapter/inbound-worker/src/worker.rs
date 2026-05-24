@@ -62,6 +62,16 @@ async fn process_one<S: WorkerState>(
         }
         Err(e) => {
             tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to process email");
+            if let Err(pub_err) = state
+                .event_publisher()
+                .publish(&LifecycleEvent::Failed {
+                    id,
+                    reason: e.to_string(),
+                })
+                .await
+            {
+                tracing::error!(error = %pub_err, "failed to publish failed event");
+            }
         }
     }
 }
