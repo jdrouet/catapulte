@@ -287,6 +287,116 @@ async fn submit_email_postgres_storage_memory_queue_is_delivered() {
 }
 
 #[tokio::test]
+async fn lifecycle_events_endpoint_returns_queued_and_sent() {
+    let mailpit = start_mailpit().await;
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_lifecycle.db");
+    let http_port = free_port();
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+        },
+        smtp: base_smtp(smtp_port),
+        resolver: base_resolver(),
+        worker: WorkerConfig {},
+        queue: QueueBackendConfig::Storage,
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+
+    // wait for server to be up
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&serde_json::json!({
+            "sender": "sender@example.com",
+            "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+            "body": { "kind": "plain", "text": "Hello lifecycle events!" },
+            "variables": {}
+        }))
+        .send()
+        .await
+        .expect("POST /emails failed");
+    assert!(
+        resp.status().is_success(),
+        "unexpected status: {}",
+        resp.status()
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let id = body["id"].as_str().expect("id field missing").to_owned();
+
+    // wait for mailpit to receive the email
+    let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
+    for _ in 0..100 {
+        if let Ok(body) = client
+            .get(&messages_url)
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            && body["messages"].as_array().is_some_and(|a| !a.is_empty())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // poll GET /emails/{id}/events until "sent" appears
+    let events_url = format!("http://127.0.0.1:{http_port}/emails/{id}/events");
+    let mut found_sent = false;
+    for _ in 0..100 {
+        if let Ok(resp) = client.get(&events_url).send().await
+            && let Ok(body) = resp.json::<serde_json::Value>().await
+        {
+            let events = body["events"].as_array().cloned().unwrap_or_default();
+            if events
+                .iter()
+                .any(|e| e["event_type"].as_str() == Some("sent"))
+            {
+                found_sent = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(found_sent, "no 'sent' event found within timeout");
+
+    // verify queued event is also present
+    let resp = client.get(&events_url).send().await.unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let events = body["events"].as_array().expect("events array");
+    let has_queued = events
+        .iter()
+        .any(|e| e["event_type"].as_str() == Some("queued"));
+    assert!(has_queued, "no 'queued' event found");
+}
+
+#[tokio::test]
 async fn submit_email_postgres_storage_nats_queue_is_delivered() {
     let mailpit = start_mailpit().await;
     let pg = start_postgres().await;
