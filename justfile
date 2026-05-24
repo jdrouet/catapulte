@@ -5,6 +5,10 @@ _default:
 check:
     cargo check --workspace --all-targets
 
+# Run clippy on the entire project
+clippy:
+    cargo clippy --workspace --all-features --all-targets
+
 # Run the test suite.
 test:
     cargo test --workspace --all-targets
@@ -22,7 +26,7 @@ crap:
     cargo crap
 
 # Run every check expected before opening a PR.
-pre-pr: check test machete cov crap
+pre-pr: check clippy test machete cov crap
 
 # Format every crate.
 fmt:
