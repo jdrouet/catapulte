@@ -71,7 +71,11 @@ impl AppConfig {
             .build()
             .context("building template resolver")?;
 
-        let submit_email = Arc::new(SubmitEmailService::new(storage.clone(), queue.clone()));
+        let submit_email = Arc::new(SubmitEmailService::new(
+            storage.clone(),
+            queue.clone(),
+            storage.clone(),
+        ));
         let process_queued_email = Arc::new(ProcessQueuedEmailService::new(
             resolver,
             MiniJinjaInterpolator::new(),

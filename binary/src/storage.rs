@@ -4,6 +4,9 @@ use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
 use catapulte_domain::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
 use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
+use catapulte_domain::port::event_repository::{
+    EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
+};
 use catapulte_outbound_postgres::{PostgresAdapter, PostgresConfig};
 use catapulte_outbound_sqlite::{SqliteAdapter, SqliteConfig};
 
@@ -31,6 +34,18 @@ impl EventPublisher for StorageAdapter {
         match self {
             Self::Sqlite(a) => a.publish(event).await,
             Self::Postgres(a) => a.publish(event).await,
+        }
+    }
+}
+
+impl EventRepository for StorageAdapter {
+    async fn list_events(
+        &self,
+        params: ListEventsParams,
+    ) -> Result<Vec<EventRecord>, EventRepositoryError> {
+        match self {
+            Self::Sqlite(a) => a.list_events(params).await,
+            Self::Postgres(a) => a.list_events(params).await,
         }
     }
 }

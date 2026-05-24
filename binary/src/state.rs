@@ -25,7 +25,7 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
 
 #[derive(Clone)]
 pub(crate) struct AppState {
-    pub(crate) submit_email: Arc<SubmitEmailService<StorageAdapter, QueueAdapter>>,
+    pub(crate) submit_email: Arc<SubmitEmailService<StorageAdapter, QueueAdapter, StorageAdapter>>,
     pub(crate) process_queued_email: Arc<ProcessService>,
     pub(crate) storage: StorageAdapter,
     pub(crate) queue: QueueAdapter,
