@@ -239,6 +239,7 @@ dependencies = [
  "catapulte-inbound-worker",
  "catapulte-outbound-interpolator",
  "catapulte-outbound-mjml",
+ "catapulte-outbound-queue-memory",
  "catapulte-outbound-resolver",
  "catapulte-outbound-smtp",
  "catapulte-outbound-sqlite",
