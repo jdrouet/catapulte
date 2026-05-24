@@ -155,8 +155,8 @@ mod tests {
             Ok(())
         }
 
-        async fn dequeue(&self) -> Result<Option<(EmailId, Envelope)>, EmailQueueError> {
-            Ok(None)
+        async fn dequeue(&self) -> Result<(EmailId, Envelope), EmailQueueError> {
+            std::future::pending().await
         }
     }
 
@@ -170,8 +170,8 @@ mod tests {
             })
         }
 
-        async fn dequeue(&self) -> Result<Option<(EmailId, Envelope)>, EmailQueueError> {
-            Ok(None)
+        async fn dequeue(&self) -> Result<(EmailId, Envelope), EmailQueueError> {
+            std::future::pending().await
         }
     }
 

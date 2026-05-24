@@ -73,6 +73,22 @@ fn parse_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<(EmailId, Envelope
     Ok((id, envelope))
 }
 
+impl SqliteAdapter {
+    async fn try_dequeue(&self) -> Result<Option<(EmailId, Envelope)>, EmailQueueError> {
+        let maybe_row = sqlx::query(DEQUEUE_SQL)
+            .fetch_optional(self.pool())
+            .await
+            .context("querying email queue")
+            .map_err(|source| EmailQueueError::Storage { source })?;
+
+        maybe_row
+            .as_ref()
+            .map(parse_row)
+            .transpose()
+            .map_err(|source| EmailQueueError::Storage { source })
+    }
+}
+
 impl EmailQueue for SqliteAdapter {
     async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
         use anyhow::Context;
@@ -91,18 +107,13 @@ impl EmailQueue for SqliteAdapter {
         Ok(())
     }
 
-    async fn dequeue(&self) -> Result<Option<(EmailId, Envelope)>, EmailQueueError> {
-        let maybe_row = sqlx::query(DEQUEUE_SQL)
-            .fetch_optional(self.pool())
-            .await
-            .context("querying email queue")
-            .map_err(|source| EmailQueueError::Storage { source })?;
-
-        maybe_row
-            .as_ref()
-            .map(parse_row)
-            .transpose()
-            .map_err(|source| EmailQueueError::Storage { source })
+    async fn dequeue(&self) -> Result<(EmailId, Envelope), EmailQueueError> {
+        loop {
+            if let Some(item) = self.try_dequeue().await? {
+                return Ok(item);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 }
 
@@ -140,10 +151,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dequeue_returns_none_when_empty() {
+    async fn try_dequeue_returns_none_when_empty() {
         let adapter = fresh_adapter().await;
-        let result = adapter.dequeue().await.unwrap();
-        assert!(result.is_none());
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn try_dequeue_skips_sent_email() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+        adapter.publish(&LifecycleEvent::Sent { id }).await.unwrap();
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -152,21 +171,24 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let result = adapter.dequeue().await.unwrap();
-        assert!(result.is_some());
-        let (returned_id, _) = result.unwrap();
+        let (returned_id, _) = adapter.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
     }
 
     #[tokio::test]
-    async fn dequeue_skips_sent_email() {
+    async fn dequeue_skips_sent_email_and_returns_next() {
         let adapter = fresh_adapter().await;
-        let id = EmailId::default();
-        save_and_enqueue(&adapter, id).await;
-        adapter.publish(&LifecycleEvent::Sent { id }).await.unwrap();
+        let id1 = EmailId::default();
+        let id2 = EmailId::default();
+        save_and_enqueue(&adapter, id1).await;
+        save_and_enqueue(&adapter, id2).await;
+        adapter
+            .publish(&LifecycleEvent::Sent { id: id1 })
+            .await
+            .unwrap();
 
-        let result = adapter.dequeue().await.unwrap();
-        assert!(result.is_none());
+        let (returned_id, _) = adapter.dequeue().await.unwrap();
+        assert_eq!(returned_id, id2);
     }
 
     #[tokio::test]
@@ -176,9 +198,7 @@ mod tests {
         adapter.save(id, &sample_envelope()).await.unwrap();
         adapter.enqueue(id, &sample_envelope()).await.unwrap();
 
-        let result = adapter.dequeue().await.unwrap();
-        assert!(result.is_some());
-        let (returned_id, _) = result.unwrap();
+        let (returned_id, _) = adapter.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
     }
 }

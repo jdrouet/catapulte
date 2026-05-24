@@ -21,5 +21,5 @@ pub trait EmailQueue {
 
     fn dequeue(
         &self,
-    ) -> impl std::future::Future<Output = Result<Option<(EmailId, Envelope)>, EmailQueueError>> + Send;
+    ) -> impl std::future::Future<Output = Result<(EmailId, Envelope), EmailQueueError>> + Send;
 }
