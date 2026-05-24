@@ -397,6 +397,145 @@ async fn lifecycle_events_endpoint_returns_queued_and_sent() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn list_endpoints_return_submitted_email() {
+    let mailpit = start_mailpit().await;
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_list.db");
+    let http_port = free_port();
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+        },
+        smtp: base_smtp(smtp_port),
+        resolver: base_resolver(),
+        worker: WorkerConfig {},
+        queue: QueueBackendConfig::Storage,
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+
+    // wait for server to be up
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // submit an email and capture its id
+    let resp = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&serde_json::json!({
+            "sender": "sender@example.com",
+            "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+            "body": { "kind": "plain", "text": "Hello list endpoints!" },
+            "variables": {}
+        }))
+        .send()
+        .await
+        .expect("POST /emails failed");
+    assert!(
+        resp.status().is_success(),
+        "unexpected status: {}",
+        resp.status()
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let id = body["id"].as_str().expect("id field missing").to_owned();
+
+    // wait for mailpit to receive the email
+    let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
+    for _ in 0..100 {
+        if let Ok(body) = client
+            .get(&messages_url)
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            && body["messages"].as_array().is_some_and(|a| !a.is_empty())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // GET /events -> 200, non-empty
+    let resp = client
+        .get(format!("http://127.0.0.1:{http_port}/events"))
+        .send()
+        .await
+        .expect("GET /events failed");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["events"].as_array().is_some_and(|a| !a.is_empty()),
+        "expected non-empty events array"
+    );
+
+    // GET /events?email_id={id} -> all events have email_id == id
+    let resp = client
+        .get(format!("http://127.0.0.1:{http_port}/events?email_id={id}"))
+        .send()
+        .await
+        .expect("GET /events?email_id failed");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let events = body["events"].as_array().expect("events array");
+    for event in events {
+        assert_eq!(
+            event["email_id"].as_str(),
+            Some(id.as_str()),
+            "event email_id mismatch"
+        );
+    }
+
+    // GET /emails -> 200, contains entry with id == submitted id
+    let resp = client
+        .get(format!("http://127.0.0.1:{http_port}/emails"))
+        .send()
+        .await
+        .expect("GET /emails failed");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let emails = body["emails"].as_array().expect("emails array");
+    assert!(
+        emails.iter().any(|e| e["id"].as_str() == Some(id.as_str())),
+        "submitted email id not found in GET /emails response"
+    );
+
+    // GET /emails?id={id} -> exactly one entry
+    let resp = client
+        .get(format!("http://127.0.0.1:{http_port}/emails?id={id}"))
+        .send()
+        .await
+        .expect("GET /emails?id failed");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let emails = body["emails"].as_array().expect("emails array");
+    assert_eq!(emails.len(), 1, "expected exactly one email for id filter");
+    assert_eq!(emails[0]["id"].as_str(), Some(id.as_str()));
+}
+
+#[tokio::test]
 async fn submit_email_postgres_storage_nats_queue_is_delivered() {
     let mailpit = start_mailpit().await;
     let pg = start_postgres().await;
