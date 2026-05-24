@@ -9,17 +9,30 @@ impl EventPublisher for SqliteAdapter {
     ///
     /// Returns `EventPublisherError::Publish` when the database insert fails.
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-        let (email_id_bytes, event_type, payload) = match event {
-            LifecycleEvent::Sent { id } => {
-                (id.as_uuid().as_bytes().to_vec(), "sent", None::<String>)
-            }
+        let (email_id_uuid, event_type, payload) = match event {
+            LifecycleEvent::Queued { id } => (id.as_uuid(), "queued", None),
+            LifecycleEvent::Sending { id, attempt } => (
+                id.as_uuid(),
+                "sending",
+                Some(serde_json::json!({ "attempt": attempt })),
+            ),
+            LifecycleEvent::Sent { id } => (id.as_uuid(), "sent", None),
+            LifecycleEvent::Retrying {
+                id,
+                attempt,
+                reason,
+            } => (
+                id.as_uuid(),
+                "retrying",
+                Some(serde_json::json!({ "attempt": attempt, "reason": reason })),
+            ),
             LifecycleEvent::Failed { id, reason } => (
-                id.as_uuid().as_bytes().to_vec(),
+                id.as_uuid(),
                 "failed",
-                Some(reason.clone()),
+                Some(serde_json::json!({ "reason": reason })),
             ),
         };
-
+        let email_id_bytes = email_id_uuid.as_bytes().to_vec();
         let event_id_bytes = uuid::Uuid::now_v7().as_bytes().to_vec();
 
         sqlx::query(
@@ -28,7 +41,7 @@ impl EventPublisher for SqliteAdapter {
         .bind(event_id_bytes)
         .bind(email_id_bytes)
         .bind(event_type)
-        .bind(payload)
+        .bind(payload.as_ref().map(sqlx::types::Json))
         .execute(self.pool())
         .await
         .context("inserting lifecycle event")
@@ -90,10 +103,74 @@ mod tests {
             .unwrap();
         assert_eq!(event_type, "failed");
 
-        let payload: Option<String> = sqlx::query_scalar("SELECT payload FROM lifecycle_events")
+        let payload: Option<sqlx::types::Json<serde_json::Value>> =
+            sqlx::query_scalar("SELECT payload FROM lifecycle_events")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        assert_eq!(payload.unwrap().0["reason"], "smtp error");
+    }
+
+    #[tokio::test]
+    async fn publish_queued_inserts_row_with_event_type_queued_and_null_payload() {
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+        adapter
+            .publish(&LifecycleEvent::Queued { id })
+            .await
+            .unwrap();
+
+        let event_type: String = sqlx::query_scalar("SELECT event_type FROM lifecycle_events")
             .fetch_one(adapter.pool())
             .await
             .unwrap();
-        assert_eq!(payload.as_deref(), Some("smtp error"));
+        assert_eq!(event_type, "queued");
+
+        let payload: Option<sqlx::types::Json<serde_json::Value>> =
+            sqlx::query_scalar("SELECT payload FROM lifecycle_events")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        assert!(payload.is_none());
+    }
+
+    #[tokio::test]
+    async fn publish_sending_includes_attempt_in_payload() {
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+        adapter
+            .publish(&LifecycleEvent::Sending { id, attempt: 2 })
+            .await
+            .unwrap();
+
+        let payload: Option<sqlx::types::Json<serde_json::Value>> =
+            sqlx::query_scalar("SELECT payload FROM lifecycle_events")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        assert_eq!(payload.unwrap().0["attempt"], 2);
+    }
+
+    #[tokio::test]
+    async fn publish_retrying_includes_attempt_and_reason_in_payload() {
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+        adapter
+            .publish(&LifecycleEvent::Retrying {
+                id,
+                attempt: 1,
+                reason: "timeout".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let payload: Option<sqlx::types::Json<serde_json::Value>> =
+            sqlx::query_scalar("SELECT payload FROM lifecycle_events")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        let p = payload.unwrap().0;
+        assert_eq!(p["attempt"], 1);
+        assert_eq!(p["reason"], "timeout");
     }
 }
