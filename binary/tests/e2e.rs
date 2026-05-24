@@ -8,6 +8,9 @@ use catapulte_inbound_worker::worker::WorkerConfig;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
 use catapulte_outbound_smtp::sender::{SmtpConfig, SmtpTls};
 use catapulte_outbound_sqlite::SqliteConfig;
+use testcontainers::GenericImage;
+use testcontainers::core::{IntoContainerPort, WaitFor};
+use testcontainers::runners::AsyncRunner;
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -17,48 +20,18 @@ fn free_port() -> u16 {
         .port()
 }
 
-struct MailpitGuard {
-    smtp_port: u16,
-    api_port: u16,
-    child: std::process::Child,
-}
-
-impl MailpitGuard {
-    fn start() -> Self {
-        let smtp_port = free_port();
-        let api_port = free_port();
-        let child = std::process::Command::new("mailpit")
-            .args([
-                "--smtp",
-                &format!("127.0.0.1:{smtp_port}"),
-                "--listen",
-                &format!("127.0.0.1:{api_port}"),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("mailpit not found in PATH; install with: cargo binstall mailpit");
-        Self {
-            smtp_port,
-            api_port,
-            child,
-        }
-    }
-
-    fn api_base(&self) -> String {
-        format!("http://127.0.0.1:{}", self.api_port)
-    }
-}
-
-impl Drop for MailpitGuard {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-    }
-}
-
 #[tokio::test]
 async fn submit_plain_email_is_delivered_via_mailpit() {
-    let mailpit = MailpitGuard::start();
+    let mailpit = GenericImage::new("axllent/mailpit", "latest")
+        .with_exposed_port(1025.tcp())
+        .with_exposed_port(8025.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("[http] accessible via"))
+        .start()
+        .await
+        .expect("failed to start mailpit container; ensure Docker is running");
+
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
 
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("catapulte_e2e.db");
@@ -75,7 +48,7 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
         },
         smtp: SmtpConfig {
             host: "127.0.0.1".to_owned(),
-            port: mailpit.smtp_port,
+            port: smtp_port,
             username: None,
             password: None,
             tls: SmtpTls::None,
@@ -94,7 +67,7 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
 
     let client = reqwest::Client::new();
 
-    // Wait for catapulte to be ready (any HTTP response means it's up)
+    // Wait for catapulte HTTP to be ready (any response means server is up)
     for _ in 0..100 {
         if client
             .post(format!("http://127.0.0.1:{http_port}/emails"))
@@ -103,15 +76,6 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
             .await
             .is_ok()
         {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    // Wait for mailpit API to be ready
-    let messages_url = format!("{}/api/v1/messages", mailpit.api_base());
-    for _ in 0..100 {
-        if client.get(&messages_url).send().await.is_ok() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -136,20 +100,22 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
         resp.status()
     );
 
-    // Poll mailpit until the email appears
+    // Poll mailpit until the email appears (worker processes asynchronously)
+    let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
     let mut delivered = false;
     for _ in 0..100 {
-        let body: serde_json::Value = client
+        if let Ok(body) = client
             .get(&messages_url)
             .send()
             .await
             .unwrap()
-            .json()
+            .json::<serde_json::Value>()
             .await
-            .unwrap();
-        if body["messages"].as_array().is_some_and(|a| !a.is_empty()) {
-            delivered = true;
-            break;
+        {
+            if body["messages"].as_array().is_some_and(|a| !a.is_empty()) {
+                delivered = true;
+                break;
+            }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
