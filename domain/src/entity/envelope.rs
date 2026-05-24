@@ -1,6 +1,7 @@
 use crate::entity::body::BodySource;
 use crate::entity::email::RecipientKind;
 
+#[derive(Clone)]
 pub struct Envelope {
     pub idempotency_key: Option<String>,
     pub sender: String,

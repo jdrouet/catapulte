@@ -234,6 +234,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "catapulte-outbound-queue-memory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "catapulte-domain",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "catapulte-outbound-resolver"
 version = "0.1.0"
 dependencies = [

@@ -5,6 +5,7 @@ members = [
     "adapter/inbound-worker",
     "adapter/outbound-interpolator",
     "adapter/outbound-mjml",
+    "adapter/outbound-queue-memory",
     "adapter/outbound-resolver",
     "adapter/outbound-smtp",
     "adapter/outbound-sqlite",
