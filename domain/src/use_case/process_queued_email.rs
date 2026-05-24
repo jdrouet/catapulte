@@ -58,6 +58,7 @@ where
         // TODO: persist failures, emit lifecycle events, requeue retryable errors.
         let Envelope {
             sender,
+            subject,
             recipients,
             body,
             variables,
@@ -66,7 +67,9 @@ where
         let resolved = self.resolver.resolve(body).await?;
         let interpolated = self.interpolator.interpolate(resolved, &variables)?;
         let rendered = self.renderer.render(interpolated)?;
-        self.sender.send(&sender, &recipients, &rendered).await?;
+        self.sender
+            .send(&sender, subject.as_deref(), &recipients, &rendered)
+            .await?;
         Ok(())
     }
 }
@@ -191,6 +194,7 @@ mod tests {
         async fn send(
             &self,
             _sender: &str,
+            _subject: Option<&str>,
             _recipients: &[(RecipientKind, String)],
             _body: &RenderedBody,
         ) -> Result<(), SendError> {
@@ -204,6 +208,7 @@ mod tests {
         async fn send(
             &self,
             _sender: &str,
+            _subject: Option<&str>,
             _recipients: &[(RecipientKind, String)],
             _body: &RenderedBody,
         ) -> Result<(), SendError> {
@@ -216,6 +221,7 @@ mod tests {
     fn default_envelope(body: BodySource) -> Envelope {
         Envelope {
             idempotency_key: None,
+            subject: None,
             sender: "sender@example.com".into(),
             recipients: vec![(RecipientKind::To, "to@example.com".into())],
             body,
@@ -226,6 +232,7 @@ mod tests {
     fn default_envelope_with_vars(body: BodySource, variables: Map<String, Value>) -> Envelope {
         Envelope {
             idempotency_key: None,
+            subject: None,
             sender: "sender@example.com".into(),
             recipients: vec![(RecipientKind::To, "to@example.com".into())],
             body,

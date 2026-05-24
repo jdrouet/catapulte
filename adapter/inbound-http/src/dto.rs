@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize, Serializer};
 pub struct SubmitEmailRequest {
     #[serde(default)]
     pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub subject: Option<String>,
     pub sender: String,
     pub recipients: Vec<RecipientDto>,
     pub body: BodyDto,
@@ -82,6 +84,7 @@ impl SubmitEmailRequest {
         let body = self.body.try_into()?;
         Ok(Envelope {
             idempotency_key: self.idempotency_key,
+            subject: self.subject,
             sender: self.sender,
             recipients,
             body,

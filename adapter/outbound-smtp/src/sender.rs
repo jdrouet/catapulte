@@ -79,8 +79,13 @@ fn apply_recipients(
 
 fn finalize_message(
     builder: lettre::message::MessageBuilder,
+    subject: Option<&str>,
     body: &RenderedBody,
 ) -> Result<Message, SendError> {
+    let builder = match subject {
+        Some(s) => builder.subject(s),
+        None => builder,
+    };
     let msg = match (body.text(), body.html()) {
         (Some(text), Some(html)) => builder.multipart(
             MultiPart::alternative()
@@ -192,12 +197,13 @@ impl EmailSender for SmtpSender {
     async fn send(
         &self,
         sender: &str,
+        subject: Option<&str>,
         recipients: &[(RecipientKind, String)],
         body: &RenderedBody,
     ) -> Result<(), SendError> {
         let from = parse_mailbox(sender)?;
         let builder = apply_recipients(Message::builder().from(from), recipients)?;
-        let message = finalize_message(builder, body)?;
+        let message = finalize_message(builder, subject, body)?;
         self.transport
             .send(message)
             .await
@@ -307,7 +313,7 @@ mod tests {
         let builder = lettre::Message::builder()
             .from("from@example.com".parse::<Address>().unwrap().into())
             .to("to@example.com".parse::<Address>().unwrap().into());
-        assert!(finalize_message(builder, &body).is_ok());
+        assert!(finalize_message(builder, Some("Test Subject"), &body).is_ok());
     }
 
     #[test]
@@ -318,7 +324,7 @@ mod tests {
         let builder = lettre::Message::builder()
             .from("from@example.com".parse::<Address>().unwrap().into())
             .to("to@example.com".parse::<Address>().unwrap().into());
-        assert!(finalize_message(builder, &body).is_ok());
+        assert!(finalize_message(builder, None, &body).is_ok());
     }
 
     #[test]
@@ -330,7 +336,7 @@ mod tests {
         let builder = lettre::Message::builder()
             .from("from@example.com".parse::<Address>().unwrap().into())
             .to("to@example.com".parse::<Address>().unwrap().into());
-        assert!(finalize_message(builder, &body).is_ok());
+        assert!(finalize_message(builder, Some("Test Subject"), &body).is_ok());
     }
 
     #[test]

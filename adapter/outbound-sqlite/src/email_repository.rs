@@ -17,11 +17,12 @@ impl EmailRepository for SqliteAdapter {
         let recipients_dto = recipients_to_dto(&envelope.recipients);
 
         sqlx::query(
-            "INSERT INTO emails (id, idempotency_key, sender, recipients, body, variables) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO emails (id, idempotency_key, subject, sender, recipients, body, variables) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id_bytes)
         .bind(envelope.idempotency_key.as_deref())
+        .bind(envelope.subject.as_deref())
         .bind(&envelope.sender)
         .bind(Json(&recipients_dto))
         .bind(Json(&body_dto))
@@ -53,6 +54,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![],
             body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),

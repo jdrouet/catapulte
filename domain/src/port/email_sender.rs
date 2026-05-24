@@ -19,6 +19,7 @@ pub trait EmailSender {
     fn send(
         &self,
         sender: &str,
+        subject: Option<&str>,
         recipients: &[(RecipientKind, String)],
         body: &RenderedBody,
     ) -> impl std::future::Future<Output = Result<(), SendError>> + Send;

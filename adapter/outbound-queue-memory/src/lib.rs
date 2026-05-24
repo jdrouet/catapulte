@@ -73,6 +73,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![(RecipientKind::To, "to@example.com".to_owned())],
             body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),

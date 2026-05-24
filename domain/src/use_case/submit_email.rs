@@ -87,6 +87,7 @@ mod tests {
     fn make_envelope(sender: &str) -> Envelope {
         Envelope {
             idempotency_key: None,
+            subject: None,
             sender: sender.into(),
             recipients: vec![(RecipientKind::To, "to@example.com".into())],
             body: crate::entity::body::BodySource::Plain(

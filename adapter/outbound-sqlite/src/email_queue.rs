@@ -22,13 +22,16 @@ fn parse_body(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<BodySource> {
     BodySource::try_from(body.0).context("deserializing body")
 }
 
-fn parse_scalars(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<(Option<String>, String)> {
+fn parse_scalars(
+    row: &sqlx::sqlite::SqliteRow,
+) -> anyhow::Result<(Option<String>, Option<String>, String)> {
     use sqlx::Row;
     let idempotency_key = row
         .try_get("idempotency_key")
         .context("reading idempotency_key")?;
+    let subject = row.try_get("subject").context("reading subject")?;
     let sender = row.try_get("sender").context("reading sender")?;
-    Ok((idempotency_key, sender))
+    Ok((idempotency_key, subject, sender))
 }
 
 fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<Envelope> {
@@ -38,9 +41,10 @@ fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<Envelope> {
         row.try_get("recipients").context("reading recipients")?;
     let variables: sqlx::types::Json<serde_json::Map<String, serde_json::Value>> =
         row.try_get("variables").context("reading variables")?;
-    let (idempotency_key, sender) = parse_scalars(row)?;
+    let (idempotency_key, subject, sender) = parse_scalars(row)?;
     Ok(Envelope {
         idempotency_key,
+        subject,
         sender,
         recipients: recipients_from_dto(recipients.0),
         body,
@@ -93,7 +97,7 @@ impl SqliteAdapter {
             .map_err(|source| EmailQueueError::Storage { source })?;
 
         let maybe_row = sqlx::query(
-            "SELECT id, idempotency_key, sender, recipients, body, variables FROM emails WHERE id = ?",
+            "SELECT id, idempotency_key, subject, sender, recipients, body, variables FROM emails WHERE id = ?",
         )
         .bind(&email_id_bytes)
         .fetch_optional(self.pool())
@@ -167,6 +171,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![],
             body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
