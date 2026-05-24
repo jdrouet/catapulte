@@ -136,35 +136,20 @@ impl EmailQueue for NatsAdapter {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::OnceLock;
     use std::time::Duration;
 
     use catapulte_domain::entity::body::{BodySource, Plain};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::port::email_queue::EmailQueue;
+    use testcontainers::GenericImage;
+    use testcontainers::ImageExt;
+    use testcontainers::core::WaitFor;
+    use testcontainers::runners::AsyncRunner;
 
     use crate::{NatsAdapter, NatsConfig};
 
-    /// Shared adapter for the test suite. A single NATS container is started
-    /// once and reused across all tests in the process to avoid concurrent
-    /// container startup races.
-    static ADAPTER_URL: OnceLock<String> = OnceLock::new();
-    static INIT: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
-
-    async fn shared_url() -> String {
-        // Serialize initialization so concurrent tests don't each try to start a container.
-        let guard = INIT.lock().unwrap();
-        if let Some(url) = ADAPTER_URL.get() {
-            drop(guard);
-            return url.clone();
-        }
-
-        use testcontainers::GenericImage;
-        use testcontainers::ImageExt;
-        use testcontainers::core::WaitFor;
-        use testcontainers::runners::AsyncRunner;
-
+    async fn fresh_adapter() -> (NatsAdapter, testcontainers::ContainerAsync<GenericImage>) {
         let nats = GenericImage::new("nats", "2-alpine")
             .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
             .with_cmd(["--js".to_owned()])
@@ -173,30 +158,19 @@ mod tests {
             .expect("failed to start NATS container; ensure Docker is running");
 
         let port = nats.get_host_port_ipv4(4222).await.unwrap();
-        std::mem::forget(nats);
-
-        let url = format!("nats://127.0.0.1:{port}");
-        let _ = ADAPTER_URL.set(url.clone());
-        drop(guard);
-        url
-    }
-
-    async fn fresh_adapter() -> NatsAdapter {
-        let url = shared_url().await;
-        // Each test gets a unique stream/subject/consumer so they don't interfere.
-        let id = uuid::Uuid::now_v7().to_string().replace('-', "");
-        NatsConfig {
-            url,
-            stream: format!("TEST_{id}"),
-            subject: format!("test.{id}.queued"),
-            consumer: format!("worker-{id}"),
+        let adapter = NatsConfig {
+            url: format!("nats://127.0.0.1:{port}"),
+            stream: "TEST".to_owned(),
+            subject: "test.queued".to_owned(),
+            consumer: "worker".to_owned(),
             ack_wait_secs: 3,
             max_deliver: 3,
             backoff_secs: vec![1, 2, 3],
         }
         .build()
         .await
-        .expect("failed to build NATS adapter")
+        .expect("failed to build NATS adapter");
+        (adapter, nats)
     }
 
     fn sample_envelope() -> Envelope {
@@ -212,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn enqueue_then_dequeue_returns_same_id_and_envelope() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _nats) = fresh_adapter().await;
         let id = EmailId::default();
         let envelope = sample_envelope();
 
@@ -231,7 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn dequeue_returns_attempt_one_on_first_delivery() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _nats) = fresh_adapter().await;
         let id = EmailId::default();
         let envelope = sample_envelope();
 
@@ -248,7 +222,7 @@ mod tests {
 
     #[tokio::test]
     async fn ack_removes_message() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _nats) = fresh_adapter().await;
         let id = EmailId::default();
         let envelope = sample_envelope();
 
@@ -261,7 +235,6 @@ mod tests {
 
         adapter.ack(token).await.unwrap();
 
-        // After ack, a second dequeue should find no message and time out.
         let result = tokio::time::timeout(Duration::from_secs(8), adapter.dequeue()).await;
         assert!(result.is_err(), "expected dequeue to time out after ack");
     }
