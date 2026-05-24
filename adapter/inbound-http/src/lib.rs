@@ -8,6 +8,7 @@ use anyhow::Context;
 use axum::Router;
 use axum::routing::get;
 use axum::routing::post;
+use catapulte_domain::port::email_repository::EmailRepository;
 use catapulte_domain::port::event_repository::EventRepository;
 use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 use tower_http::trace::TraceLayer;
@@ -15,11 +16,16 @@ use tower_http::trace::TraceLayer;
 pub trait HttpServerState: Clone + Send + Sync + 'static {
     fn submit_email(&self) -> &impl SubmitEmailUseCase;
     fn event_repository(&self) -> &impl EventRepository;
+    fn email_repository(&self) -> &impl EmailRepository;
 }
 
 pub fn router<S: HttpServerState>(state: S) -> Router {
     Router::new()
-        .route("/emails", post(crate::routes::emails::submit_email::<S>))
+        .route(
+            "/emails",
+            post(crate::routes::emails::submit_email::<S>)
+                .get(crate::routes::emails::list_emails::<S>),
+        )
         .route(
             "/emails/{id}/events",
             get(crate::routes::events::list_events_for_email::<S>),

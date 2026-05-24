@@ -39,6 +39,10 @@ impl HttpServerState for AppState {
     fn event_repository(&self) -> &impl catapulte_domain::port::event_repository::EventRepository {
         &self.storage
     }
+
+    fn email_repository(&self) -> &impl catapulte_domain::port::email_repository::EmailRepository {
+        &self.storage
+    }
 }
 
 impl WorkerState for AppState {

@@ -426,8 +426,8 @@ mod tests {
         let id1 = uuid::Uuid::now_v7();
         let id2 = uuid::Uuid::now_v7();
         let env = sample_envelope();
-        let body_dto = catapulte_outbound_postgres::dto::BodySourceDto::from(&env.body);
-        let recip_dto = catapulte_outbound_postgres::dto::recipients_to_dto(&env.recipients);
+        let body_dto = crate::dto::BodySourceDto::from(&env.body);
+        let recip_dto = crate::dto::recipients_to_dto(&env.recipients);
 
         sqlx::query(
             "INSERT INTO emails (id, sender, recipients, body, variables, created_at) VALUES ($1, $2, $3, $4, $5, $6)",

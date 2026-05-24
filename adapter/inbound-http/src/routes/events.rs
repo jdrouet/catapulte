@@ -97,6 +97,9 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
+    use catapulte_domain::port::email_repository::{
+        EmailRecord, EmailRepository, EmailRepositoryError, ListEmailsParams, SaveResult,
+    };
     use catapulte_domain::port::event_repository::{
         EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
     };
@@ -171,9 +174,31 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct FakeEmailRepository;
+
+    #[allow(async_fn_in_trait)]
+    impl EmailRepository for FakeEmailRepository {
+        async fn save(
+            &self,
+            id: EmailId,
+            _envelope: &Envelope,
+        ) -> Result<SaveResult, EmailRepositoryError> {
+            Ok(SaveResult::Created(id))
+        }
+
+        async fn list_emails(
+            &self,
+            _params: ListEmailsParams,
+        ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
+            Ok(vec![])
+        }
+    }
+
+    #[derive(Clone)]
     struct TestState {
         submit: Arc<FakeSubmit>,
         event_repo: Arc<FakeEventRepository>,
+        email_repo: Arc<FakeEmailRepository>,
     }
 
     impl HttpServerState for TestState {
@@ -184,12 +209,17 @@ mod tests {
         fn event_repository(&self) -> &impl EventRepository {
             self.event_repo.as_ref()
         }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            self.email_repo.as_ref()
+        }
     }
 
     #[derive(Clone)]
     struct FailingRepoState {
         submit: Arc<FakeSubmit>,
         event_repo: Arc<FailingEventRepository>,
+        email_repo: Arc<FakeEmailRepository>,
     }
 
     impl HttpServerState for FailingRepoState {
@@ -199,6 +229,10 @@ mod tests {
 
         fn event_repository(&self) -> &impl EventRepository {
             self.event_repo.as_ref()
+        }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            self.email_repo.as_ref()
         }
     }
 
@@ -236,6 +270,7 @@ mod tests {
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: repo,
+            email_repo: Arc::new(FakeEmailRepository),
         });
         let response = app
             .oneshot(get_events(&email_id.as_uuid().to_string(), ""))
@@ -255,6 +290,7 @@ mod tests {
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: repo,
+            email_repo: Arc::new(FakeEmailRepository),
         });
         let response = app.oneshot(get_events("not-a-uuid", "")).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -267,6 +303,7 @@ mod tests {
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: repo,
+            email_repo: Arc::new(FakeEmailRepository),
         });
         app.oneshot(get_events(&valid_email_id(), "?limit=500"))
             .await
@@ -282,6 +319,7 @@ mod tests {
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: repo,
+            email_repo: Arc::new(FakeEmailRepository),
         });
         app.oneshot(get_events(&valid_email_id(), ""))
             .await
@@ -297,6 +335,7 @@ mod tests {
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: repo,
+            email_repo: Arc::new(FakeEmailRepository),
         });
         app.oneshot(get_events(&valid_email_id(), "?event_type=sent"))
             .await
@@ -310,6 +349,7 @@ mod tests {
         let app = router(FailingRepoState {
             submit: Arc::new(FakeSubmit),
             event_repo: Arc::new(FailingEventRepository),
+            email_repo: Arc::new(FakeEmailRepository),
         });
         let response = app
             .oneshot(get_events(&valid_email_id(), ""))
@@ -325,6 +365,7 @@ mod tests {
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: repo,
+            email_repo: Arc::new(FakeEmailRepository),
         });
         app.oneshot(get_all_events("")).await.unwrap();
         let params = captured.lock().unwrap();
@@ -339,6 +380,7 @@ mod tests {
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: repo,
+            email_repo: Arc::new(FakeEmailRepository),
         });
         app.oneshot(get_all_events(&format!("?email_id={uuid}")))
             .await
@@ -353,6 +395,7 @@ mod tests {
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: repo,
+            email_repo: Arc::new(FakeEmailRepository),
         });
         let response = app
             .oneshot(get_all_events("?email_id=not-a-uuid"))
@@ -368,6 +411,7 @@ mod tests {
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: repo,
+            email_repo: Arc::new(FakeEmailRepository),
         });
         app.oneshot(get_all_events("")).await.unwrap();
         let params = captured.lock().unwrap();
@@ -381,6 +425,7 @@ mod tests {
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: repo,
+            email_repo: Arc::new(FakeEmailRepository),
         });
         app.oneshot(get_all_events("?limit=999")).await.unwrap();
         let params = captured.lock().unwrap();

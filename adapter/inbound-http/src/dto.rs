@@ -251,3 +251,99 @@ pub struct ListEventsResponse {
     pub limit: u32,
     pub offset: u32,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailStatusDto {
+    Queued,
+    Sent,
+    Failed,
+}
+
+impl From<EmailStatusDto> for catapulte_domain::port::email_repository::EmailStatus {
+    fn from(s: EmailStatusDto) -> Self {
+        match s {
+            EmailStatusDto::Queued => Self::Queued,
+            EmailStatusDto::Sent => Self::Sent,
+            EmailStatusDto::Failed => Self::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListEmailsQuery {
+    #[serde(default)]
+    pub status: Option<EmailStatusDto>,
+    #[serde(default)]
+    pub after_ms: Option<i64>,
+    #[serde(default)]
+    pub before_ms: Option<i64>,
+    #[serde(default)]
+    pub recipient: Option<String>,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+pub const DEFAULT_EMAILS_LIMIT: u32 = 20;
+pub const MAX_EMAILS_LIMIT: u32 = 100;
+
+#[derive(Debug, Serialize)]
+pub struct RecipientResponseDto {
+    pub kind: String,
+    pub address: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmailRecordDto {
+    pub id: String,
+    pub idempotency_key: Option<String>,
+    pub subject: Option<String>,
+    pub sender: String,
+    pub recipients: Vec<RecipientResponseDto>,
+    pub created_at_ms: i64,
+    pub status: String,
+}
+
+impl From<catapulte_domain::port::email_repository::EmailRecord> for EmailRecordDto {
+    fn from(r: catapulte_domain::port::email_repository::EmailRecord) -> Self {
+        use catapulte_domain::entity::email::RecipientKind;
+        use catapulte_domain::port::email_repository::EmailStatus;
+        let status = match r.status {
+            EmailStatus::Queued => "queued",
+            EmailStatus::Sent => "sent",
+            EmailStatus::Failed => "failed",
+        };
+        let recipients = r
+            .recipients
+            .into_iter()
+            .map(|(kind, address)| RecipientResponseDto {
+                kind: match kind {
+                    RecipientKind::To => "to".to_owned(),
+                    RecipientKind::Cc => "cc".to_owned(),
+                    RecipientKind::Bcc => "bcc".to_owned(),
+                },
+                address,
+            })
+            .collect();
+        Self {
+            id: r.id.as_uuid().to_string(),
+            idempotency_key: r.idempotency_key,
+            subject: r.subject,
+            sender: r.sender,
+            recipients,
+            created_at_ms: r.created_at_ms,
+            status: status.to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListEmailsResponse {
+    pub emails: Vec<EmailRecordDto>,
+    pub limit: u32,
+    pub offset: u32,
+}

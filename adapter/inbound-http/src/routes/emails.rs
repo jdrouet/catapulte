@@ -1,9 +1,14 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
+use catapulte_domain::entity::email::EmailId;
+use catapulte_domain::port::email_repository::{EmailRepository, ListEmailsParams};
 use catapulte_domain::use_case::submit_email::{SubmitEmailUseCase, SubmitParams};
 
 use crate::HttpServerState;
-use crate::dto::{SubmitEmailRequest, SubmitEmailResponse};
+use crate::dto::{
+    DEFAULT_EMAILS_LIMIT, EmailRecordDto, ListEmailsQuery, ListEmailsResponse, MAX_EMAILS_LIMIT,
+    SubmitEmailRequest, SubmitEmailResponse,
+};
 use crate::error::AppError;
 
 /// # Errors
@@ -22,15 +27,62 @@ pub async fn submit_email<S: HttpServerState>(
     Ok(Json(SubmitEmailResponse { id }))
 }
 
+/// # Errors
+///
+/// Returns `AppError::InvalidEmailId` when the `id` query param is not a valid UUID.
+/// Returns `AppError::ListEmails` when the repository query fails.
+#[tracing::instrument(skip_all)]
+pub async fn list_emails<S: HttpServerState>(
+    State(state): State<S>,
+    Query(query): Query<ListEmailsQuery>,
+) -> Result<Json<ListEmailsResponse>, AppError> {
+    let id = match query.id.as_deref() {
+        Some(raw) => Some(EmailId::from(
+            uuid::Uuid::parse_str(raw).map_err(|_| AppError::InvalidEmailId)?,
+        )),
+        None => None,
+    };
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_EMAILS_LIMIT)
+        .min(MAX_EMAILS_LIMIT);
+    let offset = query.offset.unwrap_or(0);
+    let params = ListEmailsParams {
+        status: query.status.map(Into::into),
+        after_ms: query.after_ms,
+        before_ms: query.before_ms,
+        recipient: query.recipient,
+        id,
+        limit,
+        offset,
+    };
+    let emails = state
+        .email_repository()
+        .list_emails(params)
+        .await
+        .map_err(AppError::ListEmails)?
+        .into_iter()
+        .map(EmailRecordDto::from)
+        .collect();
+    Ok(Json(ListEmailsResponse {
+        emails,
+        limit,
+        offset,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::port::email_repository::EmailRepositoryError;
+    use catapulte_domain::port::email_repository::{
+        EmailRecord, EmailRepository, EmailRepositoryError, EmailStatus, ListEmailsParams,
+        SaveResult,
+    };
     use catapulte_domain::port::event_repository::{
         EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
     };
@@ -41,6 +93,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::HttpServerState;
+    use crate::dto::{DEFAULT_EMAILS_LIMIT, MAX_EMAILS_LIMIT};
     use crate::router;
 
     #[derive(Clone)]
@@ -84,9 +137,73 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct FakeEmailRepository {
+        captured_params: Arc<Mutex<Option<ListEmailsParams>>>,
+        result: Arc<Vec<EmailRecord>>,
+    }
+
+    impl FakeEmailRepository {
+        fn new() -> Self {
+            Self {
+                captured_params: Arc::new(Mutex::new(None)),
+                result: Arc::new(vec![]),
+            }
+        }
+
+        fn with_records(records: Vec<EmailRecord>) -> Self {
+            Self {
+                captured_params: Arc::new(Mutex::new(None)),
+                result: Arc::new(records),
+            }
+        }
+    }
+
+    #[allow(async_fn_in_trait)]
+    impl EmailRepository for FakeEmailRepository {
+        async fn save(
+            &self,
+            id: EmailId,
+            _envelope: &Envelope,
+        ) -> Result<SaveResult, EmailRepositoryError> {
+            Ok(SaveResult::Created(id))
+        }
+
+        async fn list_emails(
+            &self,
+            params: ListEmailsParams,
+        ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
+            *self.captured_params.lock().unwrap() = Some(params);
+            Ok((*self.result).clone())
+        }
+    }
+
+    struct FailingEmailRepository;
+
+    #[allow(async_fn_in_trait)]
+    impl EmailRepository for FailingEmailRepository {
+        async fn save(
+            &self,
+            id: EmailId,
+            _envelope: &Envelope,
+        ) -> Result<SaveResult, EmailRepositoryError> {
+            Ok(SaveResult::Created(id))
+        }
+
+        async fn list_emails(
+            &self,
+            _params: ListEmailsParams,
+        ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
+            Err(EmailRepositoryError::Storage {
+                source: anyhow::anyhow!("db down"),
+            })
+        }
+    }
+
+    #[derive(Clone)]
     struct TestState {
         submit: Arc<FakeSubmit>,
         event_repo: Arc<FakeEventRepository>,
+        email_repo: Arc<FakeEmailRepository>,
     }
 
     impl HttpServerState for TestState {
@@ -97,12 +214,17 @@ mod tests {
         fn event_repository(&self) -> &impl EventRepository {
             self.event_repo.as_ref()
         }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            self.email_repo.as_ref()
+        }
     }
 
     #[derive(Clone)]
     struct FailingTestState {
         submit: Arc<FailingSubmit>,
         event_repo: Arc<FakeEventRepository>,
+        email_repo: Arc<FakeEmailRepository>,
     }
 
     impl HttpServerState for FailingTestState {
@@ -113,12 +235,38 @@ mod tests {
         fn event_repository(&self) -> &impl EventRepository {
             self.event_repo.as_ref()
         }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            self.email_repo.as_ref()
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailingEmailRepoState {
+        submit: Arc<FakeSubmit>,
+        event_repo: Arc<FakeEventRepository>,
+        email_repo: Arc<FailingEmailRepository>,
+    }
+
+    impl HttpServerState for FailingEmailRepoState {
+        fn submit_email(&self) -> &impl SubmitEmailUseCase {
+            self.submit.as_ref()
+        }
+
+        fn event_repository(&self) -> &impl EventRepository {
+            self.event_repo.as_ref()
+        }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            self.email_repo.as_ref()
+        }
     }
 
     fn make_router() -> axum::Router {
         router(TestState {
             submit: Arc::new(FakeSubmit),
             event_repo: Arc::new(FakeEventRepository),
+            email_repo: Arc::new(FakeEmailRepository::new()),
         })
     }
 
@@ -126,6 +274,7 @@ mod tests {
         router(FailingTestState {
             submit: Arc::new(FailingSubmit),
             event_repo: Arc::new(FakeEventRepository),
+            email_repo: Arc::new(FakeEmailRepository::new()),
         })
     }
 
@@ -136,6 +285,26 @@ mod tests {
             .header("content-type", "application/json")
             .body(body.into())
             .unwrap()
+    }
+
+    fn get_emails(query: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(format!("/emails{query}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn sample_email_record() -> EmailRecord {
+        EmailRecord {
+            id: EmailId::default(),
+            idempotency_key: None,
+            subject: None,
+            sender: "sender@example.com".to_owned(),
+            recipients: vec![],
+            created_at_ms: 1000,
+            status: EmailStatus::Queued,
+        }
     }
 
     #[tokio::test]
@@ -199,6 +368,98 @@ mod tests {
             .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
             .await
             .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn list_emails_returns_200_with_emails_array() {
+        let email_repo = Arc::new(FakeEmailRepository::with_records(vec![
+            sample_email_record(),
+        ]));
+        let app = router(TestState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: Arc::new(FakeEventRepository),
+            email_repo,
+        });
+        let response = app.oneshot(get_emails("")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["emails"].as_array().is_some());
+        assert_eq!(json["emails"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_emails_with_invalid_id_returns_400() {
+        let app = make_router();
+        let response = app.oneshot(get_emails("?id=not-a-uuid")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_emails_status_filter_forwarded() {
+        let email_repo = Arc::new(FakeEmailRepository::new());
+        let captured = email_repo.captured_params.clone();
+        let app = router(TestState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: Arc::new(FakeEventRepository),
+            email_repo,
+        });
+        app.oneshot(get_emails("?status=sent")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(params.as_ref().unwrap().status, Some(EmailStatus::Sent));
+    }
+
+    #[tokio::test]
+    async fn list_emails_recipient_filter_forwarded() {
+        let email_repo = Arc::new(FakeEmailRepository::new());
+        let captured = email_repo.captured_params.clone();
+        let app = router(TestState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: Arc::new(FakeEventRepository),
+            email_repo,
+        });
+        app.oneshot(get_emails("?recipient=alice")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(params.as_ref().unwrap().recipient.as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn list_emails_caps_limit_at_max() {
+        let email_repo = Arc::new(FakeEmailRepository::new());
+        let captured = email_repo.captured_params.clone();
+        let app = router(TestState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: Arc::new(FakeEventRepository),
+            email_repo,
+        });
+        app.oneshot(get_emails("?limit=500")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(params.as_ref().unwrap().limit, MAX_EMAILS_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn list_emails_applies_default_limit() {
+        let email_repo = Arc::new(FakeEmailRepository::new());
+        let captured = email_repo.captured_params.clone();
+        let app = router(TestState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: Arc::new(FakeEventRepository),
+            email_repo,
+        });
+        app.oneshot(get_emails("")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(params.as_ref().unwrap().limit, DEFAULT_EMAILS_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn list_emails_500_when_repository_errors() {
+        let app = router(FailingEmailRepoState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: Arc::new(FakeEventRepository),
+            email_repo: Arc::new(FailingEmailRepository),
+        });
+        let response = app.oneshot(get_emails("")).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

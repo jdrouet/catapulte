@@ -448,8 +448,8 @@ mod tests {
         let id1_bytes = uuid::Uuid::now_v7().as_bytes().to_vec();
         let id2_bytes = uuid::Uuid::now_v7().as_bytes().to_vec();
         let env = sample_envelope();
-        let body_dto = catapulte_outbound_sqlite::dto::BodySourceDto::from(&env.body);
-        let recip_dto = catapulte_outbound_sqlite::dto::recipients_to_dto(&env.recipients);
+        let body_dto = crate::dto::BodySourceDto::from(&env.body);
+        let recip_dto = crate::dto::recipients_to_dto(&env.recipients);
 
         sqlx::query(
             "INSERT INTO emails (id, sender, recipients, body, variables, created_at) VALUES (?, ?, ?, ?, ?, ?)",

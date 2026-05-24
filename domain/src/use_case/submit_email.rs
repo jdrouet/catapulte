@@ -145,6 +145,13 @@ mod tests {
                 .push((id, envelope.sender.clone()));
             Ok(SaveResult::Created(id))
         }
+
+        async fn list_emails(
+            &self,
+            _params: crate::port::email_repository::ListEmailsParams,
+        ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
+            Ok(vec![])
+        }
     }
 
     struct FailingRepository;
@@ -160,6 +167,13 @@ mod tests {
                 source: anyhow::anyhow!("storage down"),
             })
         }
+
+        async fn list_emails(
+            &self,
+            _params: crate::port::email_repository::ListEmailsParams,
+        ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
+            Ok(vec![])
+        }
     }
 
     struct DuplicatingRepository {
@@ -174,6 +188,13 @@ mod tests {
             _envelope: &Envelope,
         ) -> Result<SaveResult, EmailRepositoryError> {
             Ok(SaveResult::Duplicate(self.existing_id))
+        }
+
+        async fn list_emails(
+            &self,
+            _params: crate::port::email_repository::ListEmailsParams,
+        ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
+            Ok(vec![])
         }
     }
 
