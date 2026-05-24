@@ -24,6 +24,7 @@ pub fn router<S: HttpServerState>(state: S) -> Router {
             "/emails/{id}/events",
             get(crate::routes::events::list_events_for_email::<S>),
         )
+        .route("/events", get(crate::routes::events::list_events::<S>))
         .route("/health/live", get(crate::routes::health::live))
         .route("/health/ready", get(crate::routes::health::ready))
         .layer(TraceLayer::new_for_http())

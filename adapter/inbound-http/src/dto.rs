@@ -208,6 +208,8 @@ mod tests {
 #[derive(Debug, Deserialize)]
 pub struct ListEventsQuery {
     #[serde(default)]
+    pub email_id: Option<String>,
+    #[serde(default)]
     pub event_type: Option<String>,
     #[serde(default)]
     pub after_ms: Option<i64>,

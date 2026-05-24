@@ -11,6 +11,48 @@ use crate::error::AppError;
 
 /// # Errors
 ///
+/// Returns `AppError::InvalidEmailId` when the `email_id` query param is not a valid UUID.
+/// Returns `AppError::ListEvents` when the repository query fails.
+#[tracing::instrument(skip_all)]
+pub async fn list_events<S: HttpServerState>(
+    State(state): State<S>,
+    Query(query): Query<ListEventsQuery>,
+) -> Result<Json<ListEventsResponse>, AppError> {
+    let email_id = match query.email_id.as_deref() {
+        Some(raw) => Some(EmailId::from(
+            uuid::Uuid::parse_str(raw).map_err(|_| AppError::InvalidEmailId)?,
+        )),
+        None => None,
+    };
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_EVENTS_LIMIT)
+        .min(MAX_EVENTS_LIMIT);
+    let offset = query.offset.unwrap_or(0);
+    let params = ListEventsParams {
+        email_id,
+        event_type: query.event_type,
+        after_ms: query.after_ms,
+        before_ms: query.before_ms,
+        limit,
+        offset,
+    };
+    let events = state
+        .event_repository()
+        .list_events(params)
+        .await?
+        .into_iter()
+        .map(EventRecordDto::from)
+        .collect();
+    Ok(Json(ListEventsResponse {
+        events,
+        limit,
+        offset,
+    }))
+}
+
+/// # Errors
+///
 /// Returns `AppError::InvalidEmailId` when the path segment is not a valid UUID.
 /// Returns `AppError::ListEvents` when the repository query fails.
 #[tracing::instrument(skip_all, fields(email_id = %email_id))]
@@ -172,6 +214,14 @@ mod tests {
             .unwrap()
     }
 
+    fn get_all_events(query: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(format!("/events{query}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn list_events_returns_200_with_events_array() {
         let email_id = EmailId::default();
@@ -266,5 +316,74 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn list_events_without_email_id_passes_none_to_repo() {
+        let repo = Arc::new(FakeEventRepository::new());
+        let captured = repo.captured_params.clone();
+        let app = router(TestState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: repo,
+        });
+        app.oneshot(get_all_events("")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert!(params.as_ref().unwrap().email_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_events_with_email_id_param_forwards_to_repo() {
+        let uuid = uuid::Uuid::now_v7();
+        let repo = Arc::new(FakeEventRepository::new());
+        let captured = repo.captured_params.clone();
+        let app = router(TestState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: repo,
+        });
+        app.oneshot(get_all_events(&format!("?email_id={uuid}")))
+            .await
+            .unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(params.as_ref().unwrap().email_id, Some(EmailId::from(uuid)));
+    }
+
+    #[tokio::test]
+    async fn list_events_with_invalid_email_id_query_returns_400() {
+        let repo = Arc::new(FakeEventRepository::new());
+        let app = router(TestState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: repo,
+        });
+        let response = app
+            .oneshot(get_all_events("?email_id=not-a-uuid"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_events_global_applies_default_limit() {
+        let repo = Arc::new(FakeEventRepository::new());
+        let captured = repo.captured_params.clone();
+        let app = router(TestState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: repo,
+        });
+        app.oneshot(get_all_events("")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(params.as_ref().unwrap().limit, DEFAULT_EVENTS_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn list_events_global_caps_limit_at_max() {
+        let repo = Arc::new(FakeEventRepository::new());
+        let captured = repo.captured_params.clone();
+        let app = router(TestState {
+            submit: Arc::new(FakeSubmit),
+            event_repo: repo,
+        });
+        app.oneshot(get_all_events("?limit=999")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(params.as_ref().unwrap().limit, MAX_EVENTS_LIMIT);
     }
 }
