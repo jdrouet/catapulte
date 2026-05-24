@@ -10,8 +10,27 @@ impl EventPublisher for PostgresAdapter {
     /// Returns `EventPublisherError::Publish` when the database insert fails.
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
         let (email_id_uuid, event_type, payload) = match event {
-            LifecycleEvent::Sent { id } => (id.as_uuid(), "sent", None::<String>),
-            LifecycleEvent::Failed { id, reason } => (id.as_uuid(), "failed", Some(reason.clone())),
+            LifecycleEvent::Queued { id } => (id.as_uuid(), "queued", None),
+            LifecycleEvent::Sending { id, attempt } => (
+                id.as_uuid(),
+                "sending",
+                Some(serde_json::json!({ "attempt": attempt })),
+            ),
+            LifecycleEvent::Sent { id } => (id.as_uuid(), "sent", None),
+            LifecycleEvent::Retrying {
+                id,
+                attempt,
+                reason,
+            } => (
+                id.as_uuid(),
+                "retrying",
+                Some(serde_json::json!({ "attempt": attempt, "reason": reason })),
+            ),
+            LifecycleEvent::Failed { id, reason } => (
+                id.as_uuid(),
+                "failed",
+                Some(serde_json::json!({ "reason": reason })),
+            ),
         };
 
         let event_id = uuid::Uuid::now_v7();
@@ -22,7 +41,7 @@ impl EventPublisher for PostgresAdapter {
         .bind(event_id)
         .bind(email_id_uuid)
         .bind(event_type)
-        .bind(payload.map(serde_json::Value::String))
+        .bind(payload)
         .execute(self.pool())
         .await
         .context("inserting lifecycle event")
@@ -122,8 +141,74 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(
-            payload.as_ref().and_then(|v| v.as_str()),
+            payload.as_ref().and_then(|v| v["reason"].as_str()),
             Some("smtp error")
         );
+    }
+
+    #[tokio::test]
+    async fn publish_queued_inserts_row_with_event_type_queued_and_null_payload() {
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+        adapter
+            .publish(&LifecycleEvent::Queued { id })
+            .await
+            .unwrap();
+
+        let event_type: String = sqlx::query_scalar("SELECT event_type FROM lifecycle_events")
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+        assert_eq!(event_type, "queued");
+
+        let payload: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT payload FROM lifecycle_events")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        assert!(payload.is_none());
+    }
+
+    #[tokio::test]
+    async fn publish_sending_includes_attempt_in_payload() {
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+        adapter
+            .publish(&LifecycleEvent::Sending { id, attempt: 2 })
+            .await
+            .unwrap();
+
+        let payload: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT payload FROM lifecycle_events")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            payload.as_ref().and_then(|v| v["attempt"].as_i64()),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_retrying_includes_attempt_and_reason_in_payload() {
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+        adapter
+            .publish(&LifecycleEvent::Retrying {
+                id,
+                attempt: 1,
+                reason: "timeout".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let payload: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT payload FROM lifecycle_events")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        let p = payload.unwrap();
+        assert_eq!(p["attempt"].as_i64(), Some(1));
+        assert_eq!(p["reason"].as_str(), Some("timeout"));
     }
 }
