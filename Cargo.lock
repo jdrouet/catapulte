@@ -313,6 +313,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "catapulte-outbound-postgres"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "catapulte-domain",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "testcontainers",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "catapulte-outbound-queue-memory"
 version = "0.1.0"
 dependencies = [
@@ -2465,6 +2479,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2544,6 +2559,7 @@ dependencies = [
  "stringprep",
  "thiserror",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -2581,6 +2597,7 @@ dependencies = [
  "stringprep",
  "thiserror",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -2606,6 +2623,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

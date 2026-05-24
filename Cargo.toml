@@ -8,6 +8,7 @@ members = [
     "adapter/outbound-queue-memory",
     "adapter/outbound-resolver",
     "adapter/outbound-smtp",
+    "adapter/outbound-postgres",
     "adapter/outbound-sqlite",
     "binary",
     "domain",
@@ -27,7 +28,7 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-nativ
 axum = { version = "0.8" }
 serde_json = { version = "1.0" }
 tempfile = { version = "3" }
-sqlx = { version = "0.8", default-features = false, features = ["json", "macros", "migrate", "runtime-tokio", "sqlite"] }
+sqlx = { version = "0.8", default-features = false, features = ["json", "macros", "migrate", "runtime-tokio", "sqlite", "postgres"] }
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "signal", "time"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = { version = "0.1" }

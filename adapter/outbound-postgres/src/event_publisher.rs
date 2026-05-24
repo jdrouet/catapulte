@@ -1,0 +1,129 @@
+use anyhow::Context;
+use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
+
+use crate::PostgresAdapter;
+
+impl EventPublisher for PostgresAdapter {
+    /// # Errors
+    ///
+    /// Returns `EventPublisherError::Publish` when the database insert fails.
+    async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+        let (email_id_uuid, event_type, payload) = match event {
+            LifecycleEvent::Sent { id } => (id.as_uuid(), "sent", None::<String>),
+            LifecycleEvent::Failed { id, reason } => (id.as_uuid(), "failed", Some(reason.clone())),
+        };
+
+        let event_id = uuid::Uuid::now_v7();
+
+        sqlx::query(
+            "INSERT INTO lifecycle_events (id, email_id, event_type, payload) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(event_id)
+        .bind(email_id_uuid)
+        .bind(event_type)
+        .bind(payload.map(serde_json::Value::String))
+        .execute(self.pool())
+        .await
+        .context("inserting lifecycle event")
+        .map_err(|source| EventPublisherError::Publish { source })?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use catapulte_domain::entity::body::{BodySource, Plain};
+    use catapulte_domain::entity::email::EmailId;
+    use catapulte_domain::entity::envelope::Envelope;
+    use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+    use catapulte_domain::port::email_repository::EmailRepository;
+    use catapulte_domain::port::event_publisher::EventPublisher;
+
+    use crate::PostgresAdapter;
+
+    async fn fresh_adapter() -> PostgresAdapter {
+        use testcontainers::GenericImage;
+        use testcontainers::ImageExt;
+        use testcontainers::core::WaitFor;
+        use testcontainers::runners::AsyncRunner;
+
+        let pg = GenericImage::new("postgres", "16-alpine")
+            .with_wait_for(WaitFor::message_on_stderr(
+                "database system is ready to accept connections",
+            ))
+            .with_env_var("POSTGRES_USER", "catapulte")
+            .with_env_var("POSTGRES_PASSWORD", "catapulte")
+            .with_env_var("POSTGRES_DB", "catapulte")
+            .start()
+            .await
+            .expect("failed to start postgres container; ensure Docker is running");
+
+        let port = pg.get_host_port_ipv4(5432u16).await.unwrap();
+        let url = format!("postgres://catapulte:catapulte@127.0.0.1:{port}/catapulte");
+        let adapter = PostgresAdapter::connect(&url).await.unwrap();
+        adapter.migrate().await.unwrap();
+        std::mem::forget(pg);
+        adapter
+    }
+
+    fn sample_envelope() -> Envelope {
+        Envelope {
+            idempotency_key: None,
+            subject: None,
+            sender: "sender@example.com".to_owned(),
+            recipients: vec![],
+            body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
+            variables: serde_json::Map::new(),
+        }
+    }
+
+    async fn adapter_with_email(id: EmailId) -> PostgresAdapter {
+        let adapter = fresh_adapter().await;
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        adapter
+    }
+
+    #[tokio::test]
+    async fn publish_sent_inserts_row() {
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+        adapter.publish(&LifecycleEvent::Sent { id }).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM lifecycle_events")
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn publish_failed_inserts_row_with_reason() {
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id,
+                reason: "smtp error".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let event_type: String = sqlx::query_scalar("SELECT event_type FROM lifecycle_events")
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+        assert_eq!(event_type, "failed");
+
+        let payload: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT payload FROM lifecycle_events")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            payload.as_ref().and_then(|v| v.as_str()),
+            Some("smtp error")
+        );
+    }
+}
