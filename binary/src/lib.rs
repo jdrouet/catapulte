@@ -9,15 +9,16 @@ use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
 use catapulte_outbound_smtp::sender::SmtpConfig;
-use catapulte_outbound_sqlite::SqliteConfig;
 
 pub mod queue;
 mod state;
+pub mod storage;
 
 use state::AppState;
+use storage::StorageBackendConfig;
 
 pub struct AppConfig {
-    pub sqlite: SqliteConfig,
+    pub storage: StorageBackendConfig,
     pub http: InboundHttpConfig,
     pub smtp: SmtpConfig,
     pub resolver: TemplateResolverConfig,
@@ -30,7 +31,7 @@ impl AppConfig {
     ///
     /// Returns an error when any sub-config cannot be loaded from environment variables.
     pub fn from_env() -> anyhow::Result<Self> {
-        let sqlite = SqliteConfig::from_env("CATAPULTE_SQLITE").context("loading sqlite config")?;
+        let storage = StorageBackendConfig::from_env().context("loading storage config")?;
         let http = InboundHttpConfig::from_env("CATAPULTE_HTTP").context("loading http config")?;
         let smtp = SmtpConfig::from_env("CATAPULTE_SMTP").context("loading smtp config")?;
         let resolver = TemplateResolverConfig::from_env("CATAPULTE_RESOLVER")
@@ -39,7 +40,7 @@ impl AppConfig {
         let queue = queue::QueueBackendConfig::from_env("CATAPULTE_QUEUE")
             .context("loading queue backend config")?;
         Ok(Self {
-            sqlite,
+            storage,
             http,
             smtp,
             resolver,
@@ -52,17 +53,13 @@ impl AppConfig {
     ///
     /// Returns an error when an adapter fails to build.
     pub async fn build(self) -> anyhow::Result<Application> {
-        let sqlite = self
-            .sqlite
+        let storage = self
+            .storage
             .build()
             .await
-            .context("building sqlite adapter")?;
-        sqlite
-            .migrate()
-            .await
-            .context("running sqlite migrations")?;
+            .context("building storage adapter")?;
 
-        let queue = self.queue.build(&sqlite);
+        let queue = self.queue.build(&storage);
 
         let smtp = self.smtp.build().context("building smtp sender")?;
         let resolver = self
@@ -70,7 +67,7 @@ impl AppConfig {
             .build()
             .context("building template resolver")?;
 
-        let submit_email = Arc::new(SubmitEmailService::new(sqlite.clone(), queue.clone()));
+        let submit_email = Arc::new(SubmitEmailService::new(storage.clone(), queue.clone()));
         let process_queued_email = Arc::new(ProcessQueuedEmailService::new(
             resolver,
             MiniJinjaInterpolator::new(),
@@ -81,7 +78,7 @@ impl AppConfig {
         let state = AppState {
             submit_email,
             process_queued_email,
-            sqlite,
+            storage,
             queue,
         };
         let server = self.http.build();

@@ -1,12 +1,16 @@
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::port::email_queue::{EmailQueue, EmailQueueError};
+use catapulte_outbound_postgres::PostgresAdapter;
 use catapulte_outbound_queue_memory::MemoryQueue;
 use catapulte_outbound_sqlite::SqliteAdapter;
+
+use crate::storage::StorageAdapter;
 
 #[derive(Clone)]
 pub(crate) enum QueueAdapter {
     Sqlite(SqliteAdapter),
+    Postgres(PostgresAdapter),
     Memory(MemoryQueue),
 }
 
@@ -14,6 +18,7 @@ impl EmailQueue for QueueAdapter {
     async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
         match self {
             Self::Sqlite(a) => a.enqueue(id, envelope).await,
+            Self::Postgres(a) => a.enqueue(id, envelope).await,
             Self::Memory(q) => q.enqueue(id, envelope).await,
         }
     }
@@ -21,6 +26,7 @@ impl EmailQueue for QueueAdapter {
     async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
         match self {
             Self::Sqlite(a) => a.dequeue().await,
+            Self::Postgres(a) => a.dequeue().await,
             Self::Memory(q) => q.dequeue().await,
         }
     }
@@ -28,13 +34,14 @@ impl EmailQueue for QueueAdapter {
     async fn ack(&self, id: EmailId) -> Result<(), EmailQueueError> {
         match self {
             Self::Sqlite(a) => a.ack(id).await,
+            Self::Postgres(a) => a.ack(id).await,
             Self::Memory(q) => q.ack(id).await,
         }
     }
 }
 
 pub enum QueueBackendConfig {
-    Sqlite,
+    Storage,
     Memory,
 }
 
@@ -46,14 +53,16 @@ impl QueueBackendConfig {
         let key = format!("{prefix}_BACKEND");
         match std::env::var(&key).as_deref() {
             Ok("memory") => Ok(Self::Memory),
-            Ok("sqlite") | Err(_) => Ok(Self::Sqlite),
-            Ok(other) => anyhow::bail!("unknown queue backend for {key}: {other}"),
+            _ => Ok(Self::Storage),
         }
     }
 
-    pub(crate) fn build(self, sqlite: &SqliteAdapter) -> QueueAdapter {
+    pub(crate) fn build(self, storage: &StorageAdapter) -> QueueAdapter {
         match self {
-            Self::Sqlite => QueueAdapter::Sqlite(sqlite.clone()),
+            Self::Storage => match storage {
+                StorageAdapter::Sqlite(a) => QueueAdapter::Sqlite(a.clone()),
+                StorageAdapter::Postgres(a) => QueueAdapter::Postgres(a.clone()),
+            },
             Self::Memory => QueueAdapter::Memory(MemoryQueue::new()),
         }
     }

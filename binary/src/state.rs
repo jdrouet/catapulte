@@ -12,9 +12,9 @@ use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverAdapter;
 use catapulte_outbound_smtp::sender::SmtpSender;
-use catapulte_outbound_sqlite::SqliteAdapter;
 
 use crate::queue::QueueAdapter;
+use crate::storage::StorageAdapter;
 
 pub(crate) type ProcessService = ProcessQueuedEmailService<
     TemplateResolverAdapter,
@@ -25,9 +25,9 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
 
 #[derive(Clone)]
 pub(crate) struct AppState {
-    pub(crate) submit_email: Arc<SubmitEmailService<SqliteAdapter, QueueAdapter>>,
+    pub(crate) submit_email: Arc<SubmitEmailService<StorageAdapter, QueueAdapter>>,
     pub(crate) process_queued_email: Arc<ProcessService>,
-    pub(crate) sqlite: SqliteAdapter,
+    pub(crate) storage: StorageAdapter,
     pub(crate) queue: QueueAdapter,
 }
 
@@ -47,6 +47,6 @@ impl WorkerState for AppState {
     }
 
     fn event_publisher(&self) -> &impl EventPublisher {
-        &self.sqlite
+        &self.storage
     }
 }

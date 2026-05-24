@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use catapulte::AppConfig;
 use catapulte::queue::QueueBackendConfig;
+use catapulte::storage::StorageBackendConfig;
 use catapulte_inbound_http::InboundHttpConfig;
 use catapulte_inbound_worker::worker::WorkerConfig;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
@@ -41,9 +42,9 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
     let catapulte_addr: SocketAddr = format!("127.0.0.1:{http_port}").parse().unwrap();
 
     let config = AppConfig {
-        sqlite: SqliteConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
             url: format!("sqlite:{}", db_path.display()),
-        },
+        }),
         http: InboundHttpConfig {
             address: catapulte_addr,
         },
@@ -59,7 +60,7 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
             templates_dir: None,
         },
         worker: WorkerConfig {},
-        queue: QueueBackendConfig::Sqlite,
+        queue: QueueBackendConfig::Storage,
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -145,9 +146,9 @@ async fn submit_plain_email_with_memory_queue_is_delivered() {
     let catapulte_addr: SocketAddr = format!("127.0.0.1:{http_port}").parse().unwrap();
 
     let config = AppConfig {
-        sqlite: SqliteConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
             url: format!("sqlite:{}", db_path.display()),
-        },
+        }),
         http: InboundHttpConfig {
             address: catapulte_addr,
         },
