@@ -12,15 +12,16 @@ pub enum SendError {
     },
 }
 
+pub struct OutboundEmail {
+    pub sender: String,
+    pub subject: Option<String>,
+    pub recipients: Vec<(RecipientKind, String)>,
+    pub body: RenderedBody,
+}
+
 pub trait EmailSender {
-    /// # Errors
-    ///
-    /// Returns a `SendError` when the email cannot be delivered.
     fn send(
         &self,
-        sender: &str,
-        subject: Option<&str>,
-        recipients: &[(RecipientKind, String)],
-        body: &RenderedBody,
+        email: OutboundEmail,
     ) -> impl std::future::Future<Output = Result<(), SendError>> + Send;
 }

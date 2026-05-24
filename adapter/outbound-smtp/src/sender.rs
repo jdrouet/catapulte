@@ -1,7 +1,7 @@
 use anyhow::Context;
 use catapulte_domain::entity::body::RenderedBody;
 use catapulte_domain::entity::email::RecipientKind;
-use catapulte_domain::port::email_sender::{EmailSender, SendError};
+use catapulte_domain::port::email_sender::{EmailSender, OutboundEmail, SendError};
 use lettre::message::header::ContentType;
 use lettre::message::{Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
@@ -194,16 +194,10 @@ pub struct SmtpSender {
 }
 
 impl EmailSender for SmtpSender {
-    async fn send(
-        &self,
-        sender: &str,
-        subject: Option<&str>,
-        recipients: &[(RecipientKind, String)],
-        body: &RenderedBody,
-    ) -> Result<(), SendError> {
-        let from = parse_mailbox(sender)?;
-        let builder = apply_recipients(Message::builder().from(from), recipients)?;
-        let message = finalize_message(builder, subject, body)?;
+    async fn send(&self, email: OutboundEmail) -> Result<(), SendError> {
+        let from = parse_mailbox(&email.sender)?;
+        let builder = apply_recipients(Message::builder().from(from), &email.recipients)?;
+        let message = finalize_message(builder, email.subject.as_deref(), &email.body)?;
         self.transport
             .send(message)
             .await

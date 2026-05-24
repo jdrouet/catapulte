@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::entity::envelope::Envelope;
-use crate::port::email_sender::{EmailSender, SendError};
+use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
 use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
 use crate::port::template_renderer::{RenderError, TemplateRenderer};
 use crate::port::template_resolver::{ResolveError, TemplateResolver};
@@ -68,7 +68,12 @@ where
         let interpolated = self.interpolator.interpolate(resolved, &variables)?;
         let rendered = self.renderer.render(interpolated)?;
         self.sender
-            .send(&sender, subject.as_deref(), &recipients, &rendered)
+            .send(OutboundEmail {
+                sender,
+                subject,
+                recipients,
+                body: rendered,
+            })
             .await?;
         Ok(())
     }
@@ -98,7 +103,7 @@ mod tests {
     };
     use crate::entity::email::RecipientKind;
     use crate::entity::envelope::Envelope;
-    use crate::port::email_sender::{EmailSender, SendError};
+    use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
     use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
     use crate::port::template_renderer::{RenderError, TemplateRenderer};
     use crate::port::template_resolver::{ResolveError, TemplateResolver};
@@ -191,13 +196,7 @@ mod tests {
     struct FakeSender;
 
     impl EmailSender for FakeSender {
-        async fn send(
-            &self,
-            _sender: &str,
-            _subject: Option<&str>,
-            _recipients: &[(RecipientKind, String)],
-            _body: &RenderedBody,
-        ) -> Result<(), SendError> {
+        async fn send(&self, _email: OutboundEmail) -> Result<(), SendError> {
             Ok(())
         }
     }
@@ -205,13 +204,7 @@ mod tests {
     struct FailingSender;
 
     impl EmailSender for FailingSender {
-        async fn send(
-            &self,
-            _sender: &str,
-            _subject: Option<&str>,
-            _recipients: &[(RecipientKind, String)],
-            _body: &RenderedBody,
-        ) -> Result<(), SendError> {
+        async fn send(&self, _email: OutboundEmail) -> Result<(), SendError> {
             Err(SendError::Send {
                 source: anyhow::anyhow!("connection refused"),
             })
