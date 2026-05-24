@@ -26,6 +26,7 @@ minijinja = { version = "2.0", default-features = false, features = ["builtins",
 lettre = { version = "0.11", default-features = false, features = ["tokio1-native-tls", "smtp-transport", "builder", "hostname"] }
 axum = { version = "0.8" }
 serde_json = { version = "1.0" }
+tempfile = { version = "3" }
 sqlx = { version = "0.8", default-features = false, features = ["json", "macros", "migrate", "runtime-tokio", "sqlite"] }
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "signal", "time"] }
 tower-http = { version = "0.6", features = ["trace"] }
