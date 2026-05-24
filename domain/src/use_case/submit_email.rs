@@ -380,32 +380,32 @@ mod tests {
     async fn execute_emits_queued_event_after_enqueue() {
         let repo = FakeRepository::new();
         let queue = FakeQueue::new();
-        let publisher = FakeEventPublisher::new();
-        let service = SubmitEmailService::new(repo.clone(), queue.clone(), publisher.clone());
+        let spy = FakeEventPublisher::new();
+        let service = SubmitEmailService::new(repo.clone(), queue.clone(), spy.clone());
         let id = service
             .execute(make_envelope("sender@example.com"), SubmitParams {})
             .await
             .unwrap();
-        let published = publisher.published.lock().unwrap();
-        assert_eq!(published.len(), 1);
-        assert_eq!(published[0], LifecycleEvent::Queued { id });
+        let events = spy.published.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0], LifecycleEvent::Queued { id });
     }
 
     #[tokio::test]
     async fn duplicate_idempotency_key_does_not_emit_queued_event() {
         let existing_id = EmailId::default();
         let queue = FakeQueue::new();
-        let publisher = FakeEventPublisher::new();
+        let spy = FakeEventPublisher::new();
         let service = SubmitEmailService::new(
             DuplicatingRepository { existing_id },
             queue.clone(),
-            publisher.clone(),
+            spy.clone(),
         );
         service
             .execute(make_envelope("sender@example.com"), SubmitParams {})
             .await
             .unwrap();
-        assert!(publisher.published.lock().unwrap().is_empty());
+        assert!(spy.published.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

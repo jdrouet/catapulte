@@ -9,6 +9,10 @@ use crate::dto::{
 };
 use crate::error::AppError;
 
+/// # Errors
+///
+/// Returns `AppError::InvalidEmailId` when the path segment is not a valid UUID.
+/// Returns `AppError::ListEvents` when the repository query fails.
 #[tracing::instrument(skip_all, fields(email_id = %email_id))]
 pub async fn list_events_for_email<S: HttpServerState>(
     State(state): State<S>,
