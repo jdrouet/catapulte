@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::entity::email::EmailId;
 use crate::entity::envelope::Envelope;
 use crate::port::email_queue::{EmailQueue, EmailQueueError};
-use crate::port::email_repository::{EmailRepository, EmailRepositoryError};
+use crate::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
 
 pub struct SubmitParams {}
 
@@ -51,10 +51,15 @@ where
         _params: SubmitParams,
     ) -> Result<EmailId, SubmitEmailError> {
         let id = EmailId::default();
-        self.repository.save(id, &envelope).await?;
-        // enqueue after persist: a failed enqueue leaves an orphan record recoverable by reconciliation; enqueuing first would let consumers observe an event for a non-existent email
-        self.queue.enqueue(id, &envelope).await?;
-        Ok(id)
+        let result = self.repository.save(id, &envelope).await?;
+        match result {
+            SaveResult::Duplicate(existing_id) => Ok(existing_id),
+            SaveResult::Created(id) => {
+                // enqueue after persist: a failed enqueue leaves an orphan record recoverable by reconciliation; enqueuing first would let consumers observe an event for a non-existent email
+                self.queue.enqueue(id, &envelope).await?;
+                Ok(id)
+            }
+        }
     }
 }
 
@@ -80,7 +85,7 @@ mod tests {
     use crate::entity::email::{EmailId, RecipientKind};
     use crate::entity::envelope::Envelope;
     use crate::port::email_queue::{EmailQueue, EmailQueueError};
-    use crate::port::email_repository::{EmailRepository, EmailRepositoryError};
+    use crate::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
 
     use super::{SubmitEmailError, SubmitEmailService, SubmitParams};
 
@@ -112,12 +117,16 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailRepository for FakeRepository {
-        async fn save(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailRepositoryError> {
+        async fn save(
+            &self,
+            id: EmailId,
+            envelope: &Envelope,
+        ) -> Result<SaveResult, EmailRepositoryError> {
             self.saved
                 .lock()
                 .unwrap()
                 .push((id, envelope.sender.clone()));
-            Ok(())
+            Ok(SaveResult::Created(id))
         }
     }
 
@@ -129,10 +138,25 @@ mod tests {
             &self,
             _id: EmailId,
             _envelope: &Envelope,
-        ) -> Result<(), EmailRepositoryError> {
+        ) -> Result<SaveResult, EmailRepositoryError> {
             Err(EmailRepositoryError::Storage {
                 source: anyhow::anyhow!("storage down"),
             })
+        }
+    }
+
+    struct DuplicatingRepository {
+        existing_id: EmailId,
+    }
+
+    #[allow(async_fn_in_trait)]
+    impl EmailRepository for DuplicatingRepository {
+        async fn save(
+            &self,
+            _id: EmailId,
+            _envelope: &Envelope,
+        ) -> Result<SaveResult, EmailRepositoryError> {
+            Ok(SaveResult::Duplicate(self.existing_id))
         }
     }
 
@@ -251,5 +275,18 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(id1, id2);
+    }
+
+    #[tokio::test]
+    async fn duplicate_idempotency_key_returns_existing_id_without_enqueue() {
+        let existing_id = EmailId::default();
+        let queue = FakeQueue::new();
+        let service = SubmitEmailService::new(DuplicatingRepository { existing_id }, queue.clone());
+        let returned_id = service
+            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .await
+            .unwrap();
+        assert_eq!(returned_id, existing_id);
+        assert!(queue.enqueued.lock().unwrap().is_empty());
     }
 }

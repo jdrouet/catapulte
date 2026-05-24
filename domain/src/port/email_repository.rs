@@ -3,6 +3,11 @@ use thiserror::Error;
 use crate::entity::email::EmailId;
 use crate::entity::envelope::Envelope;
 
+pub enum SaveResult {
+    Created(EmailId),
+    Duplicate(EmailId),
+}
+
 #[derive(Debug, Error)]
 pub enum EmailRepositoryError {
     #[error("email storage failed")]
@@ -20,5 +25,5 @@ pub trait EmailRepository {
         &self,
         id: EmailId,
         envelope: &Envelope,
-    ) -> impl std::future::Future<Output = Result<(), EmailRepositoryError>> + Send;
+    ) -> impl std::future::Future<Output = Result<SaveResult, EmailRepositoryError>> + Send;
 }
