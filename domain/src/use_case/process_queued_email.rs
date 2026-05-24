@@ -55,7 +55,6 @@ where
     ///
     /// Returns a `ProcessQueuedEmailError` if the body fails to resolve, interpolate, render, or send.
     pub async fn execute(&self, envelope: Envelope) -> Result<(), ProcessQueuedEmailError> {
-        // TODO: persist failures, emit lifecycle events, requeue retryable errors.
         let Envelope {
             sender,
             subject,

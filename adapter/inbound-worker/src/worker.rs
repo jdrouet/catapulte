@@ -57,6 +57,14 @@ async fn process_one<S: WorkerState>(
     attempt: u32,
     token: AckToken,
 ) {
+    if let Err(e) = state
+        .event_publisher()
+        .publish(&LifecycleEvent::Sending { id, attempt })
+        .await
+    {
+        tracing::error!(error = %e, "failed to publish sending event");
+    }
+
     match state.process_queued_email().execute(envelope).await {
         Ok(()) => {
             if let Err(e) = state.email_queue().ack(token).await {
@@ -78,25 +86,25 @@ async fn process_one<S: WorkerState>(
                 attempt,
                 "failed to process email"
             );
-            if attempt >= MAX_ATTEMPTS {
+            let reason = e.to_string();
+            let event = if attempt >= MAX_ATTEMPTS {
                 if let Err(ack_err) = state.email_queue().ack(token).await {
                     tracing::error!(error = %ack_err, "failed to ack permanently failed email");
                 }
+                LifecycleEvent::Failed { id, reason }
             } else {
                 let delay = backoff(attempt);
                 if let Err(nack_err) = state.email_queue().nack(token, delay).await {
                     tracing::error!(error = %nack_err, "failed to nack transiently failed email");
                 }
-            }
-            if let Err(pub_err) = state
-                .event_publisher()
-                .publish(&LifecycleEvent::Failed {
+                LifecycleEvent::Retrying {
                     id,
-                    reason: e.to_string(),
-                })
-                .await
-            {
-                tracing::error!(error = %pub_err, "failed to publish failed event");
+                    attempt,
+                    reason,
+                }
+            };
+            if let Err(pub_err) = state.event_publisher().publish(&event).await {
+                tracing::error!(error = %pub_err, "failed to publish lifecycle event");
             }
         }
     }
