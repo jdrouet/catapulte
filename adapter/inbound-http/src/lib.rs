@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 
 use anyhow::Context;
 use axum::Router;
+use axum::routing::get;
 use axum::routing::post;
 use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 use tower_http::trace::TraceLayer;
@@ -16,7 +17,9 @@ pub trait HttpServerState: Clone + Send + Sync + 'static {
 
 pub fn router<S: HttpServerState>(state: S) -> Router {
     Router::new()
-        .route("/emails", post(crate::routes::submit_email::<S>))
+        .route("/emails", post(crate::routes::emails::submit_email::<S>))
+        .route("/health/live", get(crate::routes::health::live))
+        .route("/health/ready", get(crate::routes::health::ready))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
