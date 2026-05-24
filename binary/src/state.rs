@@ -35,6 +35,10 @@ impl HttpServerState for AppState {
     fn submit_email(&self) -> &impl SubmitEmailUseCase {
         self.submit_email.as_ref()
     }
+
+    fn event_repository(&self) -> &impl catapulte_domain::port::event_repository::EventRepository {
+        &self.storage
+    }
 }
 
 impl WorkerState for AppState {
