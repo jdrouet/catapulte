@@ -59,7 +59,11 @@ impl AppConfig {
             .await
             .context("building storage adapter")?;
 
-        let queue = self.queue.build(&storage);
+        let queue = self
+            .queue
+            .build(&storage)
+            .await
+            .context("building queue adapter")?;
 
         let smtp = self.smtp.build().context("building smtp sender")?;
         let resolver = self

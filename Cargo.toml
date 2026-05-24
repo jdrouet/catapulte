@@ -8,6 +8,7 @@ members = [
     "adapter/outbound-queue-memory",
     "adapter/outbound-resolver",
     "adapter/outbound-smtp",
+    "adapter/outbound-nats",
     "adapter/outbound-postgres",
     "adapter/outbound-sqlite",
     "binary",
