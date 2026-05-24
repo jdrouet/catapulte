@@ -2,7 +2,9 @@ use anyhow::Context;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
-use catapulte_domain::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
+use catapulte_domain::port::email_repository::{
+    EmailRecord, EmailRepository, EmailRepositoryError, ListEmailsParams, SaveResult,
+};
 use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
 use catapulte_domain::port::event_repository::{
     EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
@@ -25,6 +27,16 @@ impl EmailRepository for StorageAdapter {
         match self {
             Self::Sqlite(a) => a.save(id, envelope).await,
             Self::Postgres(a) => a.save(id, envelope).await,
+        }
+    }
+
+    async fn list_emails(
+        &self,
+        params: ListEmailsParams,
+    ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
+        match self {
+            Self::Sqlite(a) => a.list_emails(params).await,
+            Self::Postgres(a) => a.list_emails(params).await,
         }
     }
 }
