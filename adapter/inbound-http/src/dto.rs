@@ -204,3 +204,48 @@ mod tests {
         ));
     }
 }
+
+#[derive(Debug, Deserialize)]
+pub struct ListEventsQuery {
+    #[serde(default)]
+    pub event_type: Option<String>,
+    #[serde(default)]
+    pub after_ms: Option<i64>,
+    #[serde(default)]
+    pub before_ms: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+pub const DEFAULT_EVENTS_LIMIT: u32 = 20;
+pub const MAX_EVENTS_LIMIT: u32 = 100;
+
+#[derive(Debug, Serialize)]
+pub struct EventRecordDto {
+    pub id: String,
+    pub email_id: String,
+    pub event_type: String,
+    pub payload: Option<serde_json::Value>,
+    pub created_at_ms: i64,
+}
+
+impl From<catapulte_domain::port::event_repository::EventRecord> for EventRecordDto {
+    fn from(r: catapulte_domain::port::event_repository::EventRecord) -> Self {
+        Self {
+            id: r.id.to_string(),
+            email_id: r.email_id.as_uuid().to_string(),
+            event_type: r.event_type,
+            payload: r.payload,
+            created_at_ms: r.created_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListEventsResponse {
+    pub events: Vec<EventRecordDto>,
+    pub limit: u32,
+    pub offset: u32,
+}

@@ -31,6 +31,9 @@ mod tests {
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::port::email_repository::EmailRepositoryError;
+    use catapulte_domain::port::event_repository::{
+        EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
+    };
     use catapulte_domain::use_case::submit_email::{
         SubmitEmailError, SubmitEmailUseCase, SubmitParams,
     };
@@ -68,37 +71,61 @@ mod tests {
         }
     }
 
+    struct FakeEventRepository;
+
+    #[allow(async_fn_in_trait)]
+    impl EventRepository for FakeEventRepository {
+        async fn list_events(
+            &self,
+            _params: ListEventsParams,
+        ) -> Result<Vec<EventRecord>, EventRepositoryError> {
+            Ok(vec![])
+        }
+    }
+
     #[derive(Clone)]
     struct TestState {
         submit: Arc<FakeSubmit>,
+        event_repo: Arc<FakeEventRepository>,
     }
 
     impl HttpServerState for TestState {
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
+
+        fn event_repository(&self) -> &impl EventRepository {
+            self.event_repo.as_ref()
+        }
     }
 
     #[derive(Clone)]
     struct FailingTestState {
         submit: Arc<FailingSubmit>,
+        event_repo: Arc<FakeEventRepository>,
     }
 
     impl HttpServerState for FailingTestState {
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
+
+        fn event_repository(&self) -> &impl EventRepository {
+            self.event_repo.as_ref()
+        }
     }
 
     fn make_router() -> axum::Router {
         router(TestState {
             submit: Arc::new(FakeSubmit),
+            event_repo: Arc::new(FakeEventRepository),
         })
     }
 
     fn make_failing_router() -> axum::Router {
         router(FailingTestState {
             submit: Arc::new(FailingSubmit),
+            event_repo: Arc::new(FakeEventRepository),
         })
     }
 

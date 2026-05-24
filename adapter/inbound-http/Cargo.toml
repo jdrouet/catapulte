@@ -19,6 +19,7 @@ tokio = { workspace = true, features = ["net"] }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 url = { version = "2.5" }
+uuid = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { version = "0.1" }
