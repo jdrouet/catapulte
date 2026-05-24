@@ -39,7 +39,7 @@ impl EmailQueue for QueueAdapter {
         }
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope), EmailQueueError> {
+    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
         match self {
             Self::Sqlite(a) => a.dequeue().await,
             Self::Memory(q) => q.dequeue().await,

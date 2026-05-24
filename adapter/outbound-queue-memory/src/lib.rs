@@ -44,13 +44,14 @@ impl EmailQueue for MemoryQueue {
             })
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope), EmailQueueError> {
+    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
         self.inner
             .receiver
             .lock()
             .await
             .recv()
             .await
+            .map(|(id, env)| (id, env, 1u32))
             .ok_or_else(|| EmailQueueError::Storage {
                 source: anyhow::anyhow!("memory queue channel closed"),
             })
@@ -86,7 +87,7 @@ mod tests {
         let queue = MemoryQueue::new();
         let id = EmailId::default();
         queue.enqueue(id, &sample_envelope()).await.unwrap();
-        let (returned_id, _) = queue.dequeue().await.unwrap();
+        let (returned_id, _, _) = queue.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
     }
 
@@ -104,8 +105,8 @@ mod tests {
         let id2 = EmailId::default();
         queue.enqueue(id1, &sample_envelope()).await.unwrap();
         queue.enqueue(id2, &sample_envelope()).await.unwrap();
-        let (r1, _) = queue.dequeue().await.unwrap();
-        let (r2, _) = queue.dequeue().await.unwrap();
+        let (r1, _, _) = queue.dequeue().await.unwrap();
+        let (r2, _, _) = queue.dequeue().await.unwrap();
         assert_eq!(r1, id1);
         assert_eq!(r2, id2);
     }

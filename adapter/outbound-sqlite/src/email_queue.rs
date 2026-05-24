@@ -58,33 +58,67 @@ fn parse_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<(EmailId, Envelope
     Ok((id, envelope))
 }
 
-impl SqliteAdapter {
-    async fn try_dequeue(&self) -> Result<Option<(EmailId, Envelope)>, EmailQueueError> {
-        let now_ms: i64 = i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis(),
-        )
-        .unwrap_or(i64::MAX);
-        let claim_until_ms = now_ms + 5 * 60 * 1000;
+fn now_ms() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
+}
 
-        let maybe_email_id: Option<Vec<u8>> = sqlx::query_scalar(
-            "UPDATE email_queue
-             SET claimed_until = ?
-             WHERE id = (
-                 SELECT id FROM email_queue
-                 WHERE claimed_until IS NULL OR claimed_until < ?
-                 ORDER BY enqueued_at
-                 LIMIT 1
-             )
-             RETURNING email_id",
+fn backoff_ms(attempt: u32) -> i64 {
+    let seconds: u64 = (30u64 * (1u64 << attempt.saturating_sub(1))).min(3600);
+    i64::try_from(seconds * 1000).unwrap_or(i64::MAX)
+}
+
+impl SqliteAdapter {
+    async fn try_dequeue(&self) -> Result<Option<(EmailId, Envelope, u32)>, EmailQueueError> {
+        let now = now_ms();
+
+        let maybe = sqlx::query(
+            "SELECT id, attempt_count FROM email_queue \
+             WHERE claimed_until IS NULL OR claimed_until < ? \
+             ORDER BY enqueued_at LIMIT 1",
         )
-        .bind(claim_until_ms)
-        .bind(now_ms)
+        .bind(now)
         .fetch_optional(self.pool())
         .await
-        .context("claiming from email_queue")
+        .context("finding next queue entry")
+        .map_err(|source| EmailQueueError::Storage { source })?;
+
+        let (entry_id_bytes, current_attempt): (Vec<u8>, u32) = match maybe {
+            None => return Ok(None),
+            Some(row) => {
+                use sqlx::Row;
+                let id_bytes: Vec<u8> = row
+                    .try_get("id")
+                    .context("reading entry id")
+                    .map_err(|source| EmailQueueError::Storage { source })?;
+                let attempt: i64 = row
+                    .try_get("attempt_count")
+                    .context("reading attempt_count")
+                    .map_err(|source| EmailQueueError::Storage { source })?;
+                let attempt_u32 = u32::try_from(attempt)
+                    .context("attempt_count out of range")
+                    .map_err(|source| EmailQueueError::Storage { source })?;
+                (id_bytes, attempt_u32)
+            }
+        };
+
+        let new_attempt = current_attempt + 1;
+        let claim_until = now + backoff_ms(new_attempt);
+
+        let maybe_email_id: Option<Vec<u8>> = sqlx::query_scalar(
+            "UPDATE email_queue SET attempt_count = ?, claimed_until = ? WHERE id = ? RETURNING email_id",
+        )
+        .bind(i64::from(new_attempt))
+        .bind(claim_until)
+        .bind(&entry_id_bytes)
+        .fetch_optional(self.pool())
+        .await
+        .context("claiming queue entry")
         .map_err(|source| EmailQueueError::Storage { source })?;
 
         let Some(email_id_bytes) = maybe_email_id else {
@@ -92,7 +126,7 @@ impl SqliteAdapter {
         };
 
         let email_id = uuid::Uuid::from_slice(&email_id_bytes)
-            .context("invalid email_id bytes in email_queue")
+            .context("invalid email_id bytes")
             .map(EmailId::from)
             .map_err(|source| EmailQueueError::Storage { source })?;
 
@@ -111,7 +145,7 @@ impl SqliteAdapter {
                 Ok(None)
             }
             Some(row) => parse_row(&row)
-                .map(Some)
+                .map(|(id, env)| Some((id, env, new_attempt)))
                 .map_err(|source| EmailQueueError::Storage { source }),
         }
     }
@@ -131,7 +165,7 @@ impl EmailQueue for SqliteAdapter {
         Ok(())
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope), EmailQueueError> {
+    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
         loop {
             if let Some(item) = self.try_dequeue().await? {
                 return Ok(item);
@@ -196,7 +230,7 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (returned_id, _) = adapter.dequeue().await.unwrap();
+        let (returned_id, _, _) = adapter.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
     }
 
@@ -207,7 +241,7 @@ mod tests {
         adapter.save(id, &sample_envelope()).await.unwrap();
         adapter.enqueue(id, &sample_envelope()).await.unwrap();
 
-        let (returned_id, _) = adapter.dequeue().await.unwrap();
+        let (returned_id, _, _) = adapter.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
     }
 
@@ -217,7 +251,7 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (returned_id, _) = adapter.dequeue().await.unwrap();
+        let (returned_id, _, _) = adapter.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
 
         adapter.ack(id).await.unwrap();
@@ -230,9 +264,29 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (returned_id, _) = adapter.dequeue().await.unwrap();
+        let (returned_id, _, _) = adapter.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
 
         assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dequeue_increments_attempt_count() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+
+        let (_, _, attempt) = adapter.dequeue().await.unwrap();
+        assert_eq!(attempt, 1);
+
+        // Reset claimed_until so the item becomes claimable again
+        sqlx::query("UPDATE email_queue SET claimed_until = 0 WHERE email_id = ?")
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        let (_, _, attempt2) = adapter.dequeue().await.unwrap();
+        assert_eq!(attempt2, 2);
     }
 }

@@ -3,6 +3,8 @@ use catapulte_domain::port::email_queue::EmailQueue;
 use catapulte_domain::port::event_publisher::EventPublisher;
 use catapulte_domain::use_case::process_queued_email::ProcessQueuedEmailUseCase;
 
+const MAX_ATTEMPTS: u32 = 3;
+
 pub trait WorkerState: Clone + Send + Sync + 'static {
     fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase;
     fn email_queue(&self) -> &impl EmailQueue;
@@ -31,7 +33,7 @@ impl Worker {
     pub async fn run<S: WorkerState>(self, state: S) {
         loop {
             match state.email_queue().dequeue().await {
-                Ok((id, envelope)) => process_one(&state, id, envelope).await,
+                Ok((id, envelope, attempt)) => process_one(&state, id, envelope, attempt).await,
                 Err(e) => {
                     tracing::error!(error = %e, "failed to dequeue");
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -45,6 +47,7 @@ async fn process_one<S: WorkerState>(
     state: &S,
     id: catapulte_domain::entity::email::EmailId,
     envelope: catapulte_domain::entity::envelope::Envelope,
+    attempt: u32,
 ) {
     match state.process_queued_email().execute(envelope).await {
         Ok(()) => {
@@ -61,7 +64,17 @@ async fn process_one<S: WorkerState>(
             }
         }
         Err(e) => {
-            tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to process email");
+            tracing::error!(
+                error = %e,
+                email_id = %id.as_uuid(),
+                attempt,
+                "failed to process email"
+            );
+            if attempt >= MAX_ATTEMPTS
+                && let Err(ack_err) = state.email_queue().ack(id).await
+            {
+                tracing::error!(error = %ack_err, "failed to ack permanently failed email");
+            }
             if let Err(pub_err) = state
                 .event_publisher()
                 .publish(&LifecycleEvent::Failed {

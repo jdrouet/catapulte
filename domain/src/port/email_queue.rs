@@ -21,7 +21,7 @@ pub trait EmailQueue {
 
     fn dequeue(
         &self,
-    ) -> impl std::future::Future<Output = Result<(EmailId, Envelope), EmailQueueError>> + Send;
+    ) -> impl std::future::Future<Output = Result<(EmailId, Envelope, u32), EmailQueueError>> + Send;
 
     fn ack(
         &self,

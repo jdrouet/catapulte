@@ -156,7 +156,7 @@ mod tests {
             Ok(())
         }
 
-        async fn dequeue(&self) -> Result<(EmailId, Envelope), EmailQueueError> {
+        async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
             std::future::pending().await
         }
 
@@ -175,7 +175,7 @@ mod tests {
             })
         }
 
-        async fn dequeue(&self) -> Result<(EmailId, Envelope), EmailQueueError> {
+        async fn dequeue(&self) -> Result<(EmailId, Envelope, u32), EmailQueueError> {
             std::future::pending().await
         }
 
