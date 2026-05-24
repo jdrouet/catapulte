@@ -8,25 +8,6 @@ use crate::dto::{BodySourceDto, RecipientDto, recipients_from_dto};
 
 use catapulte_domain::entity::body::BodySource;
 
-const DEQUEUE_SQL: &str = "
-SELECT e.id, e.idempotency_key, e.sender, e.recipients, e.body, e.variables
-FROM emails e
-WHERE EXISTS (
-    SELECT 1 FROM lifecycle_events le
-    WHERE le.email_id = e.id AND le.event_type = 'queued'
-)
-AND NOT EXISTS (
-    SELECT 1 FROM lifecycle_events le
-    WHERE le.email_id = e.id AND le.event_type IN ('sent', 'failed')
-)
-ORDER BY (
-    SELECT le.id FROM lifecycle_events le
-    WHERE le.email_id = e.id AND le.event_type = 'queued'
-    LIMIT 1
-)
-LIMIT 1
-";
-
 fn parse_id(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<EmailId> {
     use sqlx::Row;
     let id_bytes: Vec<u8> = row.try_get("id").context("reading id")?;
@@ -75,35 +56,74 @@ fn parse_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<(EmailId, Envelope
 
 impl SqliteAdapter {
     async fn try_dequeue(&self) -> Result<Option<(EmailId, Envelope)>, EmailQueueError> {
-        let maybe_row = sqlx::query(DEQUEUE_SQL)
-            .fetch_optional(self.pool())
-            .await
-            .context("querying email queue")
+        let now_ms: i64 = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        )
+        .unwrap_or(i64::MAX);
+        let claim_until_ms = now_ms + 5 * 60 * 1000;
+
+        let maybe_email_id: Option<Vec<u8>> = sqlx::query_scalar(
+            "UPDATE email_queue
+             SET claimed_until = ?
+             WHERE id = (
+                 SELECT id FROM email_queue
+                 WHERE claimed_until IS NULL OR claimed_until < ?
+                 ORDER BY enqueued_at
+                 LIMIT 1
+             )
+             RETURNING email_id",
+        )
+        .bind(claim_until_ms)
+        .bind(now_ms)
+        .fetch_optional(self.pool())
+        .await
+        .context("claiming from email_queue")
+        .map_err(|source| EmailQueueError::Storage { source })?;
+
+        let Some(email_id_bytes) = maybe_email_id else {
+            return Ok(None);
+        };
+
+        let email_id = uuid::Uuid::from_slice(&email_id_bytes)
+            .context("invalid email_id bytes in email_queue")
+            .map(EmailId::from)
             .map_err(|source| EmailQueueError::Storage { source })?;
 
-        maybe_row
-            .as_ref()
-            .map(parse_row)
-            .transpose()
-            .map_err(|source| EmailQueueError::Storage { source })
+        let maybe_row = sqlx::query(
+            "SELECT id, idempotency_key, sender, recipients, body, variables FROM emails WHERE id = ?",
+        )
+        .bind(&email_id_bytes)
+        .fetch_optional(self.pool())
+        .await
+        .context("fetching email for dequeue")
+        .map_err(|source| EmailQueueError::Storage { source })?;
+
+        match maybe_row {
+            None => {
+                self.ack(email_id).await?;
+                Ok(None)
+            }
+            Some(row) => parse_row(&row)
+                .map(Some)
+                .map_err(|source| EmailQueueError::Storage { source }),
+        }
     }
 }
 
 impl EmailQueue for SqliteAdapter {
-    async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
-        use anyhow::Context;
-        let _ = envelope;
-        let event_id_bytes = uuid::Uuid::now_v7().as_bytes().to_vec();
+    async fn enqueue(&self, id: EmailId, _envelope: &Envelope) -> Result<(), EmailQueueError> {
+        let entry_id = uuid::Uuid::now_v7().as_bytes().to_vec();
         let email_id_bytes = id.as_uuid().as_bytes().to_vec();
-        sqlx::query(
-            "INSERT INTO lifecycle_events (id, email_id, event_type, payload) VALUES (?, ?, 'queued', NULL)",
-        )
-        .bind(event_id_bytes)
-        .bind(email_id_bytes)
-        .execute(self.pool())
-        .await
-        .context("inserting queued event")
-        .map_err(|source| EmailQueueError::Storage { source })?;
+        sqlx::query("INSERT INTO email_queue (id, email_id) VALUES (?, ?)")
+            .bind(entry_id)
+            .bind(email_id_bytes)
+            .execute(self.pool())
+            .await
+            .context("inserting into email_queue")
+            .map_err(|source| EmailQueueError::Storage { source })?;
         Ok(())
     }
 
@@ -115,6 +135,17 @@ impl EmailQueue for SqliteAdapter {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
+
+    async fn ack(&self, id: EmailId) -> Result<(), EmailQueueError> {
+        let email_id_bytes = id.as_uuid().as_bytes().to_vec();
+        sqlx::query("DELETE FROM email_queue WHERE email_id = ?")
+            .bind(email_id_bytes)
+            .execute(self.pool())
+            .await
+            .context("deleting from email_queue")
+            .map_err(|source| EmailQueueError::Storage { source })?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -122,10 +153,8 @@ mod tests {
     use catapulte_domain::entity::body::{BodySource, Plain};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
     use catapulte_domain::port::email_queue::EmailQueue;
     use catapulte_domain::port::email_repository::EmailRepository;
-    use catapulte_domain::port::event_publisher::EventPublisher;
 
     use crate::SqliteAdapter;
 
@@ -157,15 +186,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_dequeue_skips_sent_email() {
-        let adapter = fresh_adapter().await;
-        let id = EmailId::default();
-        save_and_enqueue(&adapter, id).await;
-        adapter.publish(&LifecycleEvent::Sent { id }).await.unwrap();
-        assert!(adapter.try_dequeue().await.unwrap().is_none());
-    }
-
-    #[tokio::test]
     async fn dequeue_returns_queued_email() {
         let adapter = fresh_adapter().await;
         let id = EmailId::default();
@@ -173,22 +193,6 @@ mod tests {
 
         let (returned_id, _) = adapter.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
-    }
-
-    #[tokio::test]
-    async fn dequeue_skips_sent_email_and_returns_next() {
-        let adapter = fresh_adapter().await;
-        let id1 = EmailId::default();
-        let id2 = EmailId::default();
-        save_and_enqueue(&adapter, id1).await;
-        save_and_enqueue(&adapter, id2).await;
-        adapter
-            .publish(&LifecycleEvent::Sent { id: id1 })
-            .await
-            .unwrap();
-
-        let (returned_id, _) = adapter.dequeue().await.unwrap();
-        assert_eq!(returned_id, id2);
     }
 
     #[tokio::test]
@@ -200,5 +204,30 @@ mod tests {
 
         let (returned_id, _) = adapter.dequeue().await.unwrap();
         assert_eq!(returned_id, id);
+    }
+
+    #[tokio::test]
+    async fn ack_removes_email_from_queue() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+
+        let (returned_id, _) = adapter.dequeue().await.unwrap();
+        assert_eq!(returned_id, id);
+
+        adapter.ack(id).await.unwrap();
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dequeue_claims_item_so_try_dequeue_returns_none() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+
+        let (returned_id, _) = adapter.dequeue().await.unwrap();
+        assert_eq!(returned_id, id);
+
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
     }
 }

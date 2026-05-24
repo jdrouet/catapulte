@@ -48,6 +48,10 @@ async fn process_one<S: WorkerState>(
 ) {
     match state.process_queued_email().execute(envelope).await {
         Ok(()) => {
+            if let Err(e) = state.email_queue().ack(id).await {
+                tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to ack email");
+                return;
+            }
             if let Err(e) = state
                 .event_publisher()
                 .publish(&LifecycleEvent::Sent { id })

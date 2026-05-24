@@ -158,6 +158,10 @@ mod tests {
         async fn dequeue(&self) -> Result<(EmailId, Envelope), EmailQueueError> {
             std::future::pending().await
         }
+
+        async fn ack(&self, _id: EmailId) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
     }
 
     struct FailingQueue;
@@ -172,6 +176,10 @@ mod tests {
 
         async fn dequeue(&self) -> Result<(EmailId, Envelope), EmailQueueError> {
             std::future::pending().await
+        }
+
+        async fn ack(&self, _id: EmailId) -> Result<(), EmailQueueError> {
+            Ok(())
         }
     }
 
