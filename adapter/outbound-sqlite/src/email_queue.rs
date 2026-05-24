@@ -134,12 +134,9 @@ mod tests {
         }
     }
 
-    async fn save_with_queued(adapter: &SqliteAdapter, id: EmailId) {
+    async fn save_and_enqueue(adapter: &SqliteAdapter, id: EmailId) {
         adapter.save(id, &sample_envelope()).await.unwrap();
-        adapter
-            .publish(&LifecycleEvent::Queued { id })
-            .await
-            .unwrap();
+        adapter.enqueue(id, &sample_envelope()).await.unwrap();
     }
 
     #[tokio::test]
@@ -153,7 +150,7 @@ mod tests {
     async fn dequeue_returns_queued_email() {
         let adapter = fresh_adapter().await;
         let id = EmailId::default();
-        save_with_queued(&adapter, id).await;
+        save_and_enqueue(&adapter, id).await;
 
         let result = adapter.dequeue().await.unwrap();
         assert!(result.is_some());
@@ -165,7 +162,7 @@ mod tests {
     async fn dequeue_skips_sent_email() {
         let adapter = fresh_adapter().await;
         let id = EmailId::default();
-        save_with_queued(&adapter, id).await;
+        save_and_enqueue(&adapter, id).await;
         adapter.publish(&LifecycleEvent::Sent { id }).await.unwrap();
 
         let result = adapter.dequeue().await.unwrap();
