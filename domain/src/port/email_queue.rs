@@ -5,7 +5,7 @@ use crate::entity::envelope::Envelope;
 
 #[derive(Debug, Error)]
 pub enum EmailQueueError {
-    #[error("failed to dequeue email")]
+    #[error("email queue error")]
     Storage {
         #[source]
         source: anyhow::Error,
@@ -13,6 +13,12 @@ pub enum EmailQueueError {
 }
 
 pub trait EmailQueue {
+    fn enqueue(
+        &self,
+        id: EmailId,
+        envelope: &Envelope,
+    ) -> impl std::future::Future<Output = Result<(), EmailQueueError>> + Send;
+
     fn dequeue(
         &self,
     ) -> impl std::future::Future<Output = Result<Option<(EmailId, Envelope)>, EmailQueueError>> + Send;

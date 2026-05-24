@@ -74,6 +74,23 @@ fn parse_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<(EmailId, Envelope
 }
 
 impl EmailQueue for SqliteAdapter {
+    async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
+        use anyhow::Context;
+        let _ = envelope;
+        let event_id_bytes = uuid::Uuid::now_v7().as_bytes().to_vec();
+        let email_id_bytes = id.as_uuid().as_bytes().to_vec();
+        sqlx::query(
+            "INSERT INTO lifecycle_events (id, email_id, event_type, payload) VALUES (?, ?, 'queued', NULL)",
+        )
+        .bind(event_id_bytes)
+        .bind(email_id_bytes)
+        .execute(self.pool())
+        .await
+        .context("inserting queued event")
+        .map_err(|source| EmailQueueError::Storage { source })?;
+        Ok(())
+    }
+
     async fn dequeue(&self) -> Result<Option<(EmailId, Envelope)>, EmailQueueError> {
         let maybe_row = sqlx::query(DEQUEUE_SQL)
             .fetch_optional(self.pool())
@@ -153,5 +170,18 @@ mod tests {
 
         let result = adapter.dequeue().await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn enqueue_makes_email_visible_to_dequeue() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        adapter.enqueue(id, &sample_envelope()).await.unwrap();
+
+        let result = adapter.dequeue().await.unwrap();
+        assert!(result.is_some());
+        let (returned_id, _) = result.unwrap();
+        assert_eq!(returned_id, id);
     }
 }
