@@ -2,7 +2,8 @@ use std::collections::HashSet;
 use std::net::{SocketAddr, TcpListener};
 use std::time::Duration;
 
-use catapulte::{AppConfig, QueueBackendConfig};
+use catapulte::AppConfig;
+use catapulte::queue::QueueBackendConfig;
 use catapulte_inbound_http::InboundHttpConfig;
 use catapulte_inbound_worker::worker::WorkerConfig;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
