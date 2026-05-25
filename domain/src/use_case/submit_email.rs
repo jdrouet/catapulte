@@ -20,7 +20,9 @@ pub enum SubmitEmailError {
 pub trait SubmitEmailUseCase: Send + Sync + 'static {
     /// # Errors
     ///
-    /// Returns a `SubmitEmailError` if persistence or enqueuing fails.
+    /// Returns `SubmitEmailError::Persist` when saving the envelope fails.
+    /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
+    /// Returns `SubmitEmailError::Publish` when publishing the lifecycle event fails.
     fn execute(
         &self,
         envelope: Envelope,

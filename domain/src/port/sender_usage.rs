@@ -19,6 +19,11 @@ pub enum SenderUsageError {
 }
 
 pub trait SenderUsage: Send + Sync + 'static {
+    /// Returns send/fail counts for the given senders since `since_ms` (Unix-epoch ms).
+    ///
+    /// # Errors
+    ///
+    /// Returns `SenderUsageError::Storage` when the underlying query fails.
     fn get_stats(
         &self,
         names: &[SenderName],

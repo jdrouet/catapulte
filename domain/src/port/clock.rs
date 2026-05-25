@@ -1,4 +1,6 @@
+/// Provides the current wall-clock time as a Unix-epoch millisecond timestamp.
 pub trait Clock: Send + Sync + 'static {
+    /// Returns the current time as milliseconds since the Unix epoch.
     fn now_ms(&self) -> i64;
 }
 

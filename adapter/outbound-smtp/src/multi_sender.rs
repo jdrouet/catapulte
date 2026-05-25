@@ -38,7 +38,7 @@ pub struct MultiSenderConfig {
 }
 
 impl MultiSenderConfig {
-    /// Creates a config with a single unnamed sender using the given `SmtpConfig`.
+    /// Creates a config with a single named sender using the given `SmtpConfig`.
     /// Useful for tests and simple single-server setups.
     #[must_use]
     pub fn single(name: impl Into<String>, smtp: SmtpConfig) -> Self {

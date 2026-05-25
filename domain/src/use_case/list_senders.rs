@@ -23,6 +23,9 @@ pub enum ListSendersError {
 }
 
 pub trait ListSendersUseCase: Send + Sync + 'static {
+    /// # Errors
+    ///
+    /// Returns `ListSendersError::Usage` when the sender usage query fails.
     fn execute(
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<SenderSnapshot>, ListSendersError>> + Send;

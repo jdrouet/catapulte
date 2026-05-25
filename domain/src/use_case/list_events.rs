@@ -11,6 +11,9 @@ pub enum ListEventsError {
 }
 
 pub trait ListEventsUseCase: Send + Sync + 'static {
+    /// # Errors
+    ///
+    /// Returns `ListEventsError::Repository` when the underlying query fails.
     fn execute(
         &self,
         params: ListEventsParams,

@@ -13,9 +13,9 @@ use crate::error::AppError;
 pub async fn list_senders<S: HttpServerState>(
     State(state): State<S>,
 ) -> Result<Json<ListSendersResponse>, AppError> {
-    let usage_list = state.list_senders().execute().await?;
+    let snapshots = state.list_senders().execute().await?;
 
-    let senders = usage_list
+    let senders = snapshots
         .into_iter()
         .map(|u| {
             let quota_dto = u.config.quota.as_ref().map(|q| SenderQuotaDto {

@@ -14,6 +14,9 @@ use catapulte_domain::use_case::list_senders::ListSendersUseCase;
 use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 use tower_http::trace::TraceLayer;
 
+/// Provides the use-case instances that HTTP route handlers dispatch into.
+///
+/// Implemented by the application state type in the composition root.
 pub trait HttpServerState: Clone + Send + Sync + 'static {
     fn submit_email(&self) -> &impl SubmitEmailUseCase;
     fn list_emails(&self) -> &impl ListEmailsUseCase;

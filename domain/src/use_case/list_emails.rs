@@ -11,6 +11,9 @@ pub enum ListEmailsError {
 }
 
 pub trait ListEmailsUseCase: Send + Sync + 'static {
+    /// # Errors
+    ///
+    /// Returns `ListEmailsError::Repository` when the underlying query fails.
     fn execute(
         &self,
         params: ListEmailsParams,
