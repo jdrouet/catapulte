@@ -109,6 +109,7 @@ impl SubmitEmailRequest {
             recipients,
             body,
             variables: self.variables,
+            attachments: vec![],
         })
     }
 }

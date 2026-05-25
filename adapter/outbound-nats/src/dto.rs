@@ -1,8 +1,51 @@
 use anyhow::Context;
+use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain};
 use catapulte_domain::entity::email::{EmailId, RecipientKind};
 use catapulte_domain::entity::envelope::Envelope;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BlobRefDto {
+    pub backend: String,
+    pub key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AttachmentRefDto {
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: u64,
+    pub blob: BlobRefDto,
+}
+
+impl From<&AttachmentRef> for AttachmentRefDto {
+    fn from(a: &AttachmentRef) -> Self {
+        Self {
+            filename: a.filename.clone(),
+            content_type: a.content_type.clone(),
+            size_bytes: a.size_bytes,
+            blob: BlobRefDto {
+                backend: a.blob.backend.clone(),
+                key: a.blob.key.clone(),
+            },
+        }
+    }
+}
+
+impl From<AttachmentRefDto> for AttachmentRef {
+    fn from(dto: AttachmentRefDto) -> Self {
+        Self {
+            filename: dto.filename,
+            content_type: dto.content_type,
+            size_bytes: dto.size_bytes,
+            blob: BlobRef {
+                backend: dto.blob.backend,
+                key: dto.blob.key,
+            },
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QueuedEmailPayload {
@@ -18,6 +61,8 @@ pub struct EnvelopeDto {
     pub recipients: Vec<RecipientDto>,
     pub body: BodySourceDto,
     pub variables: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub attachments: Vec<AttachmentRefDto>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -124,6 +169,11 @@ impl From<(&EmailId, &Envelope)> for QueuedEmailPayload {
                     .collect(),
                 body: BodySourceDto::from(&envelope.body),
                 variables: envelope.variables.clone(),
+                attachments: envelope
+                    .attachments
+                    .iter()
+                    .map(AttachmentRefDto::from)
+                    .collect(),
             },
         }
     }
@@ -140,6 +190,12 @@ impl TryFrom<QueuedEmailPayload> for (EmailId, Envelope) {
             .into_iter()
             .map(|r| (RecipientKind::from(r.kind), r.address))
             .collect();
+        let attachments = payload
+            .envelope
+            .attachments
+            .into_iter()
+            .map(AttachmentRef::from)
+            .collect();
         let envelope = Envelope {
             idempotency_key: payload.envelope.idempotency_key,
             subject: payload.envelope.subject,
@@ -147,6 +203,7 @@ impl TryFrom<QueuedEmailPayload> for (EmailId, Envelope) {
             recipients,
             body,
             variables: payload.envelope.variables,
+            attachments,
         };
         Ok((EmailId::from(payload.id), envelope))
     }

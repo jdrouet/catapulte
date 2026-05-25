@@ -69,6 +69,7 @@ where
             recipients,
             body,
             variables,
+            attachments: _attachment_refs,
             ..
         } = envelope;
         let resolved = self.resolver.resolve(body).await?;
@@ -81,6 +82,7 @@ where
                 subject,
                 recipients,
                 body: rendered,
+                attachments: vec![],
             })
             .await?;
         Ok(sender_name)
@@ -279,6 +281,7 @@ mod tests {
             recipients: vec![(RecipientKind::To, "to@example.com".into())],
             body,
             variables: Map::new(),
+            attachments: vec![],
         }
     }
 
@@ -290,6 +293,7 @@ mod tests {
             recipients: vec![(RecipientKind::To, "to@example.com".into())],
             body,
             variables,
+            attachments: vec![],
         }
     }
 

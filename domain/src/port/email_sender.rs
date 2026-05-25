@@ -28,6 +28,7 @@ pub struct OutboundEmail {
     pub subject: Option<String>,
     pub recipients: Vec<(RecipientKind, String)>,
     pub body: RenderedBody,
+    pub attachments: Vec<crate::entity::attachment::ResolvedAttachment>,
 }
 
 pub trait EmailSender: Send + Sync + 'static {

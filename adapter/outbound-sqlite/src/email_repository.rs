@@ -10,7 +10,7 @@ use sqlx::Sqlite;
 use sqlx::types::Json;
 
 use crate::SqliteAdapter;
-use crate::dto::{BodySourceDto, recipients_to_dto};
+use crate::dto::{AttachmentRefDto, BodySourceDto, EnvelopeBodyDto, recipients_to_dto};
 
 impl EmailRepository for SqliteAdapter {
     /// # Errors
@@ -22,7 +22,14 @@ impl EmailRepository for SqliteAdapter {
         envelope: &Envelope,
     ) -> Result<SaveResult, EmailRepositoryError> {
         let id_bytes = id.as_uuid().as_bytes().to_vec();
-        let body_dto = BodySourceDto::from(&envelope.body);
+        let body_dto = EnvelopeBodyDto {
+            source: BodySourceDto::from(&envelope.body),
+            attachments: envelope
+                .attachments
+                .iter()
+                .map(AttachmentRefDto::from)
+                .collect(),
+        };
         let recipients_dto = recipients_to_dto(&envelope.recipients);
 
         let result = sqlx::query(
@@ -216,6 +223,7 @@ mod tests {
             recipients: vec![],
             body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
             variables: serde_json::Map::new(),
+            attachments: vec![],
         }
     }
 

@@ -1,3 +1,4 @@
+use crate::entity::attachment::AttachmentRef;
 use crate::entity::body::BodySource;
 use crate::entity::email::RecipientKind;
 
@@ -9,4 +10,5 @@ pub struct Envelope {
     pub recipients: Vec<(RecipientKind, String)>,
     pub body: BodySource,
     pub variables: serde_json::Map<String, serde_json::Value>,
+    pub attachments: Vec<AttachmentRef>,
 }

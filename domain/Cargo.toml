@@ -10,8 +10,10 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+bytes = "1"
 serde_json = { workspace = true }
 thiserror = { version = "2.0" }
+tokio = { workspace = true }
 tracing = { workspace = true }
 url = { version = "2.5" }
 uuid = { workspace = true }

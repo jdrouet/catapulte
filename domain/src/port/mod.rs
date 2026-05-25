@@ -1,3 +1,4 @@
+pub mod attachment_store;
 pub mod clock;
 pub mod email_queue;
 pub mod email_repository;

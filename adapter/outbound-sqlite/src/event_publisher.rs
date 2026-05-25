@@ -91,6 +91,7 @@ mod tests {
             recipients: vec![],
             body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
             variables: serde_json::Map::new(),
+            attachments: vec![],
         }
     }
 

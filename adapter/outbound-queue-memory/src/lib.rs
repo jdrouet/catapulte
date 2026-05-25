@@ -108,6 +108,7 @@ mod tests {
             recipients: vec![(RecipientKind::To, "to@example.com".to_owned())],
             body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
             variables: serde_json::Map::new(),
+            attachments: vec![],
         }
     }
 

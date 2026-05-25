@@ -9,7 +9,7 @@ use sqlx::Row;
 use sqlx::types::Json;
 
 use crate::PostgresAdapter;
-use crate::dto::{BodySourceDto, recipients_to_dto};
+use crate::dto::{AttachmentRefDto, BodySourceDto, EnvelopeBodyDto, recipients_to_dto};
 
 impl EmailRepository for PostgresAdapter {
     /// # Errors
@@ -21,7 +21,14 @@ impl EmailRepository for PostgresAdapter {
         envelope: &Envelope,
     ) -> Result<SaveResult, EmailRepositoryError> {
         let id_uuid = id.as_uuid();
-        let body_dto = BodySourceDto::from(&envelope.body);
+        let body_dto = EnvelopeBodyDto {
+            source: BodySourceDto::from(&envelope.body),
+            attachments: envelope
+                .attachments
+                .iter()
+                .map(AttachmentRefDto::from)
+                .collect(),
+        };
         let recipients_dto = recipients_to_dto(&envelope.recipients);
 
         let result = sqlx::query(
@@ -225,6 +232,7 @@ mod tests {
             recipients: vec![],
             body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
             variables: serde_json::Map::new(),
+            attachments: vec![],
         }
     }
 

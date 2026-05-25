@@ -215,6 +215,7 @@ mod tests {
             body: RenderedBody::new(
                 Plain::try_new(None, Some("<p>hi</p>".into())).expect("valid body"),
             ),
+            attachments: vec![],
         }
     }
 

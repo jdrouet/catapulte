@@ -110,6 +110,7 @@ mod tests {
                 Plain::try_new(Some("hello".into()), None).unwrap(),
             ),
             variables: serde_json::Map::new(),
+            attachments: vec![],
         }
     }
 

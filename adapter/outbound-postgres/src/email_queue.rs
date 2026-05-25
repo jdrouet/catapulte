@@ -7,7 +7,7 @@ use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
 
 use crate::PostgresAdapter;
-use crate::dto::{BodySourceDto, RecipientDto, recipients_from_dto};
+use crate::dto::{EnvelopeBodyDtoDeser, RecipientDto, recipients_from_dto};
 
 fn now_ms() -> i64 {
     i64::try_from(
@@ -21,8 +21,14 @@ fn now_ms() -> i64 {
 
 fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Envelope> {
     use sqlx::Row;
-    let body: sqlx::types::Json<BodySourceDto> = row.try_get("body").context("reading body")?;
-    let body = BodySource::try_from(body.0).context("deserializing body")?;
+    let body_deser: sqlx::types::Json<EnvelopeBodyDtoDeser> =
+        row.try_get("body").context("reading body")?;
+    let (body_dto, attachment_dtos) = body_deser.0.split();
+    let body = BodySource::try_from(body_dto).context("deserializing body")?;
+    let attachments = attachment_dtos
+        .into_iter()
+        .map(catapulte_domain::entity::attachment::AttachmentRef::from)
+        .collect();
     let recipients: sqlx::types::Json<Vec<RecipientDto>> =
         row.try_get("recipients").context("reading recipients")?;
     let variables: sqlx::types::Json<serde_json::Map<String, serde_json::Value>> =
@@ -39,6 +45,7 @@ fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Envelope> {
         recipients: recipients_from_dto(recipients.0),
         body,
         variables: variables.0,
+        attachments,
     })
 }
 
@@ -251,6 +258,7 @@ mod tests {
             recipients: vec![],
             body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
             variables: serde_json::Map::new(),
+            attachments: vec![],
         }
     }
 
