@@ -98,9 +98,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::port::email_repository::{
-        EmailRecord, EmailRepositoryError, ListEmailsParams, SaveResult,
-    };
+    use catapulte_domain::port::email_repository::{EmailRecord, ListEmailsParams};
     use catapulte_domain::port::event_repository::{
         EventRecord, EventRepositoryError, ListEventsParams,
     };

@@ -80,11 +80,9 @@ mod tests {
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::port::email_repository::{
-        EmailRecord, EmailRepositoryError, EmailStatus, ListEmailsParams, SaveResult,
+        EmailRecord, EmailRepositoryError, EmailStatus, ListEmailsParams,
     };
-    use catapulte_domain::port::event_repository::{
-        EventRecord, EventRepositoryError, ListEventsParams,
-    };
+    use catapulte_domain::port::event_repository::{EventRecord, ListEventsParams};
     use catapulte_domain::use_case::list_emails::{ListEmailsError, ListEmailsUseCase};
     use catapulte_domain::use_case::list_events::{ListEventsError, ListEventsUseCase};
     use catapulte_domain::use_case::submit_email::{
