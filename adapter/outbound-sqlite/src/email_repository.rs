@@ -85,7 +85,7 @@ impl EmailRepository for SqliteAdapter {
                     e.subject, \
                     e.sender, \
                     e.recipients, \
-                    e.created_at, \
+                    e.created_at_ms, \
                     COALESCE(\
                         (SELECT le.event_type \
                          FROM lifecycle_events le \
@@ -96,7 +96,7 @@ impl EmailRepository for SqliteAdapter {
                     ) AS latest_event_type \
                 FROM emails e\
             ) \
-            SELECT id, idempotency_key, subject, sender, recipients, created_at, latest_event_type \
+            SELECT id, idempotency_key, subject, sender, recipients, created_at_ms, latest_event_type \
             FROM email_status \
             WHERE 1=1",
         );
@@ -106,11 +106,11 @@ impl EmailRepository for SqliteAdapter {
             qb.push_bind(id.as_uuid().as_bytes().to_vec());
         }
         if let Some(after) = params.after_ms {
-            qb.push(" AND created_at > ");
+            qb.push(" AND created_at_ms > ");
             qb.push_bind(after);
         }
         if let Some(before) = params.before_ms {
-            qb.push(" AND created_at < ");
+            qb.push(" AND created_at_ms < ");
             qb.push_bind(before);
         }
         if let Some(recipient) = params.recipient {
@@ -135,7 +135,7 @@ impl EmailRepository for SqliteAdapter {
             None => {}
         }
 
-        qb.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        qb.push(" ORDER BY created_at_ms DESC, id DESC LIMIT ");
         qb.push_bind(i64::from(params.limit));
         qb.push(" OFFSET ");
         qb.push_bind(i64::from(params.offset));
@@ -165,7 +165,9 @@ impl SqliteAdapter {
         let sender: String = row.try_get("sender").context("reading sender")?;
         let recipients_json: sqlx::types::Json<Vec<crate::dto::RecipientDto>> =
             row.try_get("recipients").context("reading recipients")?;
-        let created_at_ms: i64 = row.try_get("created_at").context("reading created_at")?;
+        let created_at_ms: i64 = row
+            .try_get("created_at_ms")
+            .context("reading created_at_ms")?;
         let latest_event_type: String = row
             .try_get("latest_event_type")
             .context("reading latest_event_type")?;
@@ -476,7 +478,7 @@ mod tests {
         let recip_dto = crate::dto::recipients_to_dto(&env.recipients);
 
         sqlx::query(
-            "INSERT INTO emails (id, sender, recipients, body, variables, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO emails (id, sender, recipients, body, variables, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id1_bytes)
         .bind(&env.sender)
@@ -489,7 +491,7 @@ mod tests {
         .unwrap();
 
         sqlx::query(
-            "INSERT INTO emails (id, sender, recipients, body, variables, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO emails (id, sender, recipients, body, variables, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id2_bytes)
         .bind(&env.sender)
