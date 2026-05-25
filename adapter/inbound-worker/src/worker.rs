@@ -91,6 +91,7 @@ async fn process_one<S: WorkerState>(
             let event = if attempt >= MAX_ATTEMPTS {
                 if let Err(ack_err) = state.email_queue().ack(token).await {
                     tracing::error!(error = %ack_err, "failed to ack permanently failed email");
+                    return;
                 }
                 LifecycleEvent::Failed {
                     id,
@@ -101,6 +102,7 @@ async fn process_one<S: WorkerState>(
                 let delay = backoff(attempt);
                 if let Err(nack_err) = state.email_queue().nack(token, delay).await {
                     tracing::error!(error = %nack_err, "failed to nack transiently failed email");
+                    return;
                 }
                 LifecycleEvent::Retrying {
                     id,
