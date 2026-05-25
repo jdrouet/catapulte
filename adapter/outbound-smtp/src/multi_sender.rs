@@ -1,9 +1,14 @@
+use std::collections::HashMap;
 use std::env::VarError;
 use std::pin::Pin;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use catapulte_domain::entity::sender::{QuotaRange, SenderName, SenderQuota};
 use catapulte_domain::port::email_sender::{EmailSender, OutboundEmail, SendError};
+use catapulte_domain::port::sender_repository::{
+    SenderRepository, SenderRepositoryError, SenderStats,
+};
 
 use crate::sender::{SmtpConfig, SmtpSender};
 
@@ -34,22 +39,109 @@ impl SendRef for SmtpSender {
     }
 }
 
+/// A `SenderRepository` that always returns zero counts for all senders.
+/// Used as the default type argument for `MultiSmtpSender` and in tests that
+/// do not exercise quota logic.
+pub struct NoopSenderRepository;
+
+impl SenderRepository for NoopSenderRepository {
+    async fn get_stats(
+        &self,
+        names: &[SenderName],
+        _since_ms: i64,
+    ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
+        Ok(names
+            .iter()
+            .map(|n| SenderStats {
+                name: n.clone(),
+                sent_in_range: 0,
+                failed_in_range: 0,
+            })
+            .collect())
+    }
+}
+
 struct SenderEntry<S> {
     sender: S,
+    name: SenderName,
+    quota: Option<SenderQuota>,
 }
 
 /// Tries each contained sender in priority order (ascending); falls through
 /// to the next on `SendError`.  Returns the last error if all senders fail.
-pub struct MultiSmtpSender<S = SmtpSender> {
+///
+/// When a sender has a `SenderQuota`, the first pass skips it if its
+/// `sent_in_range` has reached the quota limit.  If the first pass exhausts
+/// all eligible senders, a second pass tries every sender regardless of quota
+/// so that traffic is never dropped outright.
+pub struct MultiSmtpSender<S = SmtpSender, R = NoopSenderRepository> {
     /// Sorted by `priority` ascending at construction time; index 0 is tried
     /// first.
     senders: Vec<SenderEntry<S>>,
+    repo: R,
 }
 
-impl<S: SendRef> EmailSender for MultiSmtpSender<S> {
+impl<S: SendRef, R: SenderRepository> EmailSender for MultiSmtpSender<S, R> {
     async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+
+        let range_to_since = |range: &QuotaRange| -> i64 {
+            let offset_ms: i64 = match range {
+                QuotaRange::Hourly => 3_600_000,
+                QuotaRange::Daily => 86_400_000,
+                QuotaRange::Weekly => 604_800_000,
+                QuotaRange::Monthly => 2_592_000_000,
+            };
+            now_ms.saturating_sub(offset_ms).max(0)
+        };
+
+        // Build a map: since_ms -> Vec<SenderName>.
+        let mut since_to_names: HashMap<i64, Vec<SenderName>> = HashMap::new();
+        for entry in &self.senders {
+            if let Some(quota) = &entry.quota {
+                let since_ms = range_to_since(&quota.range);
+                since_to_names
+                    .entry(since_ms)
+                    .or_default()
+                    .push(entry.name.clone());
+            }
+        }
+
+        // Query repo for each unique since_ms group, aggregate results.
+        let mut sent_map: HashMap<SenderName, u64> = HashMap::new();
+        let mut repo_ok = true;
+        for (since_ms, names) in &since_to_names {
+            if let Ok(stats) = self.repo.get_stats(names, *since_ms).await {
+                for stat in stats {
+                    sent_map.insert(stat.name, stat.sent_in_range);
+                }
+            } else {
+                repo_ok = false;
+                break;
+            }
+        }
+
+        // Helper: is a sender over quota?
+        let is_over_quota = |entry: &SenderEntry<S>| -> bool {
+            if !repo_ok {
+                return false;
+            }
+            match &entry.quota {
+                None => false,
+                Some(quota) => {
+                    let sent = sent_map.get(&entry.name).copied().unwrap_or(0);
+                    sent >= quota.count
+                }
+            }
+        };
+
         let mut last_err: Option<SendError> = None;
         for entry in &self.senders {
+            if is_over_quota(entry) {
+                continue;
+            }
             match entry.sender.send_ref(&email).await {
                 Ok(name) => return Ok(name),
                 Err(err) => {
@@ -57,7 +149,23 @@ impl<S: SendRef> EmailSender for MultiSmtpSender<S> {
                 }
             }
         }
-        Err(last_err.expect("senders list must not be empty"))
+
+        // Only needed when first pass found no success (either all eligible senders
+        // failed, or all senders were over quota).
+        let mut last_err_fallback: Option<SendError> = None;
+        for entry in &self.senders {
+            match entry.sender.send_ref(&email).await {
+                Ok(name) => return Ok(name),
+                Err(err) => {
+                    last_err_fallback = Some(err);
+                }
+            }
+        }
+
+        // Return the last error from whichever pass produced one.
+        Err(last_err_fallback
+            .or(last_err)
+            .expect("senders list must not be empty"))
     }
 }
 
@@ -170,21 +278,34 @@ impl MultiSenderConfig {
         Ok(Self { senders })
     }
 
-    /// Builds a `MultiSmtpSender` from the configuration.
+    /// Builds a `MultiSmtpSender` from the configuration, using the given
+    /// repository for quota stat lookups.
     ///
     /// # Errors
     ///
     /// Returns an error if any SMTP transport cannot be constructed.
-    pub fn build(self) -> anyhow::Result<MultiSmtpSender> {
+    pub fn build<R: SenderRepository>(
+        self,
+        repo: R,
+    ) -> anyhow::Result<MultiSmtpSender<SmtpSender, R>> {
         let entries = self
             .senders
             .into_iter()
             .map(|cfg| {
+                let name = cfg.name.clone();
+                let quota = cfg.quota;
                 let sender = cfg.smtp.build_named(cfg.name)?;
-                Ok(SenderEntry { sender })
+                Ok(SenderEntry {
+                    sender,
+                    name,
+                    quota,
+                })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        Ok(MultiSmtpSender { senders: entries })
+        Ok(MultiSmtpSender {
+            senders: entries,
+            repo,
+        })
     }
 
     /// Returns the list of sender names and their optional quotas without
@@ -255,10 +376,13 @@ mod tests {
 
     use catapulte_domain::entity::body::{Plain, RenderedBody};
     use catapulte_domain::entity::email::RecipientKind;
-    use catapulte_domain::entity::sender::{QuotaRange, SenderName};
+    use catapulte_domain::entity::sender::{QuotaRange, SenderName, SenderQuota};
     use catapulte_domain::port::email_sender::{EmailSender, OutboundEmail, SendError};
+    use catapulte_domain::port::sender_repository::{
+        SenderRepository, SenderRepositoryError, SenderStats,
+    };
 
-    use super::{MultiSenderConfig, MultiSmtpSender, SendRef, SenderEntry};
+    use super::{MultiSenderConfig, MultiSmtpSender, NoopSenderRepository, SendRef, SenderEntry};
 
     fn make_lookup(
         vars: HashMap<&'static str, &'static str>,
@@ -337,23 +461,97 @@ mod tests {
         }
     }
 
-    fn make_multi(senders: Vec<FakeSender>) -> MultiSmtpSender<FakeSender> {
+    fn make_multi_noop(
+        senders: Vec<(FakeSender, Option<SenderQuota>)>,
+    ) -> MultiSmtpSender<FakeSender, NoopSenderRepository> {
         let entries = senders
             .into_iter()
-            .map(|sender| SenderEntry { sender })
+            .map(|(sender, quota)| SenderEntry {
+                name: match &sender {
+                    FakeSender::Ok(s) => s.name.clone(),
+                    FakeSender::Fail(s) => s.name.clone(),
+                },
+                quota,
+                sender,
+            })
             .collect();
-        MultiSmtpSender { senders: entries }
+        MultiSmtpSender {
+            senders: entries,
+            repo: NoopSenderRepository,
+        }
+    }
+
+    struct FakeSenderRepository {
+        stats: HashMap<String, u64>, // name -> sent_in_range
+    }
+
+    impl SenderRepository for FakeSenderRepository {
+        async fn get_stats(
+            &self,
+            names: &[SenderName],
+            _since_ms: i64,
+        ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
+            Ok(names
+                .iter()
+                .map(|n| SenderStats {
+                    name: n.clone(),
+                    sent_in_range: *self.stats.get(n.as_str()).unwrap_or(&0),
+                    failed_in_range: 0,
+                })
+                .collect())
+        }
+    }
+
+    struct FailingRepo;
+
+    impl SenderRepository for FailingRepo {
+        async fn get_stats(
+            &self,
+            _names: &[SenderName],
+            _since_ms: i64,
+        ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
+            Err(SenderRepositoryError::Storage {
+                source: anyhow::anyhow!("db down"),
+            })
+        }
+    }
+
+    fn make_multi_with_repo<R: SenderRepository>(
+        senders: Vec<(FakeSender, Option<SenderQuota>)>,
+        repo: R,
+    ) -> MultiSmtpSender<FakeSender, R> {
+        let entries = senders
+            .into_iter()
+            .map(|(sender, quota)| SenderEntry {
+                name: match &sender {
+                    FakeSender::Ok(s) => s.name.clone(),
+                    FakeSender::Fail(s) => s.name.clone(),
+                },
+                quota,
+                sender,
+            })
+            .collect();
+        MultiSmtpSender {
+            senders: entries,
+            repo,
+        }
     }
 
     #[tokio::test]
     async fn first_sender_fails_second_succeeds() {
-        let multi = make_multi(vec![
-            FakeSender::Fail(FailSender {
-                name: SenderName::new("first"),
-            }),
-            FakeSender::Ok(OkSender {
-                name: SenderName::new("second"),
-            }),
+        let multi = make_multi_noop(vec![
+            (
+                FakeSender::Fail(FailSender {
+                    name: SenderName::new("first"),
+                }),
+                None,
+            ),
+            (
+                FakeSender::Ok(OkSender {
+                    name: SenderName::new("second"),
+                }),
+                None,
+            ),
         ]);
         let result = multi.send(make_email()).await;
         assert!(result.is_ok());
@@ -362,13 +560,19 @@ mod tests {
 
     #[tokio::test]
     async fn all_senders_fail_returns_last_error() {
-        let multi = make_multi(vec![
-            FakeSender::Fail(FailSender {
-                name: SenderName::new("first"),
-            }),
-            FakeSender::Fail(FailSender {
-                name: SenderName::new("second"),
-            }),
+        let multi = make_multi_noop(vec![
+            (
+                FakeSender::Fail(FailSender {
+                    name: SenderName::new("first"),
+                }),
+                None,
+            ),
+            (
+                FakeSender::Fail(FailSender {
+                    name: SenderName::new("second"),
+                }),
+                None,
+            ),
         ]);
         let result = multi.send(make_email()).await;
         assert!(result.is_err());
@@ -377,16 +581,139 @@ mod tests {
 
     #[tokio::test]
     async fn first_sender_succeeds_returns_immediately() {
-        let multi = make_multi(vec![
-            FakeSender::Ok(OkSender {
-                name: SenderName::new("first"),
-            }),
-            FakeSender::Ok(OkSender {
-                name: SenderName::new("second"),
-            }),
+        let multi = make_multi_noop(vec![
+            (
+                FakeSender::Ok(OkSender {
+                    name: SenderName::new("first"),
+                }),
+                None,
+            ),
+            (
+                FakeSender::Ok(OkSender {
+                    name: SenderName::new("second"),
+                }),
+                None,
+            ),
         ]);
         let result = multi.send(make_email()).await;
         assert_eq!(result.unwrap().as_str(), "first");
+    }
+
+    #[tokio::test]
+    async fn over_quota_sender_is_skipped_for_eligible_one() {
+        // Primary has quota=1, sent=1 (at limit) -> backup (no quota) is used.
+        let mut stats = HashMap::new();
+        stats.insert("primary".to_string(), 1u64);
+        let repo = FakeSenderRepository { stats };
+
+        let multi = make_multi_with_repo(
+            vec![
+                (
+                    FakeSender::Ok(OkSender {
+                        name: SenderName::new("primary"),
+                    }),
+                    Some(SenderQuota {
+                        count: 1,
+                        range: QuotaRange::Daily,
+                    }),
+                ),
+                (
+                    FakeSender::Ok(OkSender {
+                        name: SenderName::new("backup"),
+                    }),
+                    None,
+                ),
+            ],
+            repo,
+        );
+
+        let result = multi.send(make_email()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_str(), "backup");
+    }
+
+    #[tokio::test]
+    async fn all_over_quota_still_delivers_via_fallback() {
+        // Both primary and backup are over quota.
+        // First pass skips both; second pass tries primary -> primary returns Ok.
+        let mut stats = HashMap::new();
+        stats.insert("primary".to_string(), 1u64);
+        stats.insert("backup".to_string(), 1u64);
+        let repo = FakeSenderRepository { stats };
+
+        let multi = make_multi_with_repo(
+            vec![
+                (
+                    FakeSender::Ok(OkSender {
+                        name: SenderName::new("primary"),
+                    }),
+                    Some(SenderQuota {
+                        count: 1,
+                        range: QuotaRange::Daily,
+                    }),
+                ),
+                (
+                    FakeSender::Ok(OkSender {
+                        name: SenderName::new("backup"),
+                    }),
+                    Some(SenderQuota {
+                        count: 1,
+                        range: QuotaRange::Daily,
+                    }),
+                ),
+            ],
+            repo,
+        );
+
+        let result = multi.send(make_email()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_str(), "primary");
+    }
+
+    #[tokio::test]
+    async fn under_quota_sender_is_used_normally() {
+        // Primary has quota=10, sent=5 -> primary is used.
+        let mut stats = HashMap::new();
+        stats.insert("primary".to_string(), 5u64);
+        let repo = FakeSenderRepository { stats };
+
+        let multi = make_multi_with_repo(
+            vec![(
+                FakeSender::Ok(OkSender {
+                    name: SenderName::new("primary"),
+                }),
+                Some(SenderQuota {
+                    count: 10,
+                    range: QuotaRange::Hourly,
+                }),
+            )],
+            repo,
+        );
+
+        let result = multi.send(make_email()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_str(), "primary");
+    }
+
+    #[tokio::test]
+    async fn repo_error_treats_all_as_eligible() {
+        // FailingRepo returns Err -> sender is attempted anyway.
+        let multi = make_multi_with_repo(
+            vec![(
+                FakeSender::Ok(OkSender {
+                    name: SenderName::new("primary"),
+                }),
+                Some(SenderQuota {
+                    count: 1,
+                    range: QuotaRange::Daily,
+                }),
+            )],
+            FailingRepo,
+        );
+
+        let result = multi.send(make_email()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_str(), "primary");
     }
 
     #[test]
