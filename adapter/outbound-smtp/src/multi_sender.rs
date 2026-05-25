@@ -2,9 +2,15 @@ use std::env::VarError;
 
 use anyhow::Context;
 use catapulte_domain::entity::sender::{QuotaRange, SenderName, SenderQuota};
-use catapulte_domain::service::routed_email_sender::SenderRoute;
 
 use crate::sender::{SmtpConfig, SmtpSender};
+
+pub struct SmtpTransportEntry {
+    pub name: SenderName,
+    pub priority: u8,
+    pub quota: Option<SenderQuota>,
+    pub transport: SmtpSender,
+}
 
 struct SingleSenderConfig {
     name: SenderName,
@@ -118,12 +124,12 @@ impl MultiSenderConfig {
     /// # Errors
     ///
     /// Returns an error if any SMTP transport cannot be constructed.
-    pub fn build_routes(self) -> anyhow::Result<Vec<SenderRoute<SmtpSender>>> {
+    pub fn build(self) -> anyhow::Result<Vec<SmtpTransportEntry>> {
         self.senders
             .into_iter()
             .map(|cfg| {
                 let transport = cfg.smtp.build()?;
-                Ok(SenderRoute {
+                Ok(SmtpTransportEntry {
                     name: cfg.name,
                     priority: cfg.priority,
                     quota: cfg.quota,

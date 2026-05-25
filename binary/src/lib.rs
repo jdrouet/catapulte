@@ -76,18 +76,41 @@ impl AppConfig {
             .await
             .context("building publisher adapter")?;
 
-        let routes = self.smtp.build_routes().context("building smtp routes")?;
-        let configured_senders = Arc::new(
-            routes
-                .iter()
-                .map(|r| (r.name.clone(), r.quota.clone()))
-                .collect::<Vec<_>>(),
-        );
+        let entries = self.smtp.build().context("building smtp transports")?;
+        let sender_configs: Vec<catapulte_domain::entity::sender::SenderConfig> = entries
+            .iter()
+            .map(|e| catapulte_domain::entity::sender::SenderConfig {
+                name: e.name.clone(),
+                quota: e.quota.clone(),
+            })
+            .collect();
+        let routes: Vec<
+            catapulte_domain::service::routed_email_sender::SenderRoute<
+                catapulte_outbound_smtp::sender::SmtpSender,
+            >,
+        > = entries
+            .into_iter()
+            .map(
+                |e| catapulte_domain::service::routed_email_sender::SenderRoute {
+                    name: e.name,
+                    priority: e.priority,
+                    quota: e.quota,
+                    transport: e.transport,
+                },
+            )
+            .collect();
         let smtp = catapulte_domain::service::routed_email_sender::RoutedEmailSender::new(
             routes,
             storage.clone(),
+            catapulte_domain::port::clock::SystemClock,
         )
         .context("building routed email sender")?;
+        let configured_senders = Arc::new(
+            sender_configs
+                .iter()
+                .map(|c| (c.name.clone(), c.quota.clone()))
+                .collect::<Vec<_>>(),
+        );
         let resolver = self
             .resolver
             .build()

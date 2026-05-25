@@ -1,19 +1,19 @@
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 use crate::entity::sender::{SenderName, SenderQuota};
+use crate::port::clock::{Clock, SystemClock};
 use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
 use crate::port::email_transport::EmailTransport;
-use crate::port::sender_repository::{SenderRepository, SenderRepositoryError, SenderStats};
+use crate::port::sender_usage::{SenderStats, SenderUsagePort};
 
-pub struct NoopSenderRepository;
+pub struct NoopSenderUsagePort;
 
-impl SenderRepository for NoopSenderRepository {
+impl SenderUsagePort for NoopSenderUsagePort {
     async fn get_stats(
         &self,
         names: &[SenderName],
         _since_ms: i64,
-    ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
+    ) -> Result<Vec<SenderStats>, crate::port::sender_usage::SenderUsageError> {
         Ok(names
             .iter()
             .map(|n| SenderStats {
@@ -32,35 +32,35 @@ pub struct SenderRoute<T> {
     pub transport: T,
 }
 
-pub struct RoutedEmailSender<T, R = NoopSenderRepository> {
+pub struct RoutedEmailSender<T, U = NoopSenderUsagePort, C = SystemClock> {
     routes: Vec<SenderRoute<T>>,
-    repo: R,
+    usage: U,
+    clock: C,
 }
 
-impl<T, R> RoutedEmailSender<T, R> {
+impl<T, U, C> RoutedEmailSender<T, U, C> {
     /// # Errors
     ///
     /// Returns an error if `routes` is empty.
-    pub fn new(mut routes: Vec<SenderRoute<T>>, repo: R) -> anyhow::Result<Self> {
+    pub fn new(mut routes: Vec<SenderRoute<T>>, usage: U, clock: C) -> anyhow::Result<Self> {
         anyhow::ensure!(!routes.is_empty(), "routes must not be empty");
         routes.sort_by_key(|r| r.priority);
-        Ok(Self { routes, repo })
+        Ok(Self {
+            routes,
+            usage,
+            clock,
+        })
     }
 }
 
-impl<T, R> EmailSender for RoutedEmailSender<T, R>
+impl<T, U, C> EmailSender for RoutedEmailSender<T, U, C>
 where
     T: EmailTransport,
-    R: SenderRepository,
+    U: SenderUsagePort,
+    C: Clock,
 {
     async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
-        let now_ms = i64::try_from(
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("system time is before Unix epoch")
-                .as_millis(),
-        )
-        .unwrap_or(i64::MAX);
+        let now_ms = self.clock.now_ms();
 
         let mut since_ms_to_names: HashMap<i64, Vec<SenderName>> = HashMap::new();
         for route in &self.routes {
@@ -75,7 +75,7 @@ where
 
         let mut sent_map: HashMap<SenderName, u64> = HashMap::new();
         for (since_ms, names) in &since_ms_to_names {
-            match self.repo.get_stats(names, *since_ms).await {
+            match self.usage.get_stats(names, *since_ms).await {
                 Ok(stats) => {
                     for stat in stats {
                         sent_map.insert(stat.name, stat.sent_in_range);
@@ -84,7 +84,7 @@ where
                 Err(err) => {
                     tracing::warn!(
                         error = %err,
-                        "sender repository unavailable; quota checks skipped, all senders treated as eligible"
+                        "sender usage port unavailable; quota checks skipped, all senders treated as eligible"
                     );
                 }
             }
@@ -135,12 +135,13 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use super::{NoopSenderRepository, RoutedEmailSender, SenderRoute};
+    use super::{NoopSenderUsagePort, RoutedEmailSender, SenderRoute};
     use crate::entity::body::{Plain, RenderedBody};
     use crate::entity::sender::{QuotaRange, SenderName, SenderQuota};
+    use crate::port::clock::SystemClock;
     use crate::port::email_sender::{EmailSender, OutboundEmail};
     use crate::port::email_transport::EmailTransport;
-    use crate::port::sender_repository::{SenderRepository, SenderRepositoryError, SenderStats};
+    use crate::port::sender_usage::{SenderStats, SenderUsageError, SenderUsagePort};
 
     enum FakeTransport {
         Ok,
@@ -193,16 +194,16 @@ mod tests {
         }
     }
 
-    struct FakeSenderRepository {
+    struct FakeSenderUsagePort {
         stats: HashMap<String, u64>,
     }
 
-    impl SenderRepository for FakeSenderRepository {
+    impl SenderUsagePort for FakeSenderUsagePort {
         async fn get_stats(
             &self,
             names: &[SenderName],
             _since_ms: i64,
-        ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
+        ) -> Result<Vec<SenderStats>, SenderUsageError> {
             Ok(names
                 .iter()
                 .map(|n| SenderStats {
@@ -214,15 +215,15 @@ mod tests {
         }
     }
 
-    struct ErrorSenderRepository;
+    struct ErrorSenderUsagePort;
 
-    impl SenderRepository for ErrorSenderRepository {
+    impl SenderUsagePort for ErrorSenderUsagePort {
         async fn get_stats(
             &self,
             _names: &[SenderName],
             _since_ms: i64,
-        ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
-            Err(SenderRepositoryError::Storage {
+        ) -> Result<Vec<SenderStats>, SenderUsageError> {
+            Err(SenderUsageError::Storage {
                 source: anyhow::anyhow!("db error"),
             })
         }
@@ -232,7 +233,8 @@ mod tests {
     fn new_with_empty_routes_returns_error() {
         let result = RoutedEmailSender::new(
             Vec::<SenderRoute<FakeTransport>>::new(),
-            NoopSenderRepository,
+            NoopSenderUsagePort,
+            SystemClock,
         );
         assert!(result.is_err());
     }
@@ -241,7 +243,8 @@ mod tests {
     async fn first_sender_fails_second_succeeds() {
         let sender = RoutedEmailSender::new(
             vec![fail_route("first", 0, None), ok_route("second", 1, None)],
-            NoopSenderRepository,
+            NoopSenderUsagePort,
+            SystemClock,
         )
         .unwrap();
         let result = sender.send(make_email()).await;
@@ -252,7 +255,8 @@ mod tests {
     async fn all_senders_fail_returns_last_error() {
         let sender = RoutedEmailSender::new(
             vec![fail_route("first", 0, None), fail_route("second", 1, None)],
-            NoopSenderRepository,
+            NoopSenderUsagePort,
+            SystemClock,
         )
         .unwrap();
         let result = sender.send(make_email()).await;
@@ -264,7 +268,8 @@ mod tests {
     async fn first_sender_succeeds_returns_immediately() {
         let sender = RoutedEmailSender::new(
             vec![ok_route("first", 0, None), ok_route("second", 1, None)],
-            NoopSenderRepository,
+            NoopSenderUsagePort,
+            SystemClock,
         )
         .unwrap();
         let result = sender.send(make_email()).await;
@@ -286,7 +291,8 @@ mod tests {
                 ),
                 ok_route("backup", 1, None),
             ],
-            FakeSenderRepository { stats },
+            FakeSenderUsagePort { stats },
+            SystemClock,
         )
         .unwrap();
         let result = sender.send(make_email()).await;
@@ -317,7 +323,8 @@ mod tests {
                     }),
                 ),
             ],
-            FakeSenderRepository { stats },
+            FakeSenderUsagePort { stats },
+            SystemClock,
         )
         .unwrap();
         let result = sender.send(make_email()).await;
@@ -336,7 +343,8 @@ mod tests {
                     range: QuotaRange::Daily,
                 }),
             )],
-            FakeSenderRepository { stats },
+            FakeSenderUsagePort { stats },
+            SystemClock,
         )
         .unwrap();
         let result = sender.send(make_email()).await;
@@ -354,7 +362,8 @@ mod tests {
                     range: QuotaRange::Daily,
                 }),
             )],
-            ErrorSenderRepository,
+            ErrorSenderUsagePort,
+            SystemClock,
         )
         .unwrap();
         let result = sender.send(make_email()).await;
