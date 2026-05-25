@@ -129,7 +129,7 @@ impl PostgresAdapter {
             Some(row) => {
                 let envelope =
                     parse_envelope(&row).map_err(|source| EmailQueueError::Storage { source })?;
-                let token = AckToken::new(email_id_uuid.as_bytes().to_vec());
+                let token = AckToken::new(entry_id.as_bytes().to_vec());
                 Ok(Some((
                     EmailId::from(email_id_uuid),
                     envelope,
@@ -165,11 +165,11 @@ impl EmailQueue for PostgresAdapter {
     }
 
     async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
-        let email_id_uuid = uuid::Uuid::from_slice(&token.0)
+        let entry_id = uuid::Uuid::from_slice(&token.0)
             .context("invalid ack token")
             .map_err(|source| EmailQueueError::Storage { source })?;
-        sqlx::query("DELETE FROM email_queue WHERE email_id = $1")
-            .bind(email_id_uuid)
+        sqlx::query("DELETE FROM email_queue WHERE id = $1")
+            .bind(entry_id)
             .execute(self.pool())
             .await
             .context("deleting from email_queue")
@@ -181,12 +181,12 @@ impl EmailQueue for PostgresAdapter {
         let now_ms = now_ms();
         let delay_ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
         let claimed_until = now_ms.saturating_add(delay_ms);
-        let email_id_uuid = uuid::Uuid::from_slice(&token.0)
+        let entry_id = uuid::Uuid::from_slice(&token.0)
             .context("invalid nack token")
             .map_err(|source| EmailQueueError::Storage { source })?;
-        sqlx::query("UPDATE email_queue SET claimed_until = $1 WHERE email_id = $2")
+        sqlx::query("UPDATE email_queue SET claimed_until = $1 WHERE id = $2")
             .bind(claimed_until)
-            .bind(email_id_uuid)
+            .bind(entry_id)
             .execute(self.pool())
             .await
             .context("nacking email_queue entry")

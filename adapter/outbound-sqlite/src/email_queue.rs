@@ -136,13 +136,13 @@ impl SqliteAdapter {
 
         match maybe_row {
             None => {
-                let token = AckToken::new(email_id_bytes);
+                let token = AckToken::new(entry_id_bytes.clone());
                 self.ack(token).await?;
                 Ok(None)
             }
             Some(row) => parse_row(&row)
                 .map(|(id, env)| {
-                    Some((id, env, new_attempt, AckToken::new(email_id_bytes.clone())))
+                    Some((id, env, new_attempt, AckToken::new(entry_id_bytes.clone())))
                 })
                 .map_err(|source| EmailQueueError::Storage { source }),
         }
@@ -173,9 +173,9 @@ impl EmailQueue for SqliteAdapter {
     }
 
     async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
-        let email_id_bytes = token.0;
-        sqlx::query("DELETE FROM email_queue WHERE email_id = ?")
-            .bind(&email_id_bytes)
+        let entry_id_bytes = token.0;
+        sqlx::query("DELETE FROM email_queue WHERE id = ?")
+            .bind(&entry_id_bytes)
             .execute(self.pool())
             .await
             .context("deleting from email_queue")
@@ -187,10 +187,10 @@ impl EmailQueue for SqliteAdapter {
         let now = now_ms();
         let delay_ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
         let claimed_until = now.saturating_add(delay_ms);
-        let email_id_bytes = token.0;
-        sqlx::query("UPDATE email_queue SET claimed_until = ? WHERE email_id = ?")
+        let entry_id_bytes = token.0;
+        sqlx::query("UPDATE email_queue SET claimed_until = ? WHERE id = ?")
             .bind(claimed_until)
-            .bind(&email_id_bytes)
+            .bind(&entry_id_bytes)
             .execute(self.pool())
             .await
             .context("nacking email_queue entry")
