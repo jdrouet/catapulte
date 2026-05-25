@@ -16,7 +16,7 @@ pub enum ResolveError {
     },
 }
 
-pub trait TemplateResolver {
+pub trait TemplateResolver: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns a `ResolveError` when the template cannot be found or fetched.

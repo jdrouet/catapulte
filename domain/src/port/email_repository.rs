@@ -17,7 +17,7 @@ pub enum EmailRepositoryError {
     },
 }
 
-pub trait EmailRepository {
+pub trait EmailRepository: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns an `EmailRepositoryError` when persistence fails.

@@ -30,7 +30,10 @@ pub struct OutboundEmail {
     pub body: RenderedBody,
 }
 
-pub trait EmailSender {
+pub trait EmailSender: Send + Sync + 'static {
+    /// # Errors
+    ///
+    /// Returns `SendError::Send` when the underlying transport fails to deliver.
     fn send(
         &self,
         email: OutboundEmail,

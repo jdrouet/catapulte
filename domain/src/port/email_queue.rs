@@ -32,7 +32,10 @@ pub enum EmailQueueError {
     },
 }
 
-pub trait EmailQueue {
+pub trait EmailQueue: Send + Sync + 'static {
+    /// # Errors
+    ///
+    /// Returns `EmailQueueError::Storage` when the enqueue operation fails.
     fn enqueue(
         &self,
         id: EmailId,
@@ -43,6 +46,10 @@ pub trait EmailQueue {
     ///
     /// Returns `(EmailId, Envelope, attempt, token)` where `attempt` is
     /// 1-based and `token` must be passed to `ack` or `nack`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmailQueueError::Storage` when the dequeue operation fails.
     fn dequeue(
         &self,
     ) -> impl std::future::Future<
@@ -51,6 +58,10 @@ pub trait EmailQueue {
 
     /// Acknowledges successful processing or permanent failure -- removes the
     /// item from the queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmailQueueError::Storage` when the ack operation fails.
     fn ack(
         &self,
         token: AckToken,
@@ -58,6 +69,10 @@ pub trait EmailQueue {
 
     /// Negatively acknowledges a transient failure. The item will become
     /// visible again after `delay`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmailQueueError::Storage` when the nack operation fails.
     fn nack(
         &self,
         token: AckToken,

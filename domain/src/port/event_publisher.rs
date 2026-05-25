@@ -11,7 +11,7 @@ pub enum EventPublisherError {
     },
 }
 
-pub trait EventPublisher {
+pub trait EventPublisher: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns an `EventPublisherError` when the event cannot be published.

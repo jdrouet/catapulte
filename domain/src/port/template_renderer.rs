@@ -11,7 +11,7 @@ pub enum RenderError {
     },
 }
 
-pub trait TemplateRenderer {
+pub trait TemplateRenderer: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns a `RenderError` when the mjml renderer fails to compile the body.

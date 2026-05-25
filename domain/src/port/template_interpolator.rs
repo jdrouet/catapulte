@@ -11,7 +11,7 @@ pub enum InterpolateError {
     },
 }
 
-pub trait TemplateInterpolator {
+pub trait TemplateInterpolator: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns an `InterpolateError` when the templating engine fails to process the body.
