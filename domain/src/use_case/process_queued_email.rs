@@ -104,6 +104,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use serde_json::{Map, Value};
 
     use crate::entity::body::{
@@ -207,6 +209,30 @@ mod tests {
     impl EmailSender for FakeSender {
         async fn send(&self, _email: OutboundEmail) -> Result<SenderName, SendError> {
             Ok(SenderName::new("fake"))
+        }
+    }
+
+    struct CapturingSender {
+        captured: Arc<Mutex<Option<OutboundEmail>>>,
+    }
+
+    impl CapturingSender {
+        fn new() -> (Self, Arc<Mutex<Option<OutboundEmail>>>) {
+            let captured = Arc::new(Mutex::new(None));
+            (
+                Self {
+                    captured: Arc::clone(&captured),
+                },
+                captured,
+            )
+        }
+    }
+
+    #[allow(async_fn_in_trait)]
+    impl EmailSender for CapturingSender {
+        async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
+            *self.captured.lock().unwrap() = Some(email);
+            Ok(SenderName::new("capturing"))
         }
     }
 
@@ -342,5 +368,62 @@ mod tests {
         let envelope = default_envelope(body);
         let err = service.execute(envelope).await.unwrap_err();
         assert!(matches!(err, ProcessQueuedEmailError::Send(_)));
+    }
+
+    fn capturing_service() -> (
+        ProcessQueuedEmailService<FakeResolver, FakeInterpolator, FakeRenderer, CapturingSender>,
+        Arc<Mutex<Option<OutboundEmail>>>,
+    ) {
+        let (sender, spy) = CapturingSender::new();
+        let service = ProcessQueuedEmailService::new(
+            FakeResolver {
+                inline_mjml: String::new(),
+            },
+            FakeInterpolator,
+            FakeRenderer,
+            sender,
+        );
+        (service, spy)
+    }
+
+    #[tokio::test]
+    async fn plain_text_only_outbound_email_has_correct_sender() {
+        let (service, spy) = capturing_service();
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let envelope = default_envelope(body);
+        service.execute(envelope).await.unwrap();
+        let captured = spy.lock().unwrap();
+        let email = captured.as_ref().unwrap();
+        assert_eq!(email.sender, "sender@example.com");
+    }
+
+    #[tokio::test]
+    async fn plain_text_only_outbound_email_has_correct_body_text() {
+        let (service, spy) = capturing_service();
+        let mut vars = Map::new();
+        vars.insert("name".into(), Value::String("World".into()));
+        let body = BodySource::Plain(Plain::try_new(Some("hi {{ name }}".into()), None).unwrap());
+        let envelope = default_envelope_with_vars(body, vars);
+        service.execute(envelope).await.unwrap();
+        let captured = spy.lock().unwrap();
+        let email = captured.as_ref().unwrap();
+        let plain = email.body.text();
+        assert_eq!(plain, Some("hi World"));
+        assert_eq!(email.body.html(), None);
+    }
+
+    #[tokio::test]
+    async fn interpolation_applied_to_html_part() {
+        let (service, spy) = capturing_service();
+        let mut vars = Map::new();
+        vars.insert("greeting".into(), Value::String("hello".into()));
+        let body = BodySource::Plain(
+            Plain::try_new(Some("text".into()), Some("<p>{{ greeting }}</p>".into())).unwrap(),
+        );
+        let envelope = default_envelope_with_vars(body, vars);
+        service.execute(envelope).await.unwrap();
+        let captured = spy.lock().unwrap();
+        let email = captured.as_ref().unwrap();
+        assert_eq!(email.body.html(), Some("<p>hello</p>"));
     }
 }
