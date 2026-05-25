@@ -8,16 +8,16 @@ use anyhow::Context;
 use axum::Router;
 use axum::routing::get;
 use axum::routing::post;
-use catapulte_domain::port::email_repository::EmailRepository;
-use catapulte_domain::port::event_repository::EventRepository;
+use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
+use catapulte_domain::use_case::list_events::ListEventsUseCase;
 use catapulte_domain::use_case::list_senders::ListSendersUseCase;
 use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 use tower_http::trace::TraceLayer;
 
 pub trait HttpServerState: Clone + Send + Sync + 'static {
     fn submit_email(&self) -> &impl SubmitEmailUseCase;
-    fn event_repository(&self) -> &impl EventRepository;
-    fn email_repository(&self) -> &impl EmailRepository;
+    fn list_emails(&self) -> &impl ListEmailsUseCase;
+    fn list_events(&self) -> &impl ListEventsUseCase;
     fn list_senders(&self) -> &impl ListSendersUseCase;
 }
 

@@ -1,7 +1,8 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use catapulte_domain::entity::email::EmailId;
-use catapulte_domain::port::event_repository::{EventRepository, ListEventsParams};
+use catapulte_domain::port::event_repository::ListEventsParams;
+use catapulte_domain::use_case::list_events::ListEventsUseCase;
 
 use crate::HttpServerState;
 use crate::dto::{
@@ -12,7 +13,7 @@ use crate::error::AppError;
 /// # Errors
 ///
 /// Returns `AppError::InvalidEmailId` when the `email_id` query param is not a valid UUID.
-/// Returns `AppError::ListEvents` when the repository query fails.
+/// Returns `AppError::ListEvents` when the use case fails.
 #[tracing::instrument(skip_all)]
 pub async fn list_events<S: HttpServerState>(
     State(state): State<S>,
@@ -38,8 +39,8 @@ pub async fn list_events<S: HttpServerState>(
         offset,
     };
     let events = state
-        .event_repository()
-        .list_events(params)
+        .list_events()
+        .execute(params)
         .await?
         .into_iter()
         .map(EventRecordDto::from)
@@ -54,7 +55,7 @@ pub async fn list_events<S: HttpServerState>(
 /// # Errors
 ///
 /// Returns `AppError::InvalidEmailId` when the path segment is not a valid UUID.
-/// Returns `AppError::ListEvents` when the repository query fails.
+/// Returns `AppError::ListEvents` when the use case fails.
 #[tracing::instrument(skip_all, fields(email_id = %email_id))]
 pub async fn list_events_for_email<S: HttpServerState>(
     State(state): State<S>,
@@ -76,8 +77,8 @@ pub async fn list_events_for_email<S: HttpServerState>(
         offset,
     };
     let events = state
-        .event_repository()
-        .list_events(params)
+        .list_events()
+        .execute(params)
         .await?
         .into_iter()
         .map(EventRecordDto::from)
@@ -98,11 +99,13 @@ mod tests {
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::port::email_repository::{
-        EmailRecord, EmailRepository, EmailRepositoryError, ListEmailsParams, SaveResult,
+        EmailRecord, EmailRepositoryError, ListEmailsParams, SaveResult,
     };
     use catapulte_domain::port::event_repository::{
-        EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
+        EventRecord, EventRepositoryError, ListEventsParams,
     };
+    use catapulte_domain::use_case::list_emails::{ListEmailsError, ListEmailsUseCase};
+    use catapulte_domain::use_case::list_events::{ListEventsError, ListEventsUseCase};
     use catapulte_domain::use_case::list_senders::{
         ListSendersError, ListSendersUseCase, SenderUsage,
     };
@@ -125,6 +128,18 @@ mod tests {
         }
     }
 
+    struct NoopListEmails;
+
+    #[allow(async_fn_in_trait)]
+    impl ListEmailsUseCase for NoopListEmails {
+        async fn execute(
+            &self,
+            _params: ListEmailsParams,
+        ) -> Result<Vec<EmailRecord>, ListEmailsError> {
+            Ok(vec![])
+        }
+    }
+
     #[derive(Clone)]
     struct FakeSubmit;
 
@@ -139,12 +154,12 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct FakeEventRepository {
+    struct FakeListEvents {
         captured_params: Arc<Mutex<Option<ListEventsParams>>>,
         result: Arc<Vec<EventRecord>>,
     }
 
-    impl FakeEventRepository {
+    impl FakeListEvents {
         fn new() -> Self {
             Self {
                 captured_params: Arc::new(Mutex::new(None)),
@@ -161,56 +176,34 @@ mod tests {
     }
 
     #[allow(async_fn_in_trait)]
-    impl EventRepository for FakeEventRepository {
-        async fn list_events(
+    impl ListEventsUseCase for FakeListEvents {
+        async fn execute(
             &self,
             params: ListEventsParams,
-        ) -> Result<Vec<EventRecord>, EventRepositoryError> {
+        ) -> Result<Vec<EventRecord>, ListEventsError> {
             *self.captured_params.lock().unwrap() = Some(params);
             Ok((*self.result).clone())
         }
     }
 
-    struct FailingEventRepository;
+    struct FailingListEvents;
 
     #[allow(async_fn_in_trait)]
-    impl EventRepository for FailingEventRepository {
-        async fn list_events(
+    impl ListEventsUseCase for FailingListEvents {
+        async fn execute(
             &self,
             _params: ListEventsParams,
-        ) -> Result<Vec<EventRecord>, EventRepositoryError> {
-            Err(EventRepositoryError::Storage {
+        ) -> Result<Vec<EventRecord>, ListEventsError> {
+            Err(ListEventsError::Repository(EventRepositoryError::Storage {
                 source: anyhow::anyhow!("db down"),
-            })
-        }
-    }
-
-    #[derive(Clone)]
-    struct FakeEmailRepository;
-
-    #[allow(async_fn_in_trait)]
-    impl EmailRepository for FakeEmailRepository {
-        async fn save(
-            &self,
-            id: EmailId,
-            _envelope: &Envelope,
-        ) -> Result<SaveResult, EmailRepositoryError> {
-            Ok(SaveResult::Created(id))
-        }
-
-        async fn list_emails(
-            &self,
-            _params: ListEmailsParams,
-        ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
-            Ok(vec![])
+            }))
         }
     }
 
     #[derive(Clone)]
     struct TestState {
         submit: Arc<FakeSubmit>,
-        event_repo: Arc<FakeEventRepository>,
-        email_repo: Arc<FakeEmailRepository>,
+        list_events: Arc<FakeListEvents>,
     }
 
     impl HttpServerState for TestState {
@@ -218,12 +211,12 @@ mod tests {
             self.submit.as_ref()
         }
 
-        fn event_repository(&self) -> &impl EventRepository {
-            self.event_repo.as_ref()
+        fn list_emails(&self) -> &impl ListEmailsUseCase {
+            &NoopListEmails
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
-            self.email_repo.as_ref()
+        fn list_events(&self) -> &impl ListEventsUseCase {
+            self.list_events.as_ref()
         }
 
         fn list_senders(&self) -> &impl ListSendersUseCase {
@@ -234,8 +227,6 @@ mod tests {
     #[derive(Clone)]
     struct FailingRepoState {
         submit: Arc<FakeSubmit>,
-        event_repo: Arc<FailingEventRepository>,
-        email_repo: Arc<FakeEmailRepository>,
     }
 
     impl HttpServerState for FailingRepoState {
@@ -243,12 +234,12 @@ mod tests {
             self.submit.as_ref()
         }
 
-        fn event_repository(&self) -> &impl EventRepository {
-            self.event_repo.as_ref()
+        fn list_emails(&self) -> &impl ListEmailsUseCase {
+            &NoopListEmails
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
-            self.email_repo.as_ref()
+        fn list_events(&self) -> &impl ListEventsUseCase {
+            &FailingListEvents
         }
 
         fn list_senders(&self) -> &impl ListSendersUseCase {
@@ -287,11 +278,10 @@ mod tests {
             sender_name: None,
             created_at_ms: 1000,
         };
-        let repo = Arc::new(FakeEventRepository::with_records(vec![record]));
+        let list_events = Arc::new(FakeListEvents::with_records(vec![record]));
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
-            event_repo: repo,
-            email_repo: Arc::new(FakeEmailRepository),
+            list_events,
         });
         let response = app
             .oneshot(get_events(&email_id.as_uuid().to_string(), ""))
@@ -307,11 +297,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_events_with_invalid_uuid_returns_400() {
-        let repo = Arc::new(FakeEventRepository::new());
+        let list_events = Arc::new(FakeListEvents::new());
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
-            event_repo: repo,
-            email_repo: Arc::new(FakeEmailRepository),
+            list_events,
         });
         let response = app.oneshot(get_events("not-a-uuid", "")).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -319,12 +308,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_events_caps_limit_at_max() {
-        let repo = Arc::new(FakeEventRepository::new());
-        let captured = repo.captured_params.clone();
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
-            event_repo: repo,
-            email_repo: Arc::new(FakeEmailRepository),
+            list_events,
         });
         app.oneshot(get_events(&valid_email_id(), "?limit=500"))
             .await
@@ -335,12 +323,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_events_applies_default_limit() {
-        let repo = Arc::new(FakeEventRepository::new());
-        let captured = repo.captured_params.clone();
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
-            event_repo: repo,
-            email_repo: Arc::new(FakeEmailRepository),
+            list_events,
         });
         app.oneshot(get_events(&valid_email_id(), ""))
             .await
@@ -351,12 +338,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_events_forwards_event_type_filter() {
-        let repo = Arc::new(FakeEventRepository::new());
-        let captured = repo.captured_params.clone();
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
-            event_repo: repo,
-            email_repo: Arc::new(FakeEmailRepository),
+            list_events,
         });
         app.oneshot(get_events(&valid_email_id(), "?event_type=sent"))
             .await
@@ -369,8 +355,6 @@ mod tests {
     async fn list_events_500_when_repository_errors() {
         let app = router(FailingRepoState {
             submit: Arc::new(FakeSubmit),
-            event_repo: Arc::new(FailingEventRepository),
-            email_repo: Arc::new(FakeEmailRepository),
         });
         let response = app
             .oneshot(get_events(&valid_email_id(), ""))
@@ -381,12 +365,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_events_without_email_id_passes_none_to_repo() {
-        let repo = Arc::new(FakeEventRepository::new());
-        let captured = repo.captured_params.clone();
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
-            event_repo: repo,
-            email_repo: Arc::new(FakeEmailRepository),
+            list_events,
         });
         app.oneshot(get_all_events("")).await.unwrap();
         let params = captured.lock().unwrap();
@@ -396,12 +379,11 @@ mod tests {
     #[tokio::test]
     async fn list_events_with_email_id_param_forwards_to_repo() {
         let uuid = uuid::Uuid::now_v7();
-        let repo = Arc::new(FakeEventRepository::new());
-        let captured = repo.captured_params.clone();
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
-            event_repo: repo,
-            email_repo: Arc::new(FakeEmailRepository),
+            list_events,
         });
         app.oneshot(get_all_events(&format!("?email_id={uuid}")))
             .await
@@ -412,11 +394,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_events_with_invalid_email_id_query_returns_400() {
-        let repo = Arc::new(FakeEventRepository::new());
+        let list_events = Arc::new(FakeListEvents::new());
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
-            event_repo: repo,
-            email_repo: Arc::new(FakeEmailRepository),
+            list_events,
         });
         let response = app
             .oneshot(get_all_events("?email_id=not-a-uuid"))
@@ -427,12 +408,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_events_global_applies_default_limit() {
-        let repo = Arc::new(FakeEventRepository::new());
-        let captured = repo.captured_params.clone();
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
-            event_repo: repo,
-            email_repo: Arc::new(FakeEmailRepository),
+            list_events,
         });
         app.oneshot(get_all_events("")).await.unwrap();
         let params = captured.lock().unwrap();
@@ -441,12 +421,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_events_global_caps_limit_at_max() {
-        let repo = Arc::new(FakeEventRepository::new());
-        let captured = repo.captured_params.clone();
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
         let app = router(TestState {
             submit: Arc::new(FakeSubmit),
-            event_repo: repo,
-            email_repo: Arc::new(FakeEmailRepository),
+            list_events,
         });
         app.oneshot(get_all_events("?limit=999")).await.unwrap();
         let params = captured.lock().unwrap();

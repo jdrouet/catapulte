@@ -3,8 +3,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
-use catapulte_domain::port::email_repository::EmailRepositoryError;
-use catapulte_domain::port::event_repository::EventRepositoryError;
+use catapulte_domain::use_case::list_emails::ListEmailsError;
+use catapulte_domain::use_case::list_events::ListEventsError;
 use catapulte_domain::use_case::list_senders::ListSendersError;
 use catapulte_domain::use_case::submit_email::SubmitEmailError;
 
@@ -17,9 +17,9 @@ pub enum AppError {
     #[error(transparent)]
     Submit(#[from] SubmitEmailError),
     #[error(transparent)]
-    ListEvents(#[from] EventRepositoryError),
-    #[error("list emails failed")]
-    ListEmails(EmailRepositoryError),
+    ListEmails(#[from] ListEmailsError),
+    #[error(transparent)]
+    ListEvents(#[from] ListEventsError),
     #[error(transparent)]
     ListSenders(#[from] ListSendersError),
     #[error("invalid email id")]
@@ -42,8 +42,8 @@ impl IntoResponse for AppError {
                 | SubmitEmailError::Enqueue(_)
                 | SubmitEmailError::Publish(_),
             )
-            | Self::ListEvents(_)
             | Self::ListEmails(_)
+            | Self::ListEvents(_)
             | Self::ListSenders(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
         };
         tracing::error!(error = ?self, status = %status.as_u16(), "request failed");

@@ -44,11 +44,13 @@ mod tests {
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::entity::sender::{QuotaRange, SenderConfig, SenderName, SenderQuota};
     use catapulte_domain::port::email_repository::{
-        EmailRecord, EmailRepository, EmailRepositoryError, ListEmailsParams, SaveResult,
+        EmailRecord, EmailRepositoryError, ListEmailsParams,
     };
     use catapulte_domain::port::event_repository::{
-        EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
+        EventRecord, EventRepositoryError, ListEventsParams,
     };
+    use catapulte_domain::use_case::list_emails::{ListEmailsError, ListEmailsUseCase};
+    use catapulte_domain::use_case::list_events::{ListEventsError, ListEventsUseCase};
     use catapulte_domain::use_case::list_senders::{
         ListSendersError, ListSendersUseCase, SenderUsage,
     };
@@ -74,35 +76,26 @@ mod tests {
         }
     }
 
-    struct FakeEventRepository;
+    struct NoopListEmails;
 
     #[allow(async_fn_in_trait)]
-    impl EventRepository for FakeEventRepository {
-        async fn list_events(
+    impl ListEmailsUseCase for NoopListEmails {
+        async fn execute(
             &self,
-            _params: ListEventsParams,
-        ) -> Result<Vec<EventRecord>, EventRepositoryError> {
+            _params: ListEmailsParams,
+        ) -> Result<Vec<EmailRecord>, ListEmailsError> {
             Ok(vec![])
         }
     }
 
-    #[derive(Clone)]
-    struct FakeEmailRepository;
+    struct NoopListEvents;
 
     #[allow(async_fn_in_trait)]
-    impl EmailRepository for FakeEmailRepository {
-        async fn save(
+    impl ListEventsUseCase for NoopListEvents {
+        async fn execute(
             &self,
-            id: EmailId,
-            _envelope: &Envelope,
-        ) -> Result<SaveResult, EmailRepositoryError> {
-            Ok(SaveResult::Created(id))
-        }
-
-        async fn list_emails(
-            &self,
-            _params: ListEmailsParams,
-        ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
+            _params: ListEventsParams,
+        ) -> Result<Vec<EventRecord>, ListEventsError> {
             Ok(vec![])
         }
     }
@@ -155,12 +148,12 @@ mod tests {
             &FakeSubmit
         }
 
-        fn event_repository(&self) -> &impl EventRepository {
-            &FakeEventRepository
+        fn list_emails(&self) -> &impl ListEmailsUseCase {
+            &NoopListEmails
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
-            &FakeEmailRepository
+        fn list_events(&self) -> &impl ListEventsUseCase {
+            &NoopListEvents
         }
 
         fn list_senders(&self) -> &impl ListSendersUseCase {
@@ -176,12 +169,12 @@ mod tests {
             &FakeSubmit
         }
 
-        fn event_repository(&self) -> &impl EventRepository {
-            &FakeEventRepository
+        fn list_emails(&self) -> &impl ListEmailsUseCase {
+            &NoopListEmails
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
-            &FakeEmailRepository
+        fn list_events(&self) -> &impl ListEventsUseCase {
+            &NoopListEvents
         }
 
         fn list_senders(&self) -> &impl ListSendersUseCase {

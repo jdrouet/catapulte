@@ -4,6 +4,8 @@ use catapulte_domain::port::clock::SystemClock;
 use catapulte_domain::port::email_queue::EmailQueue;
 use catapulte_domain::port::event_publisher::EventPublisher;
 use catapulte_domain::service::routed_email_sender::RoutedEmailSender;
+use catapulte_domain::use_case::list_emails::{ListEmailsService, ListEmailsUseCase};
+use catapulte_domain::use_case::list_events::{ListEventsService, ListEventsUseCase};
 use catapulte_domain::use_case::list_senders::{ListSendersService, ListSendersUseCase};
 use catapulte_domain::use_case::process_queued_email::{
     ProcessQueuedEmailService, ProcessQueuedEmailUseCase,
@@ -28,6 +30,8 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
 >;
 
 pub(crate) type ListSendersServiceImpl = ListSendersService<StorageAdapter, SystemClock>;
+pub(crate) type ListEmailsServiceImpl = ListEmailsService<StorageAdapter>;
+pub(crate) type ListEventsServiceImpl = ListEventsService<StorageAdapter>;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -35,7 +39,8 @@ pub(crate) struct AppState {
         Arc<SubmitEmailService<StorageAdapter, QueueAdapter, PublisherAdapter>>,
     pub(crate) process_queued_email: Arc<ProcessService>,
     pub(crate) list_senders: Arc<ListSendersServiceImpl>,
-    pub(crate) storage: StorageAdapter,
+    pub(crate) list_emails: Arc<ListEmailsServiceImpl>,
+    pub(crate) list_events: Arc<ListEventsServiceImpl>,
     pub(crate) queue: QueueAdapter,
     pub(crate) publisher: PublisherAdapter,
 }
@@ -45,12 +50,12 @@ impl HttpServerState for AppState {
         self.submit_email.as_ref()
     }
 
-    fn event_repository(&self) -> &impl catapulte_domain::port::event_repository::EventRepository {
-        &self.storage
+    fn list_emails(&self) -> &impl ListEmailsUseCase {
+        self.list_emails.as_ref()
     }
 
-    fn email_repository(&self) -> &impl catapulte_domain::port::email_repository::EmailRepository {
-        &self.storage
+    fn list_events(&self) -> &impl ListEventsUseCase {
+        self.list_events.as_ref()
     }
 
     fn list_senders(&self) -> &impl ListSendersUseCase {

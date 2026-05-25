@@ -112,6 +112,12 @@ impl AppConfig {
                 catapulte_domain::port::clock::SystemClock,
             ),
         );
+        let list_emails = Arc::new(
+            catapulte_domain::use_case::list_emails::ListEmailsService::new(storage.clone()),
+        );
+        let list_events = Arc::new(
+            catapulte_domain::use_case::list_events::ListEventsService::new(storage.clone()),
+        );
         let resolver = self
             .resolver
             .build()
@@ -133,7 +139,8 @@ impl AppConfig {
             submit_email,
             process_queued_email,
             list_senders,
-            storage,
+            list_emails,
+            list_events,
             queue,
             publisher,
         };
