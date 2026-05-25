@@ -79,6 +79,28 @@ impl SenderRepository for StorageAdapter {
     }
 }
 
+impl catapulte_domain::port::sender_usage::SenderUsagePort for StorageAdapter {
+    async fn get_stats(
+        &self,
+        names: &[catapulte_domain::entity::sender::SenderName],
+        since_ms: i64,
+    ) -> Result<
+        Vec<catapulte_domain::port::sender_usage::SenderStats>,
+        catapulte_domain::port::sender_usage::SenderUsageError,
+    > {
+        match self {
+            Self::Sqlite(a) => {
+                catapulte_domain::port::sender_usage::SenderUsagePort::get_stats(a, names, since_ms)
+                    .await
+            }
+            Self::Postgres(a) => {
+                catapulte_domain::port::sender_usage::SenderUsagePort::get_stats(a, names, since_ms)
+                    .await
+            }
+        }
+    }
+}
+
 pub enum StorageBackendConfig {
     Sqlite(SqliteConfig),
     Postgres(PostgresConfig),
