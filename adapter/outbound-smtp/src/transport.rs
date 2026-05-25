@@ -180,19 +180,19 @@ impl SmtpConfig {
     /// # Errors
     ///
     /// Returns an error if the SMTP transport cannot be built.
-    pub fn build(self) -> anyhow::Result<SmtpSender> {
+    pub fn build(self) -> anyhow::Result<SmtpTransport> {
         let builder = build_transport_builder(&self.tls, &self.host)?.port(self.port);
         let builder = apply_credentials(builder, self.username, self.password);
         let transport = builder.build();
-        Ok(SmtpSender { transport })
+        Ok(SmtpTransport { transport })
     }
 }
 
-pub struct SmtpSender {
+pub struct SmtpTransport {
     transport: AsyncSmtpTransport<Tokio1Executor>,
 }
 
-impl SmtpSender {
+impl SmtpTransport {
     pub(crate) async fn send_inner(&self, email: &OutboundEmail) -> anyhow::Result<()> {
         let from = parse_mailbox(&email.sender)?;
         let builder = apply_recipients(Message::builder().from(from), &email.recipients)?;
@@ -205,7 +205,7 @@ impl SmtpSender {
     }
 }
 
-impl EmailTransport for SmtpSender {
+impl EmailTransport for SmtpTransport {
     async fn deliver<'a>(&'a self, email: &'a OutboundEmail) -> Result<(), anyhow::Error> {
         self.send_inner(email).await
     }
@@ -219,7 +219,7 @@ mod tests {
     use lettre::Address;
 
     use super::{SmtpConfig, SmtpTls, finalize_message, parse_port, parse_tls};
-    use crate::sender::parse_mailbox;
+    use crate::transport::parse_mailbox;
 
     fn make_lookup(
         vars: HashMap<&'static str, &'static str>,

@@ -14,7 +14,7 @@ use catapulte_inbound_worker::worker::WorkerState;
 use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverAdapter;
-use catapulte_outbound_smtp::sender::SmtpSender;
+use catapulte_outbound_smtp::transport::SmtpTransport;
 
 use crate::publisher::PublisherAdapter;
 use crate::queue::QueueAdapter;
@@ -24,7 +24,7 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
     TemplateResolverAdapter,
     MiniJinjaInterpolator,
     MjmlRenderer,
-    RoutedEmailSender<SmtpSender, StorageAdapter>,
+    RoutedEmailSender<SmtpTransport, StorageAdapter>,
 >;
 
 pub(crate) type ListSendersServiceImpl = ListSendersService<StorageAdapter, SystemClock>;

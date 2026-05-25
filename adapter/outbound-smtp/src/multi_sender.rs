@@ -3,13 +3,13 @@ use std::env::VarError;
 use anyhow::Context;
 use catapulte_domain::entity::sender::{QuotaRange, SenderName, SenderQuota};
 
-use crate::sender::{SmtpConfig, SmtpSender};
+use crate::transport::{SmtpConfig, SmtpTransport};
 
 pub struct SmtpTransportEntry {
     pub name: SenderName,
     pub priority: u8,
     pub quota: Option<SenderQuota>,
-    pub transport: SmtpSender,
+    pub transport: SmtpTransport,
 }
 
 struct SingleSenderConfig {
