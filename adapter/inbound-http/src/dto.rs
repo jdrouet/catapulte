@@ -230,6 +230,7 @@ pub struct EventRecordDto {
     pub email_id: String,
     pub event_type: String,
     pub payload: Option<serde_json::Value>,
+    pub sender_name: Option<String>,
     pub created_at_ms: i64,
 }
 
@@ -240,6 +241,7 @@ impl From<catapulte_domain::port::event_repository::EventRecord> for EventRecord
             email_id: r.email_id.as_uuid().to_string(),
             event_type: r.event_type,
             payload: r.payload,
+            sender_name: r.sender_name.map(|n| n.as_str().to_owned()),
             created_at_ms: r.created_at_ms,
         }
     }

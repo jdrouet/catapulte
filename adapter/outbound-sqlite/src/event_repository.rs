@@ -1,5 +1,6 @@
 use anyhow::Context;
 use catapulte_domain::entity::email::EmailId;
+use catapulte_domain::entity::sender::SenderName;
 use catapulte_domain::port::event_repository::{
     EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
 };
@@ -15,7 +16,7 @@ impl EventRepository for SqliteAdapter {
         params: ListEventsParams,
     ) -> Result<Vec<EventRecord>, EventRepositoryError> {
         let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
-            "SELECT id, email_id, event_type, payload, created_at FROM lifecycle_events WHERE 1=1",
+            "SELECT id, email_id, event_type, payload, sender_name, created_at FROM lifecycle_events WHERE 1=1",
         );
         if let Some(email_id) = params.email_id {
             qb.push(" AND email_id = ");
@@ -61,12 +62,15 @@ impl SqliteAdapter {
         let event_type: String = row.try_get("event_type").context("reading event_type")?;
         let payload: Option<sqlx::types::Json<serde_json::Value>> =
             row.try_get("payload").context("reading payload")?;
+        let sender_name: Option<String> =
+            row.try_get("sender_name").context("reading sender_name")?;
         let created_at_ms: i64 = row.try_get("created_at").context("reading created_at")?;
         Ok(EventRecord {
             id,
             email_id: EmailId::from(email_id_uuid),
             event_type,
             payload: payload.map(|j| j.0),
+            sender_name: sender_name.map(SenderName::new),
             created_at_ms,
         })
     }

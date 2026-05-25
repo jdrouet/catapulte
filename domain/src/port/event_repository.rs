@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use crate::entity::email::EmailId;
+use crate::entity::sender::SenderName;
 
 #[derive(Clone, Debug)]
 pub struct ListEventsParams {
@@ -18,6 +19,7 @@ pub struct EventRecord {
     pub email_id: EmailId,
     pub event_type: String,
     pub payload: Option<serde_json::Value>,
+    pub sender_name: Option<SenderName>,
     pub created_at_ms: i64,
 }
 
