@@ -3,6 +3,7 @@ pub mod email_queue;
 pub mod email_repository;
 pub mod event_publisher;
 pub mod event_repository;
+pub mod sender_repository;
 
 use std::str::FromStr;
 
