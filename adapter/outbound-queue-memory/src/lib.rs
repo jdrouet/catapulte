@@ -145,7 +145,7 @@ mod tests {
         assert!(queue.pending.lock().unwrap().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn nack_requeues_item_after_delay() {
         let queue = MemoryQueue::new();
         let id = EmailId::default();
@@ -155,12 +155,13 @@ mod tests {
         assert_eq!(attempt, 1);
 
         queue
-            .nack(token, std::time::Duration::from_millis(0))
+            .nack(token, std::time::Duration::from_millis(100))
             .await
             .unwrap();
 
-        // Give the spawned task a moment to send
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Advance virtual time past the nack delay; the spawned sleep task fires and
+        // sends the item back to the channel.
+        tokio::time::advance(std::time::Duration::from_millis(200)).await;
 
         let (returned_id2, _, attempt2, _token2) = queue.dequeue().await.unwrap();
         assert_eq!(returned_id2, id);
