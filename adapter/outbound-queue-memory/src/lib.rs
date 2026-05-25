@@ -1,30 +1,31 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
-use tokio::sync::mpsc;
 
-struct MemoryQueueInner {
-    sender: mpsc::UnboundedSender<(EmailId, Envelope)>,
-    receiver: tokio::sync::Mutex<mpsc::UnboundedReceiver<(EmailId, Envelope)>>,
-}
+type InFlight = Arc<Mutex<HashMap<u64, (EmailId, Envelope, u32)>>>;
 
 #[derive(Clone)]
 pub struct MemoryQueue {
-    inner: Arc<MemoryQueueInner>,
+    tx: tokio::sync::mpsc::UnboundedSender<(EmailId, Envelope, u32)>,
+    rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<(EmailId, Envelope, u32)>>>,
+    pending: InFlight,
+    next_token: Arc<AtomicU64>,
 }
 
 impl MemoryQueue {
     #[must_use]
     pub fn new() -> Self {
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
-            inner: Arc::new(MemoryQueueInner {
-                sender,
-                receiver: tokio::sync::Mutex::new(receiver),
-            }),
+            tx,
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next_token: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -37,32 +38,55 @@ impl Default for MemoryQueue {
 
 impl EmailQueue for MemoryQueue {
     async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
-        self.inner
-            .sender
-            .send((id, envelope.clone()))
+        self.tx
+            .send((id, envelope.clone(), 1))
             .map_err(|_| EmailQueueError::Storage {
                 source: anyhow::anyhow!("memory queue channel closed"),
             })
     }
 
     async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
-        self.inner
-            .receiver
+        let (id, envelope, attempt) =
+            self.rx
+                .lock()
+                .await
+                .recv()
+                .await
+                .ok_or_else(|| EmailQueueError::Storage {
+                    source: anyhow::anyhow!("memory queue channel closed"),
+                })?;
+
+        let token_id = self.next_token.fetch_add(1, Ordering::Relaxed);
+        let token = AckToken::new(token_id.to_le_bytes().to_vec());
+        self.pending
             .lock()
-            .await
-            .recv()
-            .await
-            .map(|(id, env)| (id, env, 1u32, AckToken::new(vec![])))
-            .ok_or_else(|| EmailQueueError::Storage {
-                source: anyhow::anyhow!("memory queue channel closed"),
-            })
+            .unwrap()
+            .insert(token_id, (id, envelope.clone(), attempt));
+        Ok((id, envelope, attempt, token))
     }
 
-    async fn ack(&self, _token: AckToken) -> Result<(), EmailQueueError> {
+    async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
+        let bytes: [u8; 8] = token.0.try_into().map_err(|_| EmailQueueError::Storage {
+            source: anyhow::anyhow!("invalid ack token length"),
+        })?;
+        let token_id = u64::from_le_bytes(bytes);
+        self.pending.lock().unwrap().remove(&token_id);
         Ok(())
     }
 
-    async fn nack(&self, _token: AckToken, _delay: Duration) -> Result<(), EmailQueueError> {
+    async fn nack(&self, token: AckToken, delay: Duration) -> Result<(), EmailQueueError> {
+        let bytes: [u8; 8] = token.0.try_into().map_err(|_| EmailQueueError::Storage {
+            source: anyhow::anyhow!("invalid nack token length"),
+        })?;
+        let token_id = u64::from_le_bytes(bytes);
+        let entry = self.pending.lock().unwrap().remove(&token_id);
+        if let Some((id, envelope, attempt)) = entry {
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                let _ = tx.send((id, envelope, attempt + 1));
+            });
+        }
         Ok(())
     }
 }
@@ -97,25 +121,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ack_is_noop() {
-        use catapulte_domain::port::email_queue::AckToken;
-        let queue = MemoryQueue::new();
-        assert!(queue.ack(AckToken::new(vec![])).await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn nack_is_noop() {
-        use catapulte_domain::port::email_queue::AckToken;
-        let queue = MemoryQueue::new();
-        assert!(
-            queue
-                .nack(AckToken::new(vec![]), std::time::Duration::from_secs(1))
-                .await
-                .is_ok()
-        );
-    }
-
-    #[tokio::test]
     async fn enqueue_multiple_dequeues_in_order() {
         let queue = MemoryQueue::new();
         let id1 = EmailId::default();
@@ -126,5 +131,39 @@ mod tests {
         let (r2, _, _, _) = queue.dequeue().await.unwrap();
         assert_eq!(r1, id1);
         assert_eq!(r2, id2);
+    }
+
+    #[tokio::test]
+    async fn ack_removes_item_from_pending() {
+        let queue = MemoryQueue::new();
+        let id = EmailId::default();
+        queue.enqueue(id, &sample_envelope()).await.unwrap();
+        let (_, _, _, token) = queue.dequeue().await.unwrap();
+
+        queue.ack(token).await.unwrap();
+
+        assert!(queue.pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nack_requeues_item_after_delay() {
+        let queue = MemoryQueue::new();
+        let id = EmailId::default();
+        queue.enqueue(id, &sample_envelope()).await.unwrap();
+        let (returned_id, _, attempt, token) = queue.dequeue().await.unwrap();
+        assert_eq!(returned_id, id);
+        assert_eq!(attempt, 1);
+
+        queue
+            .nack(token, std::time::Duration::from_millis(0))
+            .await
+            .unwrap();
+
+        // Give the spawned task a moment to send
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (returned_id2, _, attempt2, _token2) = queue.dequeue().await.unwrap();
+        assert_eq!(returned_id2, id);
+        assert_eq!(attempt2, 2);
     }
 }
