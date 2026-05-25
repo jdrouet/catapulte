@@ -10,6 +10,7 @@ use catapulte_inbound_http::InboundHttpConfig;
 use catapulte_inbound_worker::worker::WorkerConfig;
 use catapulte_outbound_postgres::PostgresConfig;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
+use catapulte_outbound_smtp::multi_sender::MultiSenderConfig;
 use catapulte_outbound_smtp::sender::{SmtpConfig, SmtpTls};
 use catapulte_outbound_sqlite::SqliteConfig;
 use testcontainers::GenericImage;
@@ -60,14 +61,17 @@ async fn start_nats() -> testcontainers::ContainerAsync<GenericImage> {
         .expect("failed to start NATS container; ensure Docker is running")
 }
 
-fn base_smtp(port: u16) -> SmtpConfig {
-    SmtpConfig {
-        host: "127.0.0.1".to_owned(),
-        port,
-        username: None,
-        password: None,
-        tls: SmtpTls::None,
-    }
+fn base_smtp(port: u16) -> MultiSenderConfig {
+    MultiSenderConfig::single(
+        "default",
+        SmtpConfig {
+            host: "127.0.0.1".to_owned(),
+            port,
+            username: None,
+            password: None,
+            tls: SmtpTls::None,
+        },
+    )
 }
 
 fn base_resolver() -> TemplateResolverConfig {

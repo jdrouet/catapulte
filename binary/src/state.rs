@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use catapulte_domain::entity::sender::{SenderName, SenderQuota};
 use catapulte_domain::port::email_queue::EmailQueue;
 use catapulte_domain::port::event_publisher::EventPublisher;
+use catapulte_domain::port::sender_repository::SenderRepository;
 use catapulte_domain::use_case::process_queued_email::{
     ProcessQueuedEmailService, ProcessQueuedEmailUseCase,
 };
@@ -11,7 +13,7 @@ use catapulte_inbound_worker::worker::WorkerState;
 use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverAdapter;
-use catapulte_outbound_smtp::sender::SmtpSender;
+use catapulte_outbound_smtp::multi_sender::MultiSmtpSender;
 
 use crate::publisher::PublisherAdapter;
 use crate::queue::QueueAdapter;
@@ -21,7 +23,7 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
     TemplateResolverAdapter,
     MiniJinjaInterpolator,
     MjmlRenderer,
-    SmtpSender,
+    MultiSmtpSender,
 >;
 
 #[derive(Clone)]
@@ -32,6 +34,7 @@ pub(crate) struct AppState {
     pub(crate) storage: StorageAdapter,
     pub(crate) queue: QueueAdapter,
     pub(crate) publisher: PublisherAdapter,
+    pub(crate) configured_senders: Arc<Vec<(SenderName, Option<SenderQuota>)>>,
 }
 
 impl HttpServerState for AppState {
@@ -45,6 +48,14 @@ impl HttpServerState for AppState {
 
     fn email_repository(&self) -> &impl catapulte_domain::port::email_repository::EmailRepository {
         &self.storage
+    }
+
+    fn sender_repository(&self) -> &impl SenderRepository {
+        &self.storage
+    }
+
+    fn configured_senders(&self) -> &[(SenderName, Option<SenderQuota>)] {
+        &self.configured_senders
     }
 }
 

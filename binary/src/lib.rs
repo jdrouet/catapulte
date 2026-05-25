@@ -8,7 +8,7 @@ use catapulte_inbound_worker::worker::{Worker, WorkerConfig};
 use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
-use catapulte_outbound_smtp::sender::SmtpConfig;
+use catapulte_outbound_smtp::multi_sender::MultiSenderConfig;
 
 pub mod publisher;
 pub mod queue;
@@ -22,7 +22,7 @@ use storage::StorageBackendConfig;
 pub struct AppConfig {
     pub storage: StorageBackendConfig,
     pub http: InboundHttpConfig,
-    pub smtp: SmtpConfig,
+    pub smtp: MultiSenderConfig,
     pub resolver: TemplateResolverConfig,
     pub worker: WorkerConfig,
     pub queue: queue::QueueBackendConfig,
@@ -36,7 +36,7 @@ impl AppConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         let storage = StorageBackendConfig::from_env().context("loading storage config")?;
         let http = InboundHttpConfig::from_env("CATAPULTE_HTTP").context("loading http config")?;
-        let smtp = SmtpConfig::from_env("CATAPULTE_SMTP").context("loading smtp config")?;
+        let smtp = MultiSenderConfig::from_env().context("loading smtp config")?;
         let resolver = TemplateResolverConfig::from_env("CATAPULTE_RESOLVER")
             .context("loading resolver config")?;
         let worker = WorkerConfig::from_env("CATAPULTE_WORKER").context("loading worker config")?;
@@ -76,6 +76,7 @@ impl AppConfig {
             .await
             .context("building publisher adapter")?;
 
+        let configured_senders = Arc::new(self.smtp.sender_caps());
         let smtp = self.smtp.build().context("building smtp sender")?;
         let resolver = self
             .resolver
@@ -100,6 +101,7 @@ impl AppConfig {
             storage,
             queue,
             publisher,
+            configured_senders,
         };
         let server = self.http.build();
         let worker = self.worker.build();
