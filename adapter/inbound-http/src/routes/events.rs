@@ -97,11 +97,15 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
+    use catapulte_domain::entity::sender::{SenderName, SenderQuota};
     use catapulte_domain::port::email_repository::{
         EmailRecord, EmailRepository, EmailRepositoryError, ListEmailsParams, SaveResult,
     };
     use catapulte_domain::port::event_repository::{
         EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
+    };
+    use catapulte_domain::port::sender_repository::{
+        SenderRepository, SenderRepositoryError, SenderStats,
     };
     use catapulte_domain::use_case::submit_email::{
         SubmitEmailError, SubmitEmailUseCase, SubmitParams,
@@ -112,6 +116,19 @@ mod tests {
     use crate::HttpServerState;
     use crate::dto::{DEFAULT_EVENTS_LIMIT, MAX_EVENTS_LIMIT};
     use crate::router;
+
+    struct NoopSenderRepository;
+
+    #[allow(async_fn_in_trait)]
+    impl SenderRepository for NoopSenderRepository {
+        async fn get_stats(
+            &self,
+            _names: &[SenderName],
+            _since_ms: i64,
+        ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
+            Ok(vec![])
+        }
+    }
 
     #[derive(Clone)]
     struct FakeSubmit;
@@ -213,6 +230,16 @@ mod tests {
         fn email_repository(&self) -> &impl EmailRepository {
             self.email_repo.as_ref()
         }
+
+        fn sender_repository(
+            &self,
+        ) -> &impl catapulte_domain::port::sender_repository::SenderRepository {
+            &NoopSenderRepository
+        }
+
+        fn configured_senders(&self) -> &[(SenderName, Option<SenderQuota>)] {
+            &[]
+        }
     }
 
     #[derive(Clone)]
@@ -233,6 +260,16 @@ mod tests {
 
         fn email_repository(&self) -> &impl EmailRepository {
             self.email_repo.as_ref()
+        }
+
+        fn sender_repository(
+            &self,
+        ) -> &impl catapulte_domain::port::sender_repository::SenderRepository {
+            &NoopSenderRepository
+        }
+
+        fn configured_senders(&self) -> &[(SenderName, Option<SenderQuota>)] {
+            &[]
         }
     }
 
@@ -264,6 +301,7 @@ mod tests {
             email_id,
             event_type: "queued".to_owned(),
             payload: None,
+            sender_name: None,
             created_at_ms: 1000,
         };
         let repo = Arc::new(FakeEventRepository::with_records(vec![record]));

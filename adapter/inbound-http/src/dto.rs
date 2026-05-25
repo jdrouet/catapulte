@@ -349,3 +349,22 @@ pub struct ListEmailsResponse {
     pub limit: u32,
     pub offset: u32,
 }
+
+#[derive(Serialize)]
+pub struct SenderQuotaDto {
+    pub count: u64,
+    pub range: String,
+}
+
+#[derive(Serialize)]
+pub struct SenderDto {
+    pub name: String,
+    pub sent_in_range: u64,
+    pub failed_in_range: u64,
+    pub quota: Option<SenderQuotaDto>,
+}
+
+#[derive(Serialize)]
+pub struct ListSendersResponse {
+    pub senders: Vec<SenderDto>,
+}

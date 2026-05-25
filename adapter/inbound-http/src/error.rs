@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use catapulte_domain::port::email_repository::EmailRepositoryError;
 use catapulte_domain::port::event_repository::EventRepositoryError;
+use catapulte_domain::port::sender_repository::SenderRepositoryError;
 use catapulte_domain::use_case::submit_email::SubmitEmailError;
 
 use crate::dto::BodyConversionError;
@@ -19,6 +20,8 @@ pub enum AppError {
     ListEvents(#[from] EventRepositoryError),
     #[error("list emails failed")]
     ListEmails(EmailRepositoryError),
+    #[error(transparent)]
+    ListSenders(#[from] SenderRepositoryError),
     #[error("invalid email id")]
     InvalidEmailId,
 }
@@ -40,7 +43,8 @@ impl IntoResponse for AppError {
                 | SubmitEmailError::Publish(_),
             )
             | Self::ListEvents(_)
-            | Self::ListEmails(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+            | Self::ListEmails(_)
+            | Self::ListSenders(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
         };
         tracing::error!(error = ?self, status = %status.as_u16(), "request failed");
         (status, Json(ErrorBody { error: message })).into_response()

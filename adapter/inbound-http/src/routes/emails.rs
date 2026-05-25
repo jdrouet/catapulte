@@ -92,9 +92,27 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    use catapulte_domain::entity::sender::{SenderName, SenderQuota};
+    use catapulte_domain::port::sender_repository::{
+        SenderRepository, SenderRepositoryError, SenderStats,
+    };
+
     use crate::HttpServerState;
     use crate::dto::{DEFAULT_EMAILS_LIMIT, MAX_EMAILS_LIMIT};
     use crate::router;
+
+    struct NoopSenderRepository;
+
+    #[allow(async_fn_in_trait)]
+    impl SenderRepository for NoopSenderRepository {
+        async fn get_stats(
+            &self,
+            _names: &[SenderName],
+            _since_ms: i64,
+        ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
+            Ok(vec![])
+        }
+    }
 
     #[derive(Clone)]
     struct FakeSubmit;
@@ -218,6 +236,14 @@ mod tests {
         fn email_repository(&self) -> &impl EmailRepository {
             self.email_repo.as_ref()
         }
+
+        fn sender_repository(&self) -> &impl SenderRepository {
+            &NoopSenderRepository
+        }
+
+        fn configured_senders(&self) -> &[(SenderName, Option<SenderQuota>)] {
+            &[]
+        }
     }
 
     #[derive(Clone)]
@@ -239,6 +265,14 @@ mod tests {
         fn email_repository(&self) -> &impl EmailRepository {
             self.email_repo.as_ref()
         }
+
+        fn sender_repository(&self) -> &impl SenderRepository {
+            &NoopSenderRepository
+        }
+
+        fn configured_senders(&self) -> &[(SenderName, Option<SenderQuota>)] {
+            &[]
+        }
     }
 
     #[derive(Clone)]
@@ -259,6 +293,14 @@ mod tests {
 
         fn email_repository(&self) -> &impl EmailRepository {
             self.email_repo.as_ref()
+        }
+
+        fn sender_repository(&self) -> &impl SenderRepository {
+            &NoopSenderRepository
+        }
+
+        fn configured_senders(&self) -> &[(SenderName, Option<SenderQuota>)] {
+            &[]
         }
     }
 
