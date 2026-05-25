@@ -77,7 +77,10 @@ impl AppConfig {
             .context("building publisher adapter")?;
 
         let configured_senders = Arc::new(self.smtp.sender_caps());
-        let smtp = self.smtp.build().context("building smtp sender")?;
+        let smtp = self
+            .smtp
+            .build(storage.clone())
+            .context("building smtp sender")?;
         let resolver = self
             .resolver
             .build()

@@ -14,6 +14,7 @@ use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverAdapter;
 use catapulte_outbound_smtp::multi_sender::MultiSmtpSender;
+use catapulte_outbound_smtp::sender::SmtpSender;
 
 use crate::publisher::PublisherAdapter;
 use crate::queue::QueueAdapter;
@@ -23,7 +24,7 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
     TemplateResolverAdapter,
     MiniJinjaInterpolator,
     MjmlRenderer,
-    MultiSmtpSender,
+    MultiSmtpSender<SmtpSender, StorageAdapter>,
 >;
 
 #[derive(Clone)]
