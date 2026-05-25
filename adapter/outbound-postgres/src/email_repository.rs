@@ -45,10 +45,17 @@ impl EmailRepository for PostgresAdapter {
             return Ok(SaveResult::Created(id));
         }
 
-        // Row already exists (duplicate idempotency_key); fetch the existing ID.
+        let Some(key) = envelope.idempotency_key.as_deref() else {
+            return Err(EmailRepositoryError::Storage {
+                source: anyhow::anyhow!(
+                    "insert skipped with no idempotency key (unexpected id collision)"
+                ),
+            });
+        };
+
         let existing_uuid: uuid::Uuid =
             sqlx::query_scalar("SELECT id FROM emails WHERE idempotency_key = $1")
-                .bind(envelope.idempotency_key.as_deref())
+                .bind(key)
                 .fetch_one(self.pool())
                 .await
                 .context("fetching existing email by idempotency key")
@@ -525,5 +532,17 @@ mod tests {
 
         assert_ne!(page1[0].id, page2[0].id);
         assert_ne!(page1[1].id, page2[1].id);
+    }
+
+    #[tokio::test]
+    async fn save_with_duplicate_id_and_no_idempotency_key_returns_error() {
+        let (adapter, _container) = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        let result = adapter.save(id, &sample_envelope()).await;
+        assert!(
+            result.is_err(),
+            "expected error on duplicate id with no idempotency key"
+        );
     }
 }
