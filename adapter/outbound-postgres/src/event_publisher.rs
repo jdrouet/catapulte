@@ -9,44 +9,53 @@ impl EventPublisher for PostgresAdapter {
     ///
     /// Returns `EventPublisherError::Publish` when the database insert fails.
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-        let (email_id_uuid, event_type, payload) = match event {
-            LifecycleEvent::Queued { id } => (id.as_uuid(), "queued", None),
+        let (email_id_uuid, event_type, payload, sender_name) = match event {
+            LifecycleEvent::Queued { id } => (id.as_uuid(), "queued", None, None),
             LifecycleEvent::Sending { id, attempt } => (
                 id.as_uuid(),
                 "sending",
                 Some(serde_json::json!({ "attempt": attempt })),
+                None,
             ),
-            LifecycleEvent::Sent { id, sender_name: _ } => (id.as_uuid(), "sent", None),
+            LifecycleEvent::Sent { id, sender_name } => (
+                id.as_uuid(),
+                "sent",
+                None,
+                Some(sender_name.as_str().to_owned()),
+            ),
             LifecycleEvent::Retrying {
                 id,
                 attempt,
                 reason,
-                sender_name: _,
+                sender_name,
             } => (
                 id.as_uuid(),
                 "retrying",
                 Some(serde_json::json!({ "attempt": attempt, "reason": reason })),
+                sender_name.as_ref().map(|s| s.as_str().to_owned()),
             ),
             LifecycleEvent::Failed {
                 id,
                 reason,
-                sender_name: _,
+                sender_name,
             } => (
                 id.as_uuid(),
                 "failed",
                 Some(serde_json::json!({ "reason": reason })),
+                sender_name.as_ref().map(|s| s.as_str().to_owned()),
             ),
         };
 
         let event_id = uuid::Uuid::now_v7();
 
         sqlx::query(
-            "INSERT INTO lifecycle_events (id, email_id, event_type, payload) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO lifecycle_events (id, email_id, event_type, payload, sender_name) VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(event_id)
         .bind(email_id_uuid)
         .bind(event_type)
         .bind(payload)
+        .bind(sender_name)
         .execute(self.pool())
         .await
         .context("inserting lifecycle event")
