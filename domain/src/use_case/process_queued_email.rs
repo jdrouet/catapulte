@@ -247,6 +247,30 @@ mod tests {
         }
     }
 
+    struct FailingInterpolator;
+
+    impl TemplateInterpolator for FailingInterpolator {
+        fn interpolate(
+            &self,
+            _body: ResolvedBody,
+            _variables: &Map<String, Value>,
+        ) -> Result<InterpolatedBody, InterpolateError> {
+            Err(InterpolateError::Engine {
+                source: anyhow::anyhow!("interpolation failed"),
+            })
+        }
+    }
+
+    struct FailingRenderer;
+
+    impl TemplateRenderer for FailingRenderer {
+        fn render(&self, _body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
+            Err(RenderError::Mjml {
+                source: anyhow::anyhow!("render failed"),
+            })
+        }
+    }
+
     fn default_envelope(body: BodySource) -> Envelope {
         Envelope {
             idempotency_key: None,
@@ -368,6 +392,38 @@ mod tests {
         let envelope = default_envelope(body);
         let err = service.execute(envelope).await.unwrap_err();
         assert!(matches!(err, ProcessQueuedEmailError::Send(_)));
+    }
+
+    #[tokio::test]
+    async fn interpolate_failure_propagates_as_process_queued_email_error() {
+        let service = ProcessQueuedEmailService::new(
+            FakeResolver {
+                inline_mjml: String::new(),
+            },
+            FailingInterpolator,
+            FakeRenderer,
+            FakeSender,
+        );
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let envelope = default_envelope(body);
+        let err = service.execute(envelope).await.unwrap_err();
+        assert!(matches!(err, ProcessQueuedEmailError::Interpolate(_)));
+    }
+
+    #[tokio::test]
+    async fn render_failure_propagates_as_process_queued_email_error() {
+        let service = ProcessQueuedEmailService::new(
+            FakeResolver {
+                inline_mjml: String::new(),
+            },
+            FakeInterpolator,
+            FailingRenderer,
+            FakeSender,
+        );
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let envelope = default_envelope(body);
+        let err = service.execute(envelope).await.unwrap_err();
+        assert!(matches!(err, ProcessQueuedEmailError::Render(_)));
     }
 
     fn capturing_service() -> (
