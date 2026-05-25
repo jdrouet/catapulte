@@ -5,11 +5,13 @@ use catapulte_domain::use_case::process_queued_email::ProcessQueuedEmailService;
 use catapulte_domain::use_case::submit_email::SubmitEmailService;
 use catapulte_inbound_http::{InboundHttpConfig, InboundHttpServer};
 use catapulte_inbound_worker::worker::{Worker, WorkerConfig};
+use catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcher;
 use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
 use catapulte_outbound_smtp::multi_sender::MultiSenderConfig;
 
+pub mod attachment_fetcher;
 pub mod attachment_store;
 pub mod publisher;
 pub mod queue;
@@ -29,6 +31,8 @@ pub struct AppConfig {
     pub queue: queue::QueueBackendConfig,
     pub publisher: PublisherAdapterConfig,
     pub attachment_store: attachment_store::AttachmentStoreBackendConfig,
+    pub attachment_fetcher:
+        catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcherConfig,
 }
 
 impl AppConfig {
@@ -47,6 +51,11 @@ impl AppConfig {
         let publisher = PublisherAdapterConfig::from_env().context("loading publisher config")?;
         let attachment_store = attachment_store::AttachmentStoreBackendConfig::from_env()
             .context("loading attachment store config")?;
+        let attachment_fetcher =
+            catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcherConfig::from_env(
+                "CATAPULTE_ATTACHMENT_FETCHER",
+            )
+            .context("loading attachment fetcher config")?;
         Ok(Self {
             storage,
             http,
@@ -56,6 +65,7 @@ impl AppConfig {
             queue,
             publisher,
             attachment_store,
+            attachment_fetcher,
         })
     }
 
@@ -134,11 +144,17 @@ impl AppConfig {
             .await
             .context("building attachment store adapter")?;
 
+        let attachment_fetcher: HttpAttachmentFetcher = self
+            .attachment_fetcher
+            .build()
+            .context("building attachment fetcher adapter")?;
+
         let submit_email = Arc::new(SubmitEmailService::new(
             storage.clone(),
             queue.clone(),
             publisher.clone(),
             attachment_store.clone(),
+            attachment_fetcher,
         ));
         let process_queued_email = Arc::new(ProcessQueuedEmailService::new(
             resolver,

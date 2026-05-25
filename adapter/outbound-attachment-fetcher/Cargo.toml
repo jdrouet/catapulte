@@ -1,0 +1,24 @@
+[package]
+name = "catapulte-outbound-attachment-fetcher"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+catapulte-domain = { path = "../../domain" }
+futures-util = { version = "0.3" }
+reqwest = { workspace = true, default-features = false, features = ["rustls-tls", "stream"] }
+thiserror = { version = "2.0" }
+tokio = { workspace = true, features = ["io-util"] }
+tokio-util = { workspace = true, features = ["io"] }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { version = "0.6" }

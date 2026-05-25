@@ -18,6 +18,8 @@ use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverAdapter;
 use catapulte_outbound_smtp::transport::SmtpTransport;
 
+use catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcher;
+
 use crate::attachment_store::AttachmentStoreAdapter;
 use crate::publisher::PublisherAdapter;
 use crate::queue::QueueAdapter;
@@ -38,7 +40,13 @@ pub(crate) type ListEventsServiceImpl = ListEventsService<StorageAdapter>;
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) submit_email: Arc<
-        SubmitEmailService<StorageAdapter, QueueAdapter, PublisherAdapter, AttachmentStoreAdapter>,
+        SubmitEmailService<
+            StorageAdapter,
+            QueueAdapter,
+            PublisherAdapter,
+            AttachmentStoreAdapter,
+            HttpAttachmentFetcher,
+        >,
     >,
     pub(crate) process_queued_email: Arc<ProcessService>,
     pub(crate) list_senders: Arc<ListSendersServiceImpl>,

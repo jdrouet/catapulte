@@ -89,6 +89,11 @@ fn base_attachment_store() -> AttachmentStoreBackendConfig {
     })
 }
 
+fn base_attachment_fetcher()
+-> catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcherConfig {
+    catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcherConfig::default()
+}
+
 fn test_nats_config(url: String) -> catapulte_outbound_nats::NatsConfig {
     catapulte_outbound_nats::NatsConfig {
         url,
@@ -187,6 +192,7 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -215,6 +221,7 @@ async fn submit_plain_email_with_memory_queue_is_delivered() {
         queue: QueueBackendConfig::Memory,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -246,6 +253,7 @@ async fn submit_email_sqlite_storage_nats_queue_is_delivered() {
         queue: QueueBackendConfig::Nats(test_nats_config(format!("nats://127.0.0.1:{nats_port}"))),
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -275,6 +283,7 @@ async fn submit_email_postgres_storage_storage_queue_is_delivered() {
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -304,6 +313,7 @@ async fn submit_email_postgres_storage_memory_queue_is_delivered() {
         queue: QueueBackendConfig::Memory,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -332,6 +342,7 @@ async fn lifecycle_events_endpoint_returns_queued_and_sent() {
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -445,6 +456,7 @@ async fn list_endpoints_return_submitted_email() {
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -588,6 +600,7 @@ async fn submit_email_postgres_storage_nats_queue_is_delivered() {
         queue: QueueBackendConfig::Nats(test_nats_config(format!("nats://127.0.0.1:{nats_port}"))),
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -642,6 +655,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -774,6 +788,7 @@ async fn submit_mjml_inline_with_variables_renders_and_delivers() {
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -893,6 +908,7 @@ async fn idempotency_key_deduplicates_submission() {
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -1031,6 +1047,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -1171,6 +1188,7 @@ async fn submit_email_with_inline_attachment_is_delivered_with_attachment() {
         attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
             root: attachment_dir.path().to_path_buf(),
         }),
+        attachment_fetcher: base_attachment_fetcher(),
     };
 
     let app = config.build().await.expect("failed to build app");

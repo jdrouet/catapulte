@@ -4,15 +4,23 @@ use crate::entity::attachment::AttachmentRef;
 use crate::entity::email::EmailId;
 use crate::entity::envelope::Envelope;
 use crate::entity::lifecycle_event::LifecycleEvent;
+use crate::port::attachment_fetcher::{AttachmentFetchError, AttachmentFetcher};
 use crate::port::attachment_store::{AttachmentReader, AttachmentStore};
 use crate::port::email_queue::{EmailQueue, EmailQueueError};
 use crate::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
 use crate::port::event_publisher::EventPublisher;
 
-pub struct AttachmentInput {
-    pub filename: String,
-    pub content_type: String,
-    pub bytes: bytes::Bytes,
+pub enum AttachmentInput {
+    Inline {
+        filename: String,
+        content_type: String,
+        bytes: bytes::Bytes,
+    },
+    Remote {
+        filename: String,
+        content_type: String,
+        url: url::Url,
+    },
 }
 
 pub struct SubmitEmailInput {
@@ -36,6 +44,11 @@ pub enum SubmitEmailError {
         #[source]
         source: anyhow::Error,
     },
+    #[error("attachment fetch failed")]
+    AttachmentFetch {
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 pub trait SubmitEmailUseCase: Send + Sync + 'static {
@@ -50,27 +63,36 @@ pub trait SubmitEmailUseCase: Send + Sync + 'static {
     ) -> impl std::future::Future<Output = Result<EmailId, SubmitEmailError>> + Send;
 }
 
-pub struct SubmitEmailService<R, Q, P, A> {
+pub struct SubmitEmailService<R, Q, P, A, F> {
     repository: R,
     queue: Q,
     event_publisher: P,
     attachment_store: A,
+    attachment_fetcher: F,
 }
 
-impl<R, Q, P, A> SubmitEmailService<R, Q, P, A>
+impl<R, Q, P, A, F> SubmitEmailService<R, Q, P, A, F>
 where
     R: EmailRepository,
     Q: EmailQueue,
     P: EventPublisher,
     A: AttachmentStore,
+    F: AttachmentFetcher,
 {
     #[must_use]
-    pub fn new(repository: R, queue: Q, event_publisher: P, attachment_store: A) -> Self {
+    pub fn new(
+        repository: R,
+        queue: Q,
+        event_publisher: P,
+        attachment_store: A,
+        attachment_fetcher: F,
+    ) -> Self {
         Self {
             repository,
             queue,
             event_publisher,
             attachment_store,
+            attachment_fetcher,
         }
     }
 
@@ -102,12 +124,38 @@ where
 
         let mut written_refs: Vec<AttachmentRef> = Vec::with_capacity(input.attachments.len());
         for att in &input.attachments {
-            let reader: AttachmentReader = Box::pin(std::io::Cursor::new(att.bytes.to_vec()));
+            let (filename, content_type, reader) = match att {
+                AttachmentInput::Inline {
+                    filename,
+                    content_type,
+                    bytes,
+                } => (
+                    filename.clone(),
+                    content_type.clone(),
+                    Box::pin(std::io::Cursor::new(bytes.to_vec())) as AttachmentReader,
+                ),
+                AttachmentInput::Remote {
+                    filename,
+                    content_type,
+                    url,
+                } => match self.attachment_fetcher.fetch(url).await {
+                    Ok(r) => (filename.clone(), content_type.clone(), r),
+                    Err(fetch_err) => {
+                        for r in &written_refs {
+                            let _ = self.attachment_store.delete(&r.blob).await;
+                        }
+                        let _ = self.repository.delete(id).await;
+                        return Err(SubmitEmailError::AttachmentFetch {
+                            source: anyhow::Error::new(fetch_err),
+                        });
+                    }
+                },
+            };
             match self.attachment_store.put(reader).await {
                 Ok(put_result) => {
                     written_refs.push(AttachmentRef {
-                        filename: att.filename.clone(),
-                        content_type: att.content_type.clone(),
+                        filename,
+                        content_type,
                         size_bytes: put_result.size_bytes,
                         blob: put_result.blob,
                     });
@@ -156,12 +204,13 @@ where
     }
 }
 
-impl<R, Q, P, A> SubmitEmailUseCase for SubmitEmailService<R, Q, P, A>
+impl<R, Q, P, A, F> SubmitEmailUseCase for SubmitEmailService<R, Q, P, A, F>
 where
     R: EmailRepository + Send + Sync + 'static,
     Q: EmailQueue + Send + Sync + 'static,
     P: EventPublisher + Send + Sync + 'static,
     A: AttachmentStore + Send + Sync + 'static,
+    F: AttachmentFetcher + Send + Sync + 'static,
 {
     fn execute(
         &self,
@@ -180,6 +229,7 @@ mod tests {
     use crate::entity::email::{EmailId, RecipientKind};
     use crate::entity::envelope::Envelope;
     use crate::entity::lifecycle_event::LifecycleEvent;
+    use crate::port::attachment_fetcher::{AttachmentFetchError, AttachmentFetcher};
     use crate::port::attachment_store::{
         AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
     };
@@ -508,6 +558,28 @@ mod tests {
         }
     }
 
+    struct FakeFetcher;
+
+    #[allow(async_fn_in_trait)]
+    impl AttachmentFetcher for FakeFetcher {
+        async fn fetch(&self, _url: &url::Url) -> Result<AttachmentReader, AttachmentFetchError> {
+            Ok(Box::pin(std::io::Cursor::new(
+                b"fake remote bytes".to_vec(),
+            )))
+        }
+    }
+
+    struct FailingFetcher;
+
+    #[allow(async_fn_in_trait)]
+    impl AttachmentFetcher for FailingFetcher {
+        async fn fetch(&self, _url: &url::Url) -> Result<AttachmentReader, AttachmentFetchError> {
+            Err(AttachmentFetchError::Fetch {
+                source: anyhow::anyhow!("fetch failed"),
+            })
+        }
+    }
+
     #[tokio::test]
     async fn execute_persists_the_envelope() {
         let repo = FakeRepository::new();
@@ -517,6 +589,7 @@ mod tests {
             queue.clone(),
             FakeEventPublisher::new(),
             FakeAttachmentStore::new(),
+            FakeFetcher,
         );
         let id = service
             .execute(make_input("sender@example.com"))
@@ -537,6 +610,7 @@ mod tests {
             queue.clone(),
             FakeEventPublisher::new(),
             FakeAttachmentStore::new(),
+            FakeFetcher,
         );
         let id = service
             .execute(make_input("sender@example.com"))
@@ -555,6 +629,7 @@ mod tests {
             queue.clone(),
             FakeEventPublisher::new(),
             FakeAttachmentStore::new(),
+            FakeFetcher,
         );
         let err = service
             .execute(make_input("sender@example.com"))
@@ -572,6 +647,7 @@ mod tests {
             FailingQueue,
             FakeEventPublisher::new(),
             FakeAttachmentStore::new(),
+            FakeFetcher,
         );
         let err = service
             .execute(make_input("sender@example.com"))
@@ -590,6 +666,7 @@ mod tests {
             queue.clone(),
             FakeEventPublisher::new(),
             FakeAttachmentStore::new(),
+            FakeFetcher,
         );
         let id1 = service
             .execute(make_input("sender@example.com"))
@@ -611,6 +688,7 @@ mod tests {
             queue.clone(),
             FakeEventPublisher::new(),
             FakeAttachmentStore::new(),
+            FakeFetcher,
         );
         let returned_id = service
             .execute(make_input("sender@example.com"))
@@ -630,6 +708,7 @@ mod tests {
             queue.clone(),
             spy.clone(),
             FakeAttachmentStore::new(),
+            FakeFetcher,
         );
         let id = service
             .execute(make_input("sender@example.com"))
@@ -650,6 +729,7 @@ mod tests {
             queue.clone(),
             spy.clone(),
             FakeAttachmentStore::new(),
+            FakeFetcher,
         );
         service
             .execute(make_input("sender@example.com"))
@@ -667,6 +747,7 @@ mod tests {
             queue.clone(),
             FailingEventPublisher,
             FakeAttachmentStore::new(),
+            FakeFetcher,
         );
         let result = service.execute(make_input("sender@example.com")).await;
         assert!(
@@ -685,7 +766,7 @@ mod tests {
         let repo = FakeRepository::new();
         let queue = FakeQueue::new();
         let mut input = make_input("sender@example.com");
-        input.attachments.push(AttachmentInput {
+        input.attachments.push(AttachmentInput::Inline {
             filename: "file.txt".into(),
             content_type: "text/plain".into(),
             bytes: bytes::Bytes::from_static(b"hello"),
@@ -695,6 +776,7 @@ mod tests {
             queue.clone(),
             FakeEventPublisher::new(),
             FailingAttachmentStore,
+            FakeFetcher,
         );
         let err = service.execute(input).await.unwrap_err();
         assert!(matches!(err, SubmitEmailError::AttachmentStore { .. }));
@@ -708,7 +790,7 @@ mod tests {
         let store = FakeAttachmentStore::new();
         let put_count = store.put_count.clone();
         let mut input = make_input("sender@example.com");
-        input.attachments.push(AttachmentInput {
+        input.attachments.push(AttachmentInput::Inline {
             filename: "test.txt".into(),
             content_type: "text/plain".into(),
             bytes: bytes::Bytes::from_static(b"attachment content"),
@@ -718,9 +800,56 @@ mod tests {
             queue.clone(),
             FakeEventPublisher::new(),
             store,
+            FakeFetcher,
         );
         service.execute(input).await.unwrap();
         assert_eq!(*put_count.lock().unwrap(), 1);
         assert_eq!(queue.enqueued.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn execute_writes_remote_attachment_via_fetcher() {
+        let repo = FakeRepository::new();
+        let queue = FakeQueue::new();
+        let store = FakeAttachmentStore::new();
+        let put_count = store.put_count.clone();
+        let mut input = make_input("sender@example.com");
+        input.attachments.push(AttachmentInput::Remote {
+            filename: "remote.txt".into(),
+            content_type: "text/plain".into(),
+            url: url::Url::parse("https://example.com/file.txt").unwrap(),
+        });
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            store,
+            FakeFetcher,
+        );
+        service.execute(input).await.unwrap();
+        assert_eq!(*put_count.lock().unwrap(), 1);
+        assert_eq!(queue.enqueued.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fetcher_failure_compensates_and_errors() {
+        let repo = FakeRepository::new();
+        let queue = FakeQueue::new();
+        let mut input = make_input("sender@example.com");
+        input.attachments.push(AttachmentInput::Remote {
+            filename: "remote.txt".into(),
+            content_type: "text/plain".into(),
+            url: url::Url::parse("https://example.com/file.txt").unwrap(),
+        });
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+            FailingFetcher,
+        );
+        let err = service.execute(input).await.unwrap_err();
+        assert!(matches!(err, SubmitEmailError::AttachmentFetch { .. }));
+        assert!(queue.enqueued.lock().unwrap().is_empty());
     }
 }

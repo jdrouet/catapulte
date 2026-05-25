@@ -590,4 +590,70 @@ mod tests {
             "router body limit must not reject a 10 MiB attachment"
         );
     }
+
+    #[tokio::test]
+    async fn submit_with_remote_attachment_returns_200() {
+        let app = make_router();
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "attachments": [{"filename": "remote.pdf", "content_type": "application/pdf", "url": "https://example.com/file.pdf"}]
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn submit_with_both_inline_and_url_returns_400() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"x");
+        let app = make_router();
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "attachments": [{"filename": "both.txt", "content_type": "text/plain", "inline_base64": encoded, "url": "https://example.com/file.txt"}]
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_with_neither_inline_nor_url_returns_400() {
+        let app = make_router();
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "attachments": [{"filename": "neither.txt", "content_type": "text/plain"}]
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_with_malformed_url_returns_400() {
+        let app = make_router();
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "attachments": [{"filename": "bad.txt", "content_type": "text/plain", "url": "not a url at all"}]
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }

@@ -37,6 +37,9 @@ impl IntoResponse for AppError {
             Self::BadRequest(_) | Self::InvalidEmailId => {
                 (StatusCode::BAD_REQUEST, "invalid request")
             }
+            Self::Submit(SubmitEmailError::AttachmentFetch { .. }) => {
+                (StatusCode::BAD_REQUEST, "invalid request")
+            }
             Self::Submit(
                 SubmitEmailError::Persist(_)
                 | SubmitEmailError::Enqueue(_)

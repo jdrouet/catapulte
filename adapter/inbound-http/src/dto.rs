@@ -15,7 +15,10 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 352 * 1024 * 1024; // 352 MiB
 pub struct AttachmentDto {
     pub filename: String,
     pub content_type: String,
-    pub inline_base64: String,
+    #[serde(default)]
+    pub inline_base64: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,6 +104,14 @@ pub enum EnvelopeConversionError {
         #[source]
         source: anyhow::Error,
     },
+    #[error("invalid attachment shape: exactly one of inline_base64 or url must be set")]
+    InvalidAttachmentShape { filename: String },
+    #[error("invalid attachment url")]
+    InvalidAttachmentUrl {
+        filename: String,
+        #[source]
+        source: anyhow::Error,
+    },
     #[error("too many attachments")]
     TooManyAttachments,
     #[error("attachment too large")]
@@ -133,23 +144,46 @@ impl SubmitEmailRequest {
         }
         let mut atts = Vec::with_capacity(self.attachments.len());
         for a in self.attachments {
-            let decoded = base64::engine::general_purpose::STANDARD
-                .decode(&a.inline_base64)
-                .context(format!("decoding base64 for attachment '{}'", a.filename))
-                .map_err(|source| EnvelopeConversionError::InvalidAttachmentBase64 {
-                    filename: a.filename.clone(),
-                    source,
-                })?;
-            if decoded.len() as u64 > MAX_ATTACHMENT_BYTES {
-                return Err(EnvelopeConversionError::AttachmentTooLarge {
-                    filename: a.filename,
-                });
-            }
-            atts.push(AttachmentInput {
-                filename: a.filename,
-                content_type: a.content_type,
-                bytes: bytes::Bytes::from(decoded),
-            });
+            let att = match (a.inline_base64, a.url) {
+                (Some(b64), None) => {
+                    let decoded = base64::engine::general_purpose::STANDARD
+                        .decode(&b64)
+                        .context(format!("decoding base64 for attachment '{}'", a.filename))
+                        .map_err(|source| EnvelopeConversionError::InvalidAttachmentBase64 {
+                            filename: a.filename.clone(),
+                            source,
+                        })?;
+                    if decoded.len() as u64 > MAX_ATTACHMENT_BYTES {
+                        return Err(EnvelopeConversionError::AttachmentTooLarge {
+                            filename: a.filename,
+                        });
+                    }
+                    AttachmentInput::Inline {
+                        filename: a.filename,
+                        content_type: a.content_type,
+                        bytes: bytes::Bytes::from(decoded),
+                    }
+                }
+                (None, Some(raw_url)) => {
+                    let parsed = url::Url::parse(&raw_url)
+                        .context(format!("parsing url for attachment '{}'", a.filename))
+                        .map_err(|source| EnvelopeConversionError::InvalidAttachmentUrl {
+                            filename: a.filename.clone(),
+                            source,
+                        })?;
+                    AttachmentInput::Remote {
+                        filename: a.filename,
+                        content_type: a.content_type,
+                        url: parsed,
+                    }
+                }
+                _ => {
+                    return Err(EnvelopeConversionError::InvalidAttachmentShape {
+                        filename: a.filename,
+                    });
+                }
+            };
+            atts.push(att);
         }
 
         Ok(SubmitEmailInput {
@@ -338,19 +372,24 @@ mod tests {
     #[test]
     fn valid_base64_attachment_decodes_correctly() {
         use base64::Engine;
+        use catapulte_domain::use_case::submit_email::AttachmentInput;
         let content = b"hello attachment";
         let encoded = base64::engine::general_purpose::STANDARD.encode(content);
         let req = SubmitEmailRequest {
             attachments: vec![AttachmentDto {
                 filename: "test.txt".into(),
                 content_type: "text/plain".into(),
-                inline_base64: encoded,
+                inline_base64: Some(encoded),
+                url: None,
             }],
             ..base_request()
         };
         let input = req.into_submit_input().unwrap();
         assert_eq!(input.attachments.len(), 1);
-        assert_eq!(input.attachments[0].bytes.as_ref(), content);
+        let AttachmentInput::Inline { bytes, .. } = &input.attachments[0] else {
+            panic!("expected Inline variant");
+        };
+        assert_eq!(bytes.as_ref(), content);
     }
 
     #[test]
@@ -359,7 +398,8 @@ mod tests {
             attachments: vec![AttachmentDto {
                 filename: "bad.txt".into(),
                 content_type: "text/plain".into(),
-                inline_base64: "not valid base64!!!".into(),
+                inline_base64: Some("not valid base64!!!".into()),
+                url: None,
             }],
             ..base_request()
         };
@@ -378,7 +418,8 @@ mod tests {
             .map(|i| AttachmentDto {
                 filename: format!("file{i}.txt"),
                 content_type: "text/plain".into(),
-                inline_base64: encoded.clone(),
+                inline_base64: Some(encoded.clone()),
+                url: None,
             })
             .collect();
         let req = SubmitEmailRequest {
@@ -401,13 +442,87 @@ mod tests {
             attachments: vec![AttachmentDto {
                 filename: "big.bin".into(),
                 content_type: "application/octet-stream".into(),
-                inline_base64: encoded,
+                inline_base64: Some(encoded),
+                url: None,
             }],
             ..base_request()
         };
         assert!(matches!(
             req.into_submit_input(),
             Err(EnvelopeConversionError::AttachmentTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn remote_url_attachment_builds_remote_variant() {
+        use catapulte_domain::use_case::submit_email::AttachmentInput;
+        let req = SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: "remote.pdf".into(),
+                content_type: "application/pdf".into(),
+                inline_base64: None,
+                url: Some("https://example.com/file.pdf".into()),
+            }],
+            ..base_request()
+        };
+        let input = req.into_submit_input().unwrap();
+        assert_eq!(input.attachments.len(), 1);
+        assert!(matches!(
+            input.attachments[0],
+            AttachmentInput::Remote { .. }
+        ));
+    }
+
+    #[test]
+    fn both_inline_and_url_returns_invalid_shape() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"x");
+        let req = SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: "both.txt".into(),
+                content_type: "text/plain".into(),
+                inline_base64: Some(encoded),
+                url: Some("https://example.com/file.txt".into()),
+            }],
+            ..base_request()
+        };
+        assert!(matches!(
+            req.into_submit_input(),
+            Err(EnvelopeConversionError::InvalidAttachmentShape { .. })
+        ));
+    }
+
+    #[test]
+    fn neither_inline_nor_url_returns_invalid_shape() {
+        let req = SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: "neither.txt".into(),
+                content_type: "text/plain".into(),
+                inline_base64: None,
+                url: None,
+            }],
+            ..base_request()
+        };
+        assert!(matches!(
+            req.into_submit_input(),
+            Err(EnvelopeConversionError::InvalidAttachmentShape { .. })
+        ));
+    }
+
+    #[test]
+    fn malformed_url_returns_invalid_attachment_url() {
+        let req = SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: "bad-url.txt".into(),
+                content_type: "text/plain".into(),
+                inline_base64: None,
+                url: Some("not a url at all".into()),
+            }],
+            ..base_request()
+        };
+        assert!(matches!(
+            req.into_submit_input(),
+            Err(EnvelopeConversionError::InvalidAttachmentUrl { .. })
         ));
     }
 }
