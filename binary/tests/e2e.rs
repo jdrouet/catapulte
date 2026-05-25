@@ -735,6 +735,235 @@ async fn multi_sender_primary_delivers_email_before_backup() {
 }
 
 #[tokio::test]
+async fn submit_mjml_inline_with_variables_renders_and_delivers() {
+    let mailpit = start_mailpit().await;
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_mjml_vars.db");
+    let http_port = free_port();
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+        },
+        smtp: base_smtp(smtp_port),
+        resolver: base_resolver(),
+        worker: WorkerConfig {},
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let mjml_source = r"<mjml>
+  <mj-head>
+    <mj-preview>Hello {{ name }}!</mj-preview>
+  </mj-head>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hello {{ name }}!</mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>";
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&serde_json::json!({
+            "sender": "sender@example.com",
+            "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+            "body": { "kind": "mjml_inline", "source": mjml_source },
+            "variables": { "name": "World" }
+        }))
+        .send()
+        .await
+        .expect("POST /emails failed");
+    assert!(
+        resp.status().is_success(),
+        "unexpected status: {}",
+        resp.status()
+    );
+
+    // wait for mailpit to receive the email and grab its ID
+    let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
+    let mut message_id: Option<String> = None;
+    for _ in 0..100 {
+        if let Ok(body) = client
+            .get(&messages_url)
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            && let Some(msgs) = body["messages"].as_array()
+            && let Some(first) = msgs.first()
+        {
+            message_id = first["ID"].as_str().map(str::to_owned);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let msg_id = message_id.expect("email was not delivered to mailpit within timeout");
+
+    let msg: serde_json::Value = client
+        .get(format!(
+            "http://127.0.0.1:{api_port}/api/v1/message/{msg_id}"
+        ))
+        .send()
+        .await
+        .expect("GET /api/v1/message/{id} failed")
+        .json()
+        .await
+        .unwrap();
+
+    let html = msg["HTML"].as_str().unwrap_or("");
+    assert!(
+        html.contains("Hello World!"),
+        "expected rendered HTML to contain 'Hello World!', got: {html}"
+    );
+    let text = msg["Text"].as_str().unwrap_or("");
+    assert!(
+        text.contains("Hello World!"),
+        "expected text part (from mj-preview) to contain 'Hello World!', got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn idempotency_key_deduplicates_submission() {
+    let mailpit = start_mailpit().await;
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_idempotency.db");
+    let http_port = free_port();
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+        },
+        smtp: base_smtp(smtp_port),
+        resolver: base_resolver(),
+        worker: WorkerConfig {},
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let payload = serde_json::json!({
+        "idempotency_key": "e2e-idempotency-key",
+        "sender": "sender@example.com",
+        "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+        "body": { "kind": "plain", "text": "Idempotency test." },
+        "variables": {}
+    });
+
+    let resp1 = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&payload)
+        .send()
+        .await
+        .expect("first POST /emails failed");
+    assert!(
+        resp1.status().is_success(),
+        "first request failed: {}",
+        resp1.status()
+    );
+    let id1 = resp1.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .expect("id missing from first response")
+        .to_owned();
+
+    let resp2 = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&payload)
+        .send()
+        .await
+        .expect("second POST /emails failed");
+    assert!(
+        resp2.status().is_success(),
+        "second request failed: {}",
+        resp2.status()
+    );
+    let id2 = resp2.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .expect("id missing from second response")
+        .to_owned();
+
+    assert_eq!(id1, id2, "both requests must return the same email id");
+
+    // wait for delivery and verify exactly one email arrived
+    let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
+    let mut delivered_count: usize = 0;
+    for _ in 0..100 {
+        if let Ok(body) = client
+            .get(&messages_url)
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            && let Some(msgs) = body["messages"].as_array()
+            && !msgs.is_empty()
+        {
+            delivered_count = msgs.len();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        delivered_count, 1,
+        "expected exactly one delivered email, got {delivered_count}"
+    );
+}
+
+#[tokio::test]
 async fn multi_sender_falls_back_to_backup_when_primary_fails() {
     let mailpit = start_mailpit().await;
     let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
