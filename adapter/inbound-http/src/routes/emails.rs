@@ -442,4 +442,49 @@ mod tests {
         let response = app.oneshot(get_emails("")).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
+
+    #[tokio::test]
+    async fn submit_with_invalid_sender_returns_400() {
+        let app = make_router();
+        let payload = serde_json::json!({
+            "sender": "not-an-email",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"}
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_with_empty_recipients_returns_400() {
+        let app = make_router();
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [],
+            "body": {"kind": "plain", "text": "hi"}
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_with_invalid_recipient_returns_400() {
+        let app = make_router();
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "bad"}],
+            "body": {"kind": "plain", "text": "hi"}
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }

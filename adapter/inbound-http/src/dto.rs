@@ -70,17 +70,37 @@ pub enum BodyConversionError {
     InvalidRemoteUrl(#[source] anyhow::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum EnvelopeConversionError {
+    #[error(transparent)]
+    Body(#[from] BodyConversionError),
+    #[error("invalid sender address")]
+    InvalidSender(#[source] anyhow::Error),
+    #[error("recipients must not be empty")]
+    EmptyRecipients,
+    #[error("invalid recipient address")]
+    InvalidRecipient(#[source] anyhow::Error),
+}
+
 impl SubmitEmailRequest {
-    /// # Errors
-    ///
-    /// Returns `BodyConversionError::InvalidPlain` when the plain body has neither text nor html.
-    /// Returns `BodyConversionError::InvalidRemoteUrl` when the mjml remote URL cannot be parsed.
-    pub fn into_envelope(self) -> Result<Envelope, BodyConversionError> {
+    pub fn into_envelope(self) -> Result<Envelope, EnvelopeConversionError> {
+        use std::str::FromStr;
+        email_address::EmailAddress::from_str(&self.sender)
+            .context("parsing sender")
+            .map_err(EnvelopeConversionError::InvalidSender)?;
+        if self.recipients.is_empty() {
+            return Err(EnvelopeConversionError::EmptyRecipients);
+        }
         let recipients = self
             .recipients
             .into_iter()
-            .map(|r| (r.kind.into(), r.address))
-            .collect();
+            .map(|r| {
+                email_address::EmailAddress::from_str(&r.address)
+                    .context("parsing recipient")
+                    .map_err(EnvelopeConversionError::InvalidRecipient)?;
+                Ok((r.kind.into(), r.address))
+            })
+            .collect::<Result<Vec<_>, EnvelopeConversionError>>()?;
         let body = self.body.try_into()?;
         Ok(Envelope {
             idempotency_key: self.idempotency_key,
@@ -134,7 +154,10 @@ impl TryFrom<BodyDto> for BodySource {
 
 #[cfg(test)]
 mod tests {
-    use super::{BodyConversionError, BodyDto, BodySource, MjmlSource};
+    use super::{
+        BodyConversionError, BodyDto, BodySource, EnvelopeConversionError, MjmlSource,
+        RecipientDto, RecipientKindDto, SubmitEmailRequest,
+    };
 
     #[test]
     fn plain_with_text_converts_to_plain_body() {
@@ -201,6 +224,69 @@ mod tests {
         assert!(matches!(
             BodySource::try_from(dto),
             Err(BodyConversionError::InvalidRemoteUrl(_))
+        ));
+    }
+
+    #[test]
+    fn invalid_sender_returns_error() {
+        let req = SubmitEmailRequest {
+            idempotency_key: None,
+            subject: None,
+            sender: "not-an-email".into(),
+            recipients: vec![RecipientDto {
+                kind: RecipientKindDto::To,
+                address: "t@x.y".into(),
+            }],
+            body: BodyDto::Plain {
+                text: Some("hi".into()),
+                html: None,
+            },
+            variables: serde_json::Map::new(),
+        };
+        assert!(matches!(
+            req.into_envelope(),
+            Err(EnvelopeConversionError::InvalidSender(_))
+        ));
+    }
+
+    #[test]
+    fn empty_recipients_returns_error() {
+        let req = SubmitEmailRequest {
+            idempotency_key: None,
+            subject: None,
+            sender: "a@b.c".into(),
+            recipients: vec![],
+            body: BodyDto::Plain {
+                text: Some("hi".into()),
+                html: None,
+            },
+            variables: serde_json::Map::new(),
+        };
+        assert!(matches!(
+            req.into_envelope(),
+            Err(EnvelopeConversionError::EmptyRecipients)
+        ));
+    }
+
+    #[test]
+    fn invalid_recipient_returns_error() {
+        let req = SubmitEmailRequest {
+            idempotency_key: None,
+            subject: None,
+            sender: "a@b.c".into(),
+            recipients: vec![RecipientDto {
+                kind: RecipientKindDto::To,
+                address: "bad".into(),
+            }],
+            body: BodyDto::Plain {
+                text: Some("hi".into()),
+                html: None,
+            },
+            variables: serde_json::Map::new(),
+        };
+        assert!(matches!(
+            req.into_envelope(),
+            Err(EnvelopeConversionError::InvalidRecipient(_))
         ));
     }
 }

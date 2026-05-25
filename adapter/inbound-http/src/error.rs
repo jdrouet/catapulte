@@ -8,12 +8,12 @@ use catapulte_domain::use_case::list_events::ListEventsError;
 use catapulte_domain::use_case::list_senders::ListSendersError;
 use catapulte_domain::use_case::submit_email::SubmitEmailError;
 
-use crate::dto::BodyConversionError;
+use crate::dto::EnvelopeConversionError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error(transparent)]
-    BadRequest(#[from] BodyConversionError),
+    BadRequest(#[from] EnvelopeConversionError),
     #[error(transparent)]
     Submit(#[from] SubmitEmailError),
     #[error(transparent)]
