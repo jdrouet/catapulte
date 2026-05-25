@@ -1,5 +1,5 @@
 use anyhow::Context;
-use catapulte_domain::entity::attachment::AttachmentRef;
+use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::port::email_repository::{
@@ -11,7 +11,9 @@ use sqlx::Sqlite;
 use sqlx::types::Json;
 
 use crate::SqliteAdapter;
-use crate::dto::{AttachmentRefDto, BodySourceDto, EnvelopeBodyDto, recipients_to_dto};
+use crate::dto::{
+    AttachmentRefDto, BodySourceDto, EnvelopeBodyDto, EnvelopeBodyDtoDeser, recipients_to_dto,
+};
 
 impl EmailRepository for SqliteAdapter {
     /// # Errors
@@ -228,6 +230,29 @@ impl EmailRepository for SqliteAdapter {
             .context("deleting email")
             .map_err(|source| EmailRepositoryError::Storage { source })?;
         Ok(())
+    }
+
+    async fn list_all_attachment_blobs(&self) -> Result<Vec<BlobRef>, EmailRepositoryError> {
+        let rows: Vec<String> = sqlx::query_scalar("SELECT body FROM emails")
+            .fetch_all(self.pool())
+            .await
+            .context("listing email bodies for attachment blobs")
+            .map_err(|source| EmailRepositoryError::Storage { source })?;
+
+        let mut blobs = Vec::new();
+        for body_json in rows {
+            let Ok(deser) = serde_json::from_str::<EnvelopeBodyDtoDeser>(&body_json) else {
+                continue;
+            };
+            let (_, attachments) = deser.split();
+            for att in attachments {
+                blobs.push(BlobRef {
+                    backend: att.blob.backend,
+                    key: att.blob.key,
+                });
+            }
+        }
+        Ok(blobs)
     }
 }
 
@@ -790,5 +815,54 @@ mod tests {
 
         // idempotent: second delete must also succeed
         adapter.delete(id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_all_attachment_blobs_returns_blobs_from_all_emails() {
+        let adapter = fresh_adapter().await;
+
+        // No emails yet.
+        let blobs = adapter.list_all_attachment_blobs().await.unwrap();
+        assert!(blobs.is_empty(), "expected no blobs for empty db");
+
+        // Save one email with no attachments.
+        let id1 = EmailId::default();
+        adapter.save(id1, &sample_envelope()).await.unwrap();
+
+        // Save one email with two attachments.
+        let id2 = EmailId::default();
+        adapter.save(id2, &sample_envelope()).await.unwrap();
+        adapter
+            .set_attachments(
+                id2,
+                &[
+                    AttachmentRef {
+                        filename: "a.pdf".into(),
+                        content_type: "application/pdf".into(),
+                        size_bytes: 1,
+                        blob: BlobRef {
+                            backend: "fs".into(),
+                            key: "key-a".into(),
+                        },
+                    },
+                    AttachmentRef {
+                        filename: "b.pdf".into(),
+                        content_type: "application/pdf".into(),
+                        size_bytes: 2,
+                        blob: BlobRef {
+                            backend: "fs".into(),
+                            key: "key-b".into(),
+                        },
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let mut blobs = adapter.list_all_attachment_blobs().await.unwrap();
+        blobs.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(blobs.len(), 2);
+        assert_eq!(blobs[0].key, "key-a");
+        assert_eq!(blobs[1].key, "key-b");
     }
 }

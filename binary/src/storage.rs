@@ -1,5 +1,5 @@
 use anyhow::Context;
-use catapulte_domain::entity::attachment::AttachmentRef;
+use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
@@ -56,6 +56,13 @@ impl EmailRepository for StorageAdapter {
         match self {
             Self::Sqlite(a) => a.delete(id).await,
             Self::Postgres(a) => a.delete(id).await,
+        }
+    }
+
+    async fn list_all_attachment_blobs(&self) -> Result<Vec<BlobRef>, EmailRepositoryError> {
+        match self {
+            Self::Sqlite(a) => a.list_all_attachment_blobs().await,
+            Self::Postgres(a) => a.list_all_attachment_blobs().await,
         }
     }
 }

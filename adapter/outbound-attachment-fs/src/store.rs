@@ -83,6 +83,43 @@ impl FsAttachmentStore {
         Ok(keys)
     }
 
+    /// Same as [`list_keys`] but only returns files whose mtime is older than
+    /// `age`. Files whose mtime is missing, unreadable, or in the future are
+    /// skipped (treated as brand-new and therefore kept).
+    ///
+    /// # Errors
+    /// Returns an error if the root directory cannot be read.
+    pub async fn list_keys_older_than(&self, age: Duration) -> anyhow::Result<Vec<String>> {
+        let mut entries = tokio::fs::read_dir(self.root.as_ref())
+            .await
+            .with_context(|| format!("failed to read directory {}", self.root.display()))?;
+
+        let mut keys = Vec::new();
+        while let Some(entry) = entries.next_entry().await.context("failed to read entry")? {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            let ft = entry.file_type().await.context("failed to stat entry")?;
+            if !ft.is_file() {
+                continue;
+            }
+            // Skip files whose mtime is missing or in the future (treat as new).
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
+            let Ok(modified) = meta.modified() else {
+                continue;
+            };
+            let elapsed = modified.elapsed().unwrap_or(Duration::ZERO);
+            if elapsed >= age {
+                keys.push(name.into_owned());
+            }
+        }
+        Ok(keys)
+    }
+
     /// Removes tempfiles older than `older_than`. Safe to run while puts
     /// are in flight (concurrent puts use distinct uuid filenames).
     ///
@@ -451,6 +488,38 @@ mod tests {
         let removed = store.cleanup_temp(Duration::ZERO).await.expect("cleanup");
         assert_eq!(removed, 1);
         assert!(!tmp_path.exists(), "stale tempfile should be gone");
+    }
+
+    #[tokio::test]
+    async fn list_keys_older_than_filters_by_age() {
+        let (store, _dir) = make_store().await;
+
+        // Write two blobs; both will have mtime ~now.
+        let r1 = store.put(reader_from(b"blob one")).await.expect("put 1");
+        let r2 = store.put(reader_from(b"blob two")).await.expect("put 2");
+
+        // With age == Duration::MAX, nothing is old enough — list should be empty.
+        let none = store
+            .list_keys_older_than(Duration::MAX)
+            .await
+            .expect("list_keys_older_than MAX");
+        assert!(
+            none.is_empty(),
+            "expected no keys older than MAX, got: {none:?}"
+        );
+
+        // With age == Duration::ZERO, everything qualifies — both keys returned.
+        let mut all = store
+            .list_keys_older_than(Duration::ZERO)
+            .await
+            .expect("list_keys_older_than ZERO");
+        all.sort();
+        let mut expected = vec![r1.blob.key.clone(), r2.blob.key.clone()];
+        expected.sort();
+        assert_eq!(
+            all, expected,
+            "expected both keys with age ZERO, got: {all:?}"
+        );
     }
 
     #[tokio::test]

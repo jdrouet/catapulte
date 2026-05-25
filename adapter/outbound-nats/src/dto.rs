@@ -208,3 +208,47 @@ impl TryFrom<QueuedEmailPayload> for (EmailId, Envelope) {
         Ok((EmailId::from(payload.id), envelope))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
+    use catapulte_domain::entity::body::{BodySource, Plain};
+    use catapulte_domain::entity::email::{EmailId, RecipientKind};
+    use catapulte_domain::entity::envelope::Envelope;
+
+    use super::QueuedEmailPayload;
+
+    #[test]
+    fn envelope_serialization_stays_under_256_kb_with_many_attachments() {
+        let attachments: Vec<AttachmentRef> = (0..100)
+            .map(|i| AttachmentRef {
+                filename: format!("file-{i}.pdf"),
+                content_type: "application/pdf".into(),
+                size_bytes: 25 * 1024 * 1024,
+                blob: BlobRef {
+                    backend: "fs".into(),
+                    key: uuid::Uuid::now_v7().simple().to_string(),
+                },
+            })
+            .collect();
+
+        let id = EmailId::default();
+        let envelope = Envelope {
+            idempotency_key: None,
+            subject: Some("Test subject".into()),
+            sender: "sender@example.com".into(),
+            recipients: vec![(RecipientKind::To, "to@example.com".into())],
+            body: BodySource::Plain(Plain::try_new(Some("Hello world".into()), None).unwrap()),
+            variables: serde_json::Map::new(),
+            attachments,
+        };
+
+        let payload = QueuedEmailPayload::from((&id, &envelope));
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        assert!(
+            bytes.len() < 256 * 1024,
+            "envelope serialization exceeded 256 KB: {} bytes",
+            bytes.len()
+        );
+    }
+}

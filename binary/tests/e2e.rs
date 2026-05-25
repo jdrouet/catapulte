@@ -193,6 +193,7 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -222,6 +223,7 @@ async fn submit_plain_email_with_memory_queue_is_delivered() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -254,6 +256,7 @@ async fn submit_email_sqlite_storage_nats_queue_is_delivered() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -284,6 +287,7 @@ async fn submit_email_postgres_storage_storage_queue_is_delivered() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -314,6 +318,7 @@ async fn submit_email_postgres_storage_memory_queue_is_delivered() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -343,6 +348,7 @@ async fn lifecycle_events_endpoint_returns_queued_and_sent() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -457,6 +463,7 @@ async fn list_endpoints_return_submitted_email() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -601,6 +608,7 @@ async fn submit_email_postgres_storage_nats_queue_is_delivered() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -656,6 +664,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -789,6 +798,7 @@ async fn submit_mjml_inline_with_variables_renders_and_delivers() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -909,6 +919,7 @@ async fn idempotency_key_deduplicates_submission() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -1048,6 +1059,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -1189,6 +1201,7 @@ async fn submit_email_with_inline_attachment_is_delivered_with_attachment() {
             root: attachment_dir.path().to_path_buf(),
         }),
         attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -1287,5 +1300,341 @@ async fn submit_email_with_inline_attachment_is_delivered_with_attachment() {
     );
 
     // Keep attachment_dir alive until this point.
+    drop(attachment_dir);
+}
+
+#[tokio::test]
+async fn sent_email_blob_is_deleted_after_delivery() {
+    use base64::Engine as _;
+
+    let mailpit = start_mailpit().await;
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_blob_cleanup.db");
+    let http_port = free_port();
+    let attachment_dir = tempfile::tempdir().unwrap();
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+        },
+        smtp: base_smtp(smtp_port),
+        resolver: base_resolver(),
+        worker: WorkerConfig {},
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
+        attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
+            root: attachment_dir.path().to_path_buf(),
+        }),
+        attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let attachment_content = b"blob cleanup test content";
+    let inline_base64 = base64::engine::general_purpose::STANDARD.encode(attachment_content);
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&serde_json::json!({
+            "sender": "sender@example.com",
+            "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+            "body": { "kind": "plain", "text": "blob cleanup test" },
+            "variables": {},
+            "attachments": [{
+                "filename": "cleanup.txt",
+                "content_type": "text/plain",
+                "inline_base64": inline_base64
+            }]
+        }))
+        .send()
+        .await
+        .expect("POST /emails failed");
+    assert!(resp.status().is_success(), "POST failed: {}", resp.status());
+
+    // Wait for delivery.
+    let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
+    for _ in 0..100 {
+        if let Ok(body) = client
+            .get(&messages_url)
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            && body["messages"].as_array().is_some_and(|a| !a.is_empty())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Poll until no blob files remain or timeout.
+    let attachment_path = attachment_dir.path().to_path_buf();
+    let mut blobs_gone = false;
+    for _ in 0..50 {
+        let count = std::fs::read_dir(&attachment_path)
+            .expect("read attachment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let n = name.to_string_lossy();
+                !n.starts_with('.') && e.file_type().map(|ft| ft.is_file()).unwrap_or(false)
+            })
+            .count();
+        if count == 0 {
+            blobs_gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        blobs_gone,
+        "blob file should have been deleted after delivery"
+    );
+    drop(attachment_dir);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn submit_email_with_remote_url_attachment_is_delivered() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let mailpit = start_mailpit().await;
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_remote_att.db");
+    let http_port = free_port();
+    let attachment_dir = tempfile::tempdir().unwrap();
+
+    // Start a wiremock server to serve the remote attachment.
+    let mock_server = MockServer::start().await;
+    let remote_content = b"remote attachment content";
+    Mock::given(method("GET"))
+        .and(path("/file.pdf"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(remote_content.to_vec())
+                .append_header("Content-Type", "application/pdf")
+                .append_header("Content-Length", remote_content.len().to_string().as_str()),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let mock_host = mock_server.address().ip().to_string();
+    let mock_port = mock_server.address().port();
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+        },
+        smtp: base_smtp(smtp_port),
+        resolver: base_resolver(),
+        worker: WorkerConfig {},
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
+        attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
+            root: attachment_dir.path().to_path_buf(),
+        }),
+        attachment_fetcher:
+            catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcherConfig {
+                allowed_domains: std::collections::HashSet::from([mock_host.clone()]),
+                allow_http: true,
+                max_bytes: 25 * 1024 * 1024,
+                fetch_timeout: Duration::from_secs(30),
+            },
+        gc_sweep_interval: Duration::from_secs(3600),
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let attachment_url = format!("http://{mock_host}:{mock_port}/file.pdf");
+    let resp = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&serde_json::json!({
+            "sender": "sender@example.com",
+            "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+            "body": { "kind": "plain", "text": "remote attachment test" },
+            "variables": {},
+            "attachments": [{
+                "filename": "file.pdf",
+                "content_type": "application/pdf",
+                "url": attachment_url
+            }]
+        }))
+        .send()
+        .await
+        .expect("POST /emails failed");
+
+    assert!(resp.status().is_success(), "POST failed: {}", resp.status());
+
+    // Poll mailpit until the message arrives.
+    let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
+    let mut message_id: Option<String> = None;
+    for _ in 0..100 {
+        if let Ok(body) = client
+            .get(&messages_url)
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            && let Some(msgs) = body["messages"].as_array()
+            && let Some(first) = msgs.first()
+        {
+            message_id = first["ID"].as_str().map(str::to_owned);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let msg_id = message_id.expect("email was not delivered to mailpit within timeout");
+
+    let msg: serde_json::Value = client
+        .get(format!(
+            "http://127.0.0.1:{api_port}/api/v1/message/{msg_id}"
+        ))
+        .send()
+        .await
+        .expect("GET /api/v1/message/{id} failed")
+        .json()
+        .await
+        .unwrap();
+
+    let attachments = msg["Attachments"].as_array().expect("Attachments array");
+    assert_eq!(attachments.len(), 1, "expected exactly one attachment");
+
+    let att = &attachments[0];
+    assert_eq!(
+        att["FileName"].as_str(),
+        Some("file.pdf"),
+        "attachment filename mismatch"
+    );
+    let content_type = att["ContentType"].as_str().unwrap_or("");
+    assert!(
+        content_type.starts_with("application/pdf"),
+        "expected content type to start with application/pdf, got: {content_type}"
+    );
+
+    drop(attachment_dir);
+}
+
+#[tokio::test]
+async fn submit_email_with_disallowed_remote_attachment_returns_400() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_disallowed_att.db");
+    let http_port = free_port();
+    let attachment_dir = tempfile::tempdir().unwrap();
+
+    // Default fetcher config has no allowed domains.
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+        },
+        smtp: base_smtp(1025),
+        resolver: base_resolver(),
+        worker: WorkerConfig {},
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
+        attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
+            root: attachment_dir.path().to_path_buf(),
+        }),
+        attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&serde_json::json!({
+            "sender": "sender@example.com",
+            "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+            "body": { "kind": "plain", "text": "disallowed attachment test" },
+            "variables": {},
+            "attachments": [{
+                "filename": "file.pdf",
+                "content_type": "application/pdf",
+                "url": "https://example.com/file.pdf"
+            }]
+        }))
+        .send()
+        .await
+        .expect("POST /emails failed");
+
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "expected 400 for disallowed domain attachment, got: {}",
+        resp.status()
+    );
+
     drop(attachment_dir);
 }

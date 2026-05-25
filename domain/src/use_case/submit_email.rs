@@ -319,6 +319,12 @@ mod tests {
         async fn delete(&self, _id: EmailId) -> Result<(), EmailRepositoryError> {
             Ok(())
         }
+
+        async fn list_all_attachment_blobs(
+            &self,
+        ) -> Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError> {
+            Ok(vec![])
+        }
     }
 
     struct FailingRepository;
@@ -357,6 +363,12 @@ mod tests {
                 source: anyhow::anyhow!("storage down"),
             })
         }
+
+        async fn list_all_attachment_blobs(
+            &self,
+        ) -> Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError> {
+            Ok(vec![])
+        }
     }
 
     struct DuplicatingRepository {
@@ -390,6 +402,12 @@ mod tests {
 
         async fn delete(&self, _id: EmailId) -> Result<(), EmailRepositoryError> {
             Ok(())
+        }
+
+        async fn list_all_attachment_blobs(
+            &self,
+        ) -> Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError> {
+            Ok(vec![])
         }
     }
 
@@ -950,5 +968,32 @@ mod tests {
         let blobs = captured.lock().unwrap();
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs[0], b"streamed bytes");
+    }
+
+    #[tokio::test]
+    async fn duplicate_idempotency_key_does_not_call_attachment_store_put() {
+        let existing_id = EmailId::default();
+        let queue = FakeQueue::new();
+        let store = FakeAttachmentStore::new();
+        let put_count = store.put_count.clone();
+        let mut input = make_input("sender@example.com");
+        input.attachments.push(AttachmentInput::Inline {
+            filename: "idem.txt".into(),
+            content_type: "text/plain".into(),
+            bytes: bytes::Bytes::from_static(b"x"),
+        });
+        let service = SubmitEmailService::new(
+            DuplicatingRepository { existing_id },
+            queue.clone(),
+            FakeEventPublisher::new(),
+            store,
+            FakeFetcher,
+        );
+        service.execute(input).await.unwrap();
+        assert_eq!(
+            *put_count.lock().unwrap(),
+            0,
+            "attachment store put must not be called for a duplicate submission"
+        );
     }
 }

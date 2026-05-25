@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::entity::attachment::AttachmentRef;
+use crate::entity::attachment::{AttachmentRef, BlobRef};
 use crate::entity::email::{EmailId, RecipientKind};
 use crate::entity::envelope::Envelope;
 
@@ -27,6 +27,15 @@ pub trait EmailRepository: Send + Sync + 'static {
         id: EmailId,
         envelope: &Envelope,
     ) -> impl std::future::Future<Output = Result<SaveResult, EmailRepositoryError>> + Send;
+
+    /// Returns every blob ref referenced by any email row (regardless of status).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmailRepositoryError::Storage` when the underlying query fails.
+    fn list_all_attachment_blobs(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<BlobRef>, EmailRepositoryError>> + Send;
 
     /// # Errors
     ///

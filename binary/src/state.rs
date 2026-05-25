@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use catapulte_domain::port::attachment_store::AttachmentStore;
 use catapulte_domain::port::clock::SystemClock;
 use catapulte_domain::port::email_queue::EmailQueue;
+use catapulte_domain::port::email_repository::EmailRepository;
 use catapulte_domain::port::event_publisher::EventPublisher;
 use catapulte_domain::service::routed_email_sender::RoutedEmailSender;
 use catapulte_domain::use_case::list_emails::{ListEmailsService, ListEmailsUseCase};
@@ -54,6 +56,8 @@ pub(crate) struct AppState {
     pub(crate) list_events: Arc<ListEventsServiceImpl>,
     pub(crate) queue: QueueAdapter,
     pub(crate) publisher: PublisherAdapter,
+    pub(crate) attachment_store: AttachmentStoreAdapter,
+    pub(crate) storage: StorageAdapter,
 }
 
 impl HttpServerState for AppState {
@@ -85,5 +89,13 @@ impl WorkerState for AppState {
 
     fn event_publisher(&self) -> &impl EventPublisher {
         &self.publisher
+    }
+
+    fn attachment_store(&self) -> &impl AttachmentStore {
+        &self.attachment_store
+    }
+
+    fn email_repository(&self) -> &impl EmailRepository {
+        &self.storage
     }
 }

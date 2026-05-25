@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use catapulte_domain::use_case::process_queued_email::ProcessQueuedEmailService;
@@ -6,6 +7,7 @@ use catapulte_domain::use_case::submit_email::SubmitEmailService;
 use catapulte_inbound_http::{InboundHttpConfig, InboundHttpServer};
 use catapulte_inbound_worker::worker::{Worker, WorkerConfig};
 use catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcher;
+use catapulte_outbound_attachment_fs::store::FsAttachmentStore;
 use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
@@ -13,6 +15,7 @@ use catapulte_outbound_smtp::multi_sender::MultiSenderConfig;
 
 pub mod attachment_fetcher;
 pub mod attachment_store;
+pub mod gc;
 pub mod publisher;
 pub mod queue;
 mod state;
@@ -33,6 +36,8 @@ pub struct AppConfig {
     pub attachment_store: attachment_store::AttachmentStoreBackendConfig,
     pub attachment_fetcher:
         catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcherConfig,
+    pub gc_sweep_interval: Duration,
+    pub gc_grace_period: Duration,
 }
 
 impl AppConfig {
@@ -56,6 +61,16 @@ impl AppConfig {
                 "CATAPULTE_ATTACHMENT_FETCHER",
             )
             .context("loading attachment fetcher config")?;
+        let gc_sweep_secs: u64 = std::env::var("CATAPULTE_GC_SWEEP_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600);
+        let gc_sweep_interval = Duration::from_secs(gc_sweep_secs);
+        let gc_grace_secs: u64 = std::env::var("CATAPULTE_GC_GRACE_PERIOD_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600);
+        let gc_grace_period = Duration::from_secs(gc_grace_secs);
         Ok(Self {
             storage,
             http,
@@ -66,6 +81,8 @@ impl AppConfig {
             publisher,
             attachment_store,
             attachment_fetcher,
+            gc_sweep_interval,
+            gc_grace_period,
         })
     }
 
@@ -172,14 +189,27 @@ impl AppConfig {
             list_events,
             queue,
             publisher,
+            attachment_store: attachment_store.clone(),
+            storage: storage.clone(),
         };
         let server = self.http.build();
         let worker = self.worker.build();
+
+        let gc_fs_store: Option<FsAttachmentStore> = attachment_store.as_fs().map(Clone::clone);
+        let gc = gc_fs_store.map(|fs_store| {
+            gc::AttachmentGc::new(
+                storage.clone(),
+                fs_store,
+                self.gc_sweep_interval,
+                self.gc_grace_period,
+            )
+        });
 
         Ok(Application {
             state,
             server,
             worker,
+            gc,
         })
     }
 }
@@ -188,6 +218,7 @@ pub struct Application {
     state: AppState,
     server: InboundHttpServer,
     worker: Worker,
+    gc: Option<gc::AttachmentGc>,
 }
 
 impl Application {
@@ -199,17 +230,37 @@ impl Application {
         let cancel = tokio_util::sync::CancellationToken::new();
         let http = self.server.run(self.state.clone());
         let worker = self.worker.run(self.state, cancel.clone());
-        tokio::select! {
-            result = http => {
-                cancel.cancel();
-                result.context("http server stopped")
+
+        if let Some(gc) = self.gc {
+            let gc_cancel = cancel.clone();
+            let gc_handle = tokio::spawn(async move { gc.run(gc_cancel).await });
+            tokio::select! {
+                result = http => {
+                    cancel.cancel();
+                    result.context("http server stopped")
+                }
+                () = worker => Ok(()),
+                _ = gc_handle => Ok(()),
+                result = tokio::signal::ctrl_c() => {
+                    result.context("failed to listen for shutdown signal")?;
+                    tracing::info!("shutdown signal received");
+                    cancel.cancel();
+                    Ok(())
+                }
             }
-            () = worker => Ok(()),
-            result = tokio::signal::ctrl_c() => {
-                result.context("failed to listen for shutdown signal")?;
-                tracing::info!("shutdown signal received");
-                cancel.cancel();
-                Ok(())
+        } else {
+            tokio::select! {
+                result = http => {
+                    cancel.cancel();
+                    result.context("http server stopped")
+                }
+                () = worker => Ok(()),
+                result = tokio::signal::ctrl_c() => {
+                    result.context("failed to listen for shutdown signal")?;
+                    tracing::info!("shutdown signal received");
+                    cancel.cancel();
+                    Ok(())
+                }
             }
         }
     }

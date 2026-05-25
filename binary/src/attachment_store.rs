@@ -57,3 +57,13 @@ impl AttachmentStoreBackendConfig {
         }
     }
 }
+
+impl AttachmentStoreAdapter {
+    /// Returns the inner `FsAttachmentStore` when the adapter is backed by the filesystem.
+    #[must_use]
+    pub fn as_fs(&self) -> Option<&FsAttachmentStore> {
+        match self {
+            Self::Fs(s) => Some(s),
+        }
+    }
+}
