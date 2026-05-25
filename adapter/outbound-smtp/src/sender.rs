@@ -1,6 +1,7 @@
 use anyhow::Context;
 use catapulte_domain::entity::body::RenderedBody;
 use catapulte_domain::entity::email::RecipientKind;
+use catapulte_domain::entity::sender::SenderName;
 use catapulte_domain::port::email_sender::{EmailSender, OutboundEmail, SendError};
 use lettre::message::header::ContentType;
 use lettre::message::{Mailbox, MultiPart, SinglePart};
@@ -47,11 +48,10 @@ fn parse_tls(raw: Option<String>, key: &str) -> anyhow::Result<SmtpTls> {
     }
 }
 
-fn parse_mailbox(addr: &str) -> Result<Mailbox, SendError> {
+fn parse_mailbox(addr: &str) -> anyhow::Result<Mailbox> {
     addr.parse::<Address>()
         .with_context(|| format!("invalid address: {addr}"))
         .map(|a| Mailbox::new(None, a))
-        .map_err(|source| SendError::Send { source })
 }
 
 fn add_recipient(
@@ -69,7 +69,7 @@ fn add_recipient(
 fn apply_recipients(
     mut builder: lettre::message::MessageBuilder,
     recipients: &[(RecipientKind, String)],
-) -> Result<lettre::message::MessageBuilder, SendError> {
+) -> anyhow::Result<lettre::message::MessageBuilder> {
     for (kind, address) in recipients {
         let mailbox = parse_mailbox(address)?;
         builder = add_recipient(builder, *kind, mailbox);
@@ -81,7 +81,7 @@ fn finalize_message(
     builder: lettre::message::MessageBuilder,
     subject: Option<&str>,
     body: &RenderedBody,
-) -> Result<Message, SendError> {
+) -> anyhow::Result<Message> {
     let builder = match subject {
         Some(s) => builder.subject(s),
         None => builder,
@@ -115,7 +115,6 @@ fn finalize_message(
         }
     };
     msg.context("building email message")
-        .map_err(|source| SendError::Send { source })
 }
 
 type TransportBuilder = lettre::transport::smtp::AsyncSmtpTransportBuilder;
@@ -182,28 +181,47 @@ impl SmtpConfig {
     ///
     /// Returns an error if the SMTP transport cannot be built.
     pub fn build(self) -> anyhow::Result<SmtpSender> {
+        self.build_named(SenderName::new("default"))
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the SMTP transport cannot be built.
+    pub fn build_named(self, name: SenderName) -> anyhow::Result<SmtpSender> {
         let builder = build_transport_builder(&self.tls, &self.host)?.port(self.port);
         let builder = apply_credentials(builder, self.username, self.password);
         let transport = builder.build();
-        Ok(SmtpSender { transport })
+        Ok(SmtpSender { name, transport })
     }
 }
 
 pub struct SmtpSender {
+    name: SenderName,
     transport: AsyncSmtpTransport<Tokio1Executor>,
 }
 
-impl EmailSender for SmtpSender {
-    async fn send(&self, email: OutboundEmail) -> Result<(), SendError> {
+impl SmtpSender {
+    async fn send_inner(&self, email: &OutboundEmail) -> anyhow::Result<()> {
         let from = parse_mailbox(&email.sender)?;
         let builder = apply_recipients(Message::builder().from(from), &email.recipients)?;
         let message = finalize_message(builder, email.subject.as_deref(), &email.body)?;
         self.transport
             .send(message)
             .await
-            .context("smtp send failed")
-            .map_err(|source| SendError::Send { source })?;
+            .context("smtp send failed")?;
         Ok(())
+    }
+}
+
+impl EmailSender for SmtpSender {
+    async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
+        self.send_inner(&email)
+            .await
+            .map_err(|source| SendError::Send {
+                sender_name: self.name.clone(),
+                source,
+            })?;
+        Ok(self.name.clone())
     }
 }
 

@@ -1,5 +1,6 @@
 use anyhow::Context;
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+use catapulte_domain::entity::sender::SenderName;
 use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
 
 #[derive(Clone)]
@@ -21,19 +22,37 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
         LifecycleEvent::Sending { id, attempt } => {
             ("sending", id, serde_json::json!({ "attempt": attempt }))
         }
-        LifecycleEvent::Sent { id } => ("sent", id, serde_json::json!({})),
+        LifecycleEvent::Sent { id, sender_name } => (
+            "sent",
+            id,
+            serde_json::json!({ "sender_name": sender_name.as_str() }),
+        ),
         LifecycleEvent::Retrying {
             id,
             attempt,
             reason,
+            sender_name,
         } => (
             "retrying",
             id,
-            serde_json::json!({ "attempt": attempt, "reason": reason }),
+            serde_json::json!({
+                "attempt": attempt,
+                "reason": reason,
+                "sender_name": sender_name.as_ref().map(SenderName::as_str),
+            }),
         ),
-        LifecycleEvent::Failed { id, reason } => {
-            ("failed", id, serde_json::json!({ "reason": reason }))
-        }
+        LifecycleEvent::Failed {
+            id,
+            reason,
+            sender_name,
+        } => (
+            "failed",
+            id,
+            serde_json::json!({
+                "reason": reason,
+                "sender_name": sender_name.as_ref().map(SenderName::as_str),
+            }),
+        ),
     };
     serde_json::json!({
         "event_type": event_type,

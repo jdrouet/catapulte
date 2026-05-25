@@ -1,19 +1,17 @@
 use thiserror::Error;
 
 use crate::entity::envelope::Envelope;
+use crate::entity::sender::SenderName;
 use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
 use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
 use crate::port::template_renderer::{RenderError, TemplateRenderer};
 use crate::port::template_resolver::{ResolveError, TemplateResolver};
 
 pub trait ProcessQueuedEmailUseCase: Send + Sync + 'static {
-    /// # Errors
-    ///
-    /// Returns a `ProcessQueuedEmailError` if resolve, interpolate, render, or send fails.
     fn execute(
         &self,
         envelope: Envelope,
-    ) -> impl std::future::Future<Output = Result<(), ProcessQueuedEmailError>> + Send;
+    ) -> impl std::future::Future<Output = Result<SenderName, ProcessQueuedEmailError>> + Send;
 }
 
 #[derive(Debug, Error)]
@@ -26,6 +24,16 @@ pub enum ProcessQueuedEmailError {
     Render(#[from] RenderError),
     #[error(transparent)]
     Send(#[from] SendError),
+}
+
+impl ProcessQueuedEmailError {
+    #[must_use]
+    pub fn sender_name(&self) -> Option<&SenderName> {
+        match self {
+            Self::Send(e) => Some(e.sender_name()),
+            _ => None,
+        }
+    }
 }
 
 pub struct ProcessQueuedEmailService<R, I, P, S> {
@@ -54,7 +62,7 @@ where
     /// # Errors
     ///
     /// Returns a `ProcessQueuedEmailError` if the body fails to resolve, interpolate, render, or send.
-    pub async fn execute(&self, envelope: Envelope) -> Result<(), ProcessQueuedEmailError> {
+    pub async fn execute(&self, envelope: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
         let Envelope {
             sender,
             subject,
@@ -66,7 +74,8 @@ where
         let resolved = self.resolver.resolve(body).await?;
         let interpolated = self.interpolator.interpolate(resolved, &variables)?;
         let rendered = self.renderer.render(interpolated)?;
-        self.sender
+        let sender_name = self
+            .sender
             .send(OutboundEmail {
                 sender,
                 subject,
@@ -74,7 +83,7 @@ where
                 body: rendered,
             })
             .await?;
-        Ok(())
+        Ok(sender_name)
     }
 }
 
@@ -88,7 +97,7 @@ where
     fn execute(
         &self,
         envelope: Envelope,
-    ) -> impl std::future::Future<Output = Result<(), ProcessQueuedEmailError>> + Send {
+    ) -> impl std::future::Future<Output = Result<SenderName, ProcessQueuedEmailError>> + Send {
         Self::execute(self, envelope)
     }
 }
@@ -102,6 +111,7 @@ mod tests {
     };
     use crate::entity::email::RecipientKind;
     use crate::entity::envelope::Envelope;
+    use crate::entity::sender::SenderName;
     use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
     use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
     use crate::port::template_renderer::{RenderError, TemplateRenderer};
@@ -195,16 +205,17 @@ mod tests {
     struct FakeSender;
 
     impl EmailSender for FakeSender {
-        async fn send(&self, _email: OutboundEmail) -> Result<(), SendError> {
-            Ok(())
+        async fn send(&self, _email: OutboundEmail) -> Result<SenderName, SendError> {
+            Ok(SenderName::new("fake"))
         }
     }
 
     struct FailingSender;
 
     impl EmailSender for FailingSender {
-        async fn send(&self, _email: OutboundEmail) -> Result<(), SendError> {
+        async fn send(&self, _email: OutboundEmail) -> Result<SenderName, SendError> {
             Err(SendError::Send {
+                sender_name: SenderName::new("failing"),
                 source: anyhow::anyhow!("connection refused"),
             })
         }

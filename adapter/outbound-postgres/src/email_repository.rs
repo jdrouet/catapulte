@@ -175,6 +175,7 @@ mod tests {
     use catapulte_domain::entity::email::{EmailId, RecipientKind};
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+    use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::{
         EmailRepository, EmailStatus, ListEmailsParams, SaveResult,
     };
@@ -305,7 +306,13 @@ mod tests {
             .publish(&LifecycleEvent::Queued { id })
             .await
             .unwrap();
-        adapter.publish(&LifecycleEvent::Sent { id }).await.unwrap();
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id,
+                sender_name: SenderName::new("test"),
+            })
+            .await
+            .unwrap();
 
         let emails = adapter
             .list_emails(ListEmailsParams {
@@ -326,6 +333,7 @@ mod tests {
             .publish(&LifecycleEvent::Failed {
                 id,
                 reason: "err".into(),
+                sender_name: Some(SenderName::new("test")),
             })
             .await
             .unwrap();
@@ -360,7 +368,10 @@ mod tests {
         let id3 = EmailId::default();
         adapter.save(id3, &sample_envelope()).await.unwrap();
         adapter
-            .publish(&LifecycleEvent::Sent { id: id3 })
+            .publish(&LifecycleEvent::Sent {
+                id: id3,
+                sender_name: SenderName::new("test"),
+            })
             .await
             .unwrap();
 

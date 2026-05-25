@@ -16,17 +16,22 @@ impl EventPublisher for SqliteAdapter {
                 "sending",
                 Some(serde_json::json!({ "attempt": attempt })),
             ),
-            LifecycleEvent::Sent { id } => (id.as_uuid(), "sent", None),
+            LifecycleEvent::Sent { id, sender_name: _ } => (id.as_uuid(), "sent", None),
             LifecycleEvent::Retrying {
                 id,
                 attempt,
                 reason,
+                sender_name: _,
             } => (
                 id.as_uuid(),
                 "retrying",
                 Some(serde_json::json!({ "attempt": attempt, "reason": reason })),
             ),
-            LifecycleEvent::Failed { id, reason } => (
+            LifecycleEvent::Failed {
+                id,
+                reason,
+                sender_name: _,
+            } => (
                 id.as_uuid(),
                 "failed",
                 Some(serde_json::json!({ "reason": reason })),
@@ -57,6 +62,7 @@ mod tests {
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+    use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::EmailRepository;
     use catapulte_domain::port::event_publisher::EventPublisher;
 
@@ -93,6 +99,7 @@ mod tests {
             .publish(&LifecycleEvent::Failed {
                 id,
                 reason: "smtp error".to_owned(),
+                sender_name: Some(SenderName::new("test")),
             })
             .await
             .unwrap();
@@ -160,6 +167,7 @@ mod tests {
                 id,
                 attempt: 1,
                 reason: "timeout".to_owned(),
+                sender_name: Some(SenderName::new("test")),
             })
             .await
             .unwrap();

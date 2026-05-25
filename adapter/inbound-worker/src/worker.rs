@@ -66,14 +66,14 @@ async fn process_one<S: WorkerState>(
     }
 
     match state.process_queued_email().execute(envelope).await {
-        Ok(()) => {
+        Ok(sender_name) => {
             if let Err(e) = state.email_queue().ack(token).await {
                 tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to ack email");
                 return;
             }
             if let Err(e) = state
                 .event_publisher()
-                .publish(&LifecycleEvent::Sent { id })
+                .publish(&LifecycleEvent::Sent { id, sender_name })
                 .await
             {
                 tracing::error!(error = %e, "failed to publish sent event");
@@ -87,11 +87,16 @@ async fn process_one<S: WorkerState>(
                 "failed to process email"
             );
             let reason = e.to_string();
+            let sender_name = e.sender_name().cloned();
             let event = if attempt >= MAX_ATTEMPTS {
                 if let Err(ack_err) = state.email_queue().ack(token).await {
                     tracing::error!(error = %ack_err, "failed to ack permanently failed email");
                 }
-                LifecycleEvent::Failed { id, reason }
+                LifecycleEvent::Failed {
+                    id,
+                    reason,
+                    sender_name,
+                }
             } else {
                 let delay = backoff(attempt);
                 if let Err(nack_err) = state.email_queue().nack(token, delay).await {
@@ -101,6 +106,7 @@ async fn process_one<S: WorkerState>(
                     id,
                     attempt,
                     reason,
+                    sender_name,
                 }
             };
             if let Err(pub_err) = state.event_publisher().publish(&event).await {

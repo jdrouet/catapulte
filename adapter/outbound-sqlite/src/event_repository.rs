@@ -78,6 +78,7 @@ mod tests {
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+    use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::EmailRepository;
     use catapulte_domain::port::event_publisher::EventPublisher;
     use catapulte_domain::port::event_repository::{EventRepository, ListEventsParams};
@@ -160,7 +161,13 @@ mod tests {
             .publish(&LifecycleEvent::Queued { id })
             .await
             .unwrap();
-        adapter.publish(&LifecycleEvent::Sent { id }).await.unwrap();
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id,
+                sender_name: SenderName::new("test"),
+            })
+            .await
+            .unwrap();
 
         let events = adapter
             .list_events(ListEventsParams {
@@ -217,7 +224,13 @@ mod tests {
             .publish(&LifecycleEvent::Queued { id })
             .await
             .unwrap();
-        adapter.publish(&LifecycleEvent::Sent { id }).await.unwrap();
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id,
+                sender_name: SenderName::new("test"),
+            })
+            .await
+            .unwrap();
 
         let events = adapter.list_events(default_params()).await.unwrap();
         assert!(events.len() >= 2);
