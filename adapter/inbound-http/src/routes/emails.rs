@@ -3,7 +3,7 @@ use axum::extract::{Query, State};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::port::email_repository::ListEmailsParams;
 use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
-use catapulte_domain::use_case::submit_email::{SubmitEmailUseCase, SubmitParams};
+use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 
 use crate::HttpServerState;
 use crate::dto::{
@@ -21,10 +21,7 @@ pub async fn submit_email<S: HttpServerState>(
     Json(request): Json<SubmitEmailRequest>,
 ) -> Result<Json<SubmitEmailResponse>, AppError> {
     let envelope = request.into_envelope()?;
-    let id = state
-        .submit_email()
-        .execute(envelope, SubmitParams {})
-        .await?;
+    let id = state.submit_email().execute(envelope).await?;
     Ok(Json(SubmitEmailResponse { id }))
 }
 
@@ -85,9 +82,7 @@ mod tests {
     use catapulte_domain::port::event_repository::{EventRecord, ListEventsParams};
     use catapulte_domain::use_case::list_emails::{ListEmailsError, ListEmailsUseCase};
     use catapulte_domain::use_case::list_events::{ListEventsError, ListEventsUseCase};
-    use catapulte_domain::use_case::submit_email::{
-        SubmitEmailError, SubmitEmailUseCase, SubmitParams,
-    };
+    use catapulte_domain::use_case::submit_email::{SubmitEmailError, SubmitEmailUseCase};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -124,11 +119,7 @@ mod tests {
     struct FakeSubmit;
 
     impl SubmitEmailUseCase for FakeSubmit {
-        async fn execute(
-            &self,
-            _envelope: Envelope,
-            _params: SubmitParams,
-        ) -> Result<EmailId, SubmitEmailError> {
+        async fn execute(&self, _envelope: Envelope) -> Result<EmailId, SubmitEmailError> {
             Ok(EmailId::default())
         }
     }
@@ -137,11 +128,7 @@ mod tests {
     struct FailingSubmit;
 
     impl SubmitEmailUseCase for FailingSubmit {
-        async fn execute(
-            &self,
-            _envelope: Envelope,
-            _params: SubmitParams,
-        ) -> Result<EmailId, SubmitEmailError> {
+        async fn execute(&self, _envelope: Envelope) -> Result<EmailId, SubmitEmailError> {
             Err(SubmitEmailError::Persist(EmailRepositoryError::Storage {
                 source: anyhow::anyhow!("nope"),
             }))

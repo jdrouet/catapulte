@@ -7,8 +7,6 @@ use crate::port::email_queue::{EmailQueue, EmailQueueError};
 use crate::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
 use crate::port::event_publisher::{EventPublisher, EventPublisherError};
 
-pub struct SubmitParams {}
-
 #[derive(Debug, Error)]
 pub enum SubmitEmailError {
     #[error(transparent)]
@@ -26,7 +24,6 @@ pub trait SubmitEmailUseCase: Send + Sync + 'static {
     fn execute(
         &self,
         envelope: Envelope,
-        params: SubmitParams,
     ) -> impl std::future::Future<Output = Result<EmailId, SubmitEmailError>> + Send;
 }
 
@@ -56,11 +53,7 @@ where
     /// Returns `SubmitEmailError::Persist` when saving the envelope fails.
     /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
     /// Returns `SubmitEmailError::Publish` when publishing the Queued event fails.
-    pub async fn execute(
-        &self,
-        envelope: Envelope,
-        _params: SubmitParams,
-    ) -> Result<EmailId, SubmitEmailError> {
+    pub async fn execute(&self, envelope: Envelope) -> Result<EmailId, SubmitEmailError> {
         let id = EmailId::default();
         let result = self.repository.save(id, &envelope).await?;
         match result {
@@ -86,9 +79,8 @@ where
     fn execute(
         &self,
         envelope: Envelope,
-        params: SubmitParams,
     ) -> impl std::future::Future<Output = Result<EmailId, SubmitEmailError>> + Send {
-        Self::execute(self, envelope, params)
+        Self::execute(self, envelope)
     }
 }
 
@@ -104,7 +96,7 @@ mod tests {
     use crate::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
     use crate::port::event_publisher::{EventPublisher, EventPublisherError};
 
-    use super::{SubmitEmailError, SubmitEmailService, SubmitParams};
+    use super::{SubmitEmailError, SubmitEmailService};
 
     fn make_envelope(sender: &str) -> Envelope {
         Envelope {
@@ -313,7 +305,7 @@ mod tests {
         let service =
             SubmitEmailService::new(repo.clone(), queue.clone(), FakeEventPublisher::new());
         let id = service
-            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .execute(make_envelope("sender@example.com"))
             .await
             .unwrap();
         let saved = repo.saved.lock().unwrap();
@@ -329,7 +321,7 @@ mod tests {
         let service =
             SubmitEmailService::new(repo.clone(), queue.clone(), FakeEventPublisher::new());
         let id = service
-            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .execute(make_envelope("sender@example.com"))
             .await
             .unwrap();
         let enqueued = queue.enqueued.lock().unwrap();
@@ -343,7 +335,7 @@ mod tests {
         let service =
             SubmitEmailService::new(FailingRepository, queue.clone(), FakeEventPublisher::new());
         let err = service
-            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .execute(make_envelope("sender@example.com"))
             .await
             .unwrap_err();
         assert!(matches!(err, SubmitEmailError::Persist(_)));
@@ -356,7 +348,7 @@ mod tests {
         let service =
             SubmitEmailService::new(repo.clone(), FailingQueue, FakeEventPublisher::new());
         let err = service
-            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .execute(make_envelope("sender@example.com"))
             .await
             .unwrap_err();
         assert!(matches!(err, SubmitEmailError::Enqueue(_)));
@@ -370,11 +362,11 @@ mod tests {
         let service =
             SubmitEmailService::new(repo.clone(), queue.clone(), FakeEventPublisher::new());
         let id1 = service
-            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .execute(make_envelope("sender@example.com"))
             .await
             .unwrap();
         let id2 = service
-            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .execute(make_envelope("sender@example.com"))
             .await
             .unwrap();
         assert_ne!(id1, id2);
@@ -390,7 +382,7 @@ mod tests {
             FakeEventPublisher::new(),
         );
         let returned_id = service
-            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .execute(make_envelope("sender@example.com"))
             .await
             .unwrap();
         assert_eq!(returned_id, existing_id);
@@ -404,7 +396,7 @@ mod tests {
         let spy = FakeEventPublisher::new();
         let service = SubmitEmailService::new(repo.clone(), queue.clone(), spy.clone());
         let id = service
-            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .execute(make_envelope("sender@example.com"))
             .await
             .unwrap();
         let events = spy.published.lock().unwrap();
@@ -423,7 +415,7 @@ mod tests {
             spy.clone(),
         );
         service
-            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .execute(make_envelope("sender@example.com"))
             .await
             .unwrap();
         assert!(spy.published.lock().unwrap().is_empty());
@@ -435,7 +427,7 @@ mod tests {
         let queue = FakeQueue::new();
         let service = SubmitEmailService::new(repo.clone(), queue.clone(), FailingEventPublisher);
         let err = service
-            .execute(make_envelope("sender@example.com"), SubmitParams {})
+            .execute(make_envelope("sender@example.com"))
             .await
             .unwrap_err();
         assert!(matches!(err, SubmitEmailError::Publish(_)));

@@ -50,9 +50,7 @@ mod tests {
     use catapulte_domain::use_case::list_senders::{
         ListSendersError, ListSendersUseCase, SenderSnapshot,
     };
-    use catapulte_domain::use_case::submit_email::{
-        SubmitEmailError, SubmitEmailUseCase, SubmitParams,
-    };
+    use catapulte_domain::use_case::submit_email::{SubmitEmailError, SubmitEmailUseCase};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -63,11 +61,7 @@ mod tests {
     struct FakeSubmit;
 
     impl SubmitEmailUseCase for FakeSubmit {
-        async fn execute(
-            &self,
-            _envelope: Envelope,
-            _params: SubmitParams,
-        ) -> Result<EmailId, SubmitEmailError> {
+        async fn execute(&self, _envelope: Envelope) -> Result<EmailId, SubmitEmailError> {
             Ok(EmailId::default())
         }
     }
