@@ -1,8 +1,8 @@
 use anyhow::Context;
 use catapulte_domain::entity::body::RenderedBody;
 use catapulte_domain::entity::email::RecipientKind;
-use catapulte_domain::entity::sender::SenderName;
-use catapulte_domain::port::email_sender::{EmailSender, OutboundEmail, SendError};
+use catapulte_domain::port::email_sender::OutboundEmail;
+use catapulte_domain::port::email_transport::EmailTransport;
 use lettre::message::header::ContentType;
 use lettre::message::{Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
@@ -181,30 +181,18 @@ impl SmtpConfig {
     ///
     /// Returns an error if the SMTP transport cannot be built.
     pub fn build(self) -> anyhow::Result<SmtpSender> {
-        self.build_named(SenderName::new("default"))
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the SMTP transport cannot be built.
-    pub fn build_named(self, name: SenderName) -> anyhow::Result<SmtpSender> {
         let builder = build_transport_builder(&self.tls, &self.host)?.port(self.port);
         let builder = apply_credentials(builder, self.username, self.password);
         let transport = builder.build();
-        Ok(SmtpSender { name, transport })
+        Ok(SmtpSender { transport })
     }
 }
 
 pub struct SmtpSender {
-    name: SenderName,
     transport: AsyncSmtpTransport<Tokio1Executor>,
 }
 
 impl SmtpSender {
-    pub(crate) fn name(&self) -> &SenderName {
-        &self.name
-    }
-
     pub(crate) async fn send_inner(&self, email: &OutboundEmail) -> anyhow::Result<()> {
         let from = parse_mailbox(&email.sender)?;
         let builder = apply_recipients(Message::builder().from(from), &email.recipients)?;
@@ -217,15 +205,9 @@ impl SmtpSender {
     }
 }
 
-impl EmailSender for SmtpSender {
-    async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
-        self.send_inner(&email)
-            .await
-            .map_err(|source| SendError::Send {
-                sender_name: self.name.clone(),
-                source,
-            })?;
-        Ok(self.name.clone())
+impl EmailTransport for SmtpSender {
+    async fn deliver<'a>(&'a self, email: &'a OutboundEmail) -> Result<(), anyhow::Error> {
+        self.send_inner(email).await
     }
 }
 
