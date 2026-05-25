@@ -61,6 +61,12 @@ pub struct SenderQuota {
     pub range: QuotaRange,
 }
 
+#[derive(Clone, Debug)]
+pub struct SenderConfig {
+    pub name: SenderName,
+    pub quota: Option<SenderQuota>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{QuotaRange, SenderName, SenderQuota};
