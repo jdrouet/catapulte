@@ -45,10 +45,23 @@ impl EmailRepository for SqliteAdapter {
             return Ok(SaveResult::Created(id));
         }
 
-        // Row already exists (duplicate idempotency_key); fetch the existing ID.
+        // rows_affected == 0 means INSERT OR IGNORE skipped the row due to a constraint
+        // violation. The only UNIQUE constraint that can fire for non-null idempotency_key
+        // is on idempotency_key itself, so we fetch the existing ID.
+        // For null idempotency_key, SQLite treats each NULL as distinct so the UNIQUE
+        // constraint cannot fire — a zero-row insert here is an unexpected primary key
+        // collision.
+        let Some(key) = envelope.idempotency_key.as_deref() else {
+            return Err(EmailRepositoryError::Storage {
+                source: anyhow::anyhow!(
+                    "insert skipped with no idempotency key (unexpected id collision)"
+                ),
+            });
+        };
+
         let existing_bytes: Vec<u8> =
             sqlx::query_scalar("SELECT id FROM emails WHERE idempotency_key = ?")
-                .bind(envelope.idempotency_key.as_deref())
+                .bind(key)
                 .fetch_one(self.pool())
                 .await
                 .context("fetching existing email by idempotency key")
@@ -511,6 +524,18 @@ mod tests {
         let emails = adapter.list_emails(default_list_params()).await.unwrap();
         assert!(emails.len() >= 2);
         assert!(emails[0].created_at_ms >= emails[1].created_at_ms);
+    }
+
+    #[tokio::test]
+    async fn save_with_duplicate_id_and_no_idempotency_key_returns_error() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        let result = adapter.save(id, &sample_envelope()).await;
+        assert!(
+            result.is_err(),
+            "expected error on duplicate id with no idempotency key"
+        );
     }
 
     #[tokio::test]
