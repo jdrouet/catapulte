@@ -76,11 +76,18 @@ impl AppConfig {
             .await
             .context("building publisher adapter")?;
 
-        let configured_senders = Arc::new(self.smtp.sender_caps());
-        let smtp = self
-            .smtp
-            .build(storage.clone())
-            .context("building smtp sender")?;
+        let routes = self.smtp.build_routes().context("building smtp routes")?;
+        let configured_senders = Arc::new(
+            routes
+                .iter()
+                .map(|r| (r.name.clone(), r.quota.clone()))
+                .collect::<Vec<_>>(),
+        );
+        let smtp = catapulte_domain::service::routed_email_sender::RoutedEmailSender::new(
+            routes,
+            storage.clone(),
+        )
+        .context("building routed email sender")?;
         let resolver = self
             .resolver
             .build()
