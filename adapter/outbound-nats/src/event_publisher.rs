@@ -1,0 +1,87 @@
+use anyhow::Context;
+use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
+
+#[derive(Clone)]
+pub struct NatsEventPublisher {
+    client: async_nats::Client,
+    subject: String,
+}
+
+impl NatsEventPublisher {
+    #[must_use]
+    pub fn new(client: async_nats::Client, subject: String) -> Self {
+        Self { client, subject }
+    }
+}
+
+fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
+    let (event_type, email_id, extra) = match event {
+        LifecycleEvent::Queued { id } => ("queued", id, serde_json::json!({})),
+        LifecycleEvent::Sending { id, attempt } => {
+            ("sending", id, serde_json::json!({ "attempt": attempt }))
+        }
+        LifecycleEvent::Sent { id } => ("sent", id, serde_json::json!({})),
+        LifecycleEvent::Retrying {
+            id,
+            attempt,
+            reason,
+        } => (
+            "retrying",
+            id,
+            serde_json::json!({ "attempt": attempt, "reason": reason }),
+        ),
+        LifecycleEvent::Failed { id, reason } => {
+            ("failed", id, serde_json::json!({ "reason": reason }))
+        }
+    };
+    serde_json::json!({
+        "event_type": event_type,
+        "email_id": email_id.as_uuid().to_string(),
+        "payload": extra,
+    })
+}
+
+impl EventPublisher for NatsEventPublisher {
+    async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+        let body = serde_json::to_vec(&event_to_json(event))
+            .context("serializing event")
+            .map_err(|source| EventPublisherError::Publish { source })?;
+        self.client
+            .publish(self.subject.clone(), body.into())
+            .await
+            .context("publishing event to NATS")
+            .map_err(|source| EventPublisherError::Publish { source })?;
+        Ok(())
+    }
+}
+
+pub struct NatsEventConfig {
+    pub url: Option<String>,
+    pub subject: String,
+}
+
+impl NatsEventConfig {
+    /// # Errors
+    ///
+    /// Never fails; env vars are optional.
+    pub fn from_env(prefix: &str) -> anyhow::Result<Self> {
+        let url = std::env::var(format!("{prefix}_URL")).ok();
+        let subject = std::env::var(format!("{prefix}_SUBJECT"))
+            .unwrap_or_else(|_| "catapulte.lifecycle".to_owned());
+        Ok(Self { url, subject })
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the NATS connection fails.
+    pub async fn build(self) -> anyhow::Result<Option<NatsEventPublisher>> {
+        let Some(url) = self.url else {
+            return Ok(None);
+        };
+        let client = async_nats::connect(&url)
+            .await
+            .context("connecting to NATS for event publisher")?;
+        Ok(Some(NatsEventPublisher::new(client, self.subject)))
+    }
+}

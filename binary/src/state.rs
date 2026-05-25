@@ -13,6 +13,7 @@ use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverAdapter;
 use catapulte_outbound_smtp::sender::SmtpSender;
 
+use crate::publisher::PublisherAdapter;
 use crate::queue::QueueAdapter;
 use crate::storage::StorageAdapter;
 
@@ -25,10 +26,12 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
 
 #[derive(Clone)]
 pub(crate) struct AppState {
-    pub(crate) submit_email: Arc<SubmitEmailService<StorageAdapter, QueueAdapter, StorageAdapter>>,
+    pub(crate) submit_email:
+        Arc<SubmitEmailService<StorageAdapter, QueueAdapter, PublisherAdapter>>,
     pub(crate) process_queued_email: Arc<ProcessService>,
     pub(crate) storage: StorageAdapter,
     pub(crate) queue: QueueAdapter,
+    pub(crate) publisher: PublisherAdapter,
 }
 
 impl HttpServerState for AppState {
@@ -55,6 +58,6 @@ impl WorkerState for AppState {
     }
 
     fn event_publisher(&self) -> &impl EventPublisher {
-        &self.storage
+        &self.publisher
     }
 }

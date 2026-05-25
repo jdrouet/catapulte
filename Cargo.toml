@@ -9,6 +9,7 @@ members = [
     "adapter/outbound-resolver",
     "adapter/outbound-smtp",
     "adapter/outbound-nats",
+    "adapter/outbound-webhook",
     "adapter/outbound-postgres",
     "adapter/outbound-sqlite",
     "binary",

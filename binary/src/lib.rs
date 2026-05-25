@@ -10,10 +10,12 @@ use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
 use catapulte_outbound_smtp::sender::SmtpConfig;
 
+pub mod publisher;
 pub mod queue;
 mod state;
 pub mod storage;
 
+use publisher::PublisherAdapterConfig;
 use state::AppState;
 use storage::StorageBackendConfig;
 
@@ -24,6 +26,7 @@ pub struct AppConfig {
     pub resolver: TemplateResolverConfig,
     pub worker: WorkerConfig,
     pub queue: queue::QueueBackendConfig,
+    pub publisher: PublisherAdapterConfig,
 }
 
 impl AppConfig {
@@ -39,6 +42,7 @@ impl AppConfig {
         let worker = WorkerConfig::from_env("CATAPULTE_WORKER").context("loading worker config")?;
         let queue = queue::QueueBackendConfig::from_env("CATAPULTE_QUEUE")
             .context("loading queue backend config")?;
+        let publisher = PublisherAdapterConfig::from_env().context("loading publisher config")?;
         Ok(Self {
             storage,
             http,
@@ -46,6 +50,7 @@ impl AppConfig {
             resolver,
             worker,
             queue,
+            publisher,
         })
     }
 
@@ -65,6 +70,12 @@ impl AppConfig {
             .await
             .context("building queue adapter")?;
 
+        let publisher = self
+            .publisher
+            .build(storage.clone())
+            .await
+            .context("building publisher adapter")?;
+
         let smtp = self.smtp.build().context("building smtp sender")?;
         let resolver = self
             .resolver
@@ -74,7 +85,7 @@ impl AppConfig {
         let submit_email = Arc::new(SubmitEmailService::new(
             storage.clone(),
             queue.clone(),
-            storage.clone(),
+            publisher.clone(),
         ));
         let process_queued_email = Arc::new(ProcessQueuedEmailService::new(
             resolver,
@@ -88,6 +99,7 @@ impl AppConfig {
             process_queued_email,
             storage,
             queue,
+            publisher,
         };
         let server = self.http.build();
         let worker = self.worker.build();

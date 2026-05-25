@@ -18,6 +18,7 @@ catapulte-outbound-mjml = { path = "../adapter/outbound-mjml" }
 catapulte-outbound-resolver = { path = "../adapter/outbound-resolver" }
 catapulte-outbound-smtp = { path = "../adapter/outbound-smtp" }
 catapulte-outbound-nats = { path = "../adapter/outbound-nats" }
+catapulte-outbound-webhook = { path = "../adapter/outbound-webhook" }
 catapulte-outbound-queue-memory = { path = "../adapter/outbound-queue-memory" }
 catapulte-outbound-postgres = { path = "../adapter/outbound-postgres" }
 catapulte-outbound-sqlite = { path = "../adapter/outbound-sqlite" }
