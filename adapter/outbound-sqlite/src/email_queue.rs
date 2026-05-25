@@ -75,55 +75,48 @@ impl SqliteAdapter {
         &self,
     ) -> Result<Option<(EmailId, Envelope, u32, AckToken)>, EmailQueueError> {
         let now = now_ms();
-
-        let maybe = sqlx::query(
-            "SELECT id, attempt_count FROM email_queue \
-             WHERE claimed_until IS NULL OR claimed_until < ? \
-             ORDER BY enqueued_at LIMIT 1",
-        )
-        .bind(now)
-        .fetch_optional(self.pool())
-        .await
-        .context("finding next queue entry")
-        .map_err(|source| EmailQueueError::Storage { source })?;
-
-        let (entry_id_bytes, current_attempt): (Vec<u8>, u32) = match maybe {
-            None => return Ok(None),
-            Some(row) => {
-                use sqlx::Row;
-                let id_bytes: Vec<u8> = row
-                    .try_get("id")
-                    .context("reading entry id")
-                    .map_err(|source| EmailQueueError::Storage { source })?;
-                let attempt: i64 = row
-                    .try_get("attempt_count")
-                    .context("reading attempt_count")
-                    .map_err(|source| EmailQueueError::Storage { source })?;
-                let attempt_u32 = u32::try_from(attempt)
-                    .context("attempt_count out of range")
-                    .map_err(|source| EmailQueueError::Storage { source })?;
-                (id_bytes, attempt_u32)
-            }
-        };
-
-        let new_attempt = current_attempt + 1;
         let processing_timeout_ms: i64 = 300_000;
         let claim_until = now + processing_timeout_ms;
 
-        let maybe_email_id: Option<Vec<u8>> = sqlx::query_scalar(
-            "UPDATE email_queue SET attempt_count = ?, claimed_until = ? WHERE id = ? RETURNING email_id",
+        let maybe = sqlx::query(
+            "UPDATE email_queue \
+             SET attempt_count = attempt_count + 1, claimed_until = ? \
+             WHERE id = ( \
+                 SELECT id FROM email_queue \
+                 WHERE claimed_until IS NULL OR claimed_until < ? \
+                 ORDER BY enqueued_at ASC \
+                 LIMIT 1 \
+             ) \
+             RETURNING id, email_id, attempt_count",
         )
-        .bind(i64::from(new_attempt))
         .bind(claim_until)
-        .bind(&entry_id_bytes)
+        .bind(now)
         .fetch_optional(self.pool())
         .await
-        .context("claiming queue entry")
+        .context("claiming next queue entry")
         .map_err(|source| EmailQueueError::Storage { source })?;
 
-        let Some(email_id_bytes) = maybe_email_id else {
-            return Ok(None);
+        let row = match maybe {
+            None => return Ok(None),
+            Some(row) => row,
         };
+
+        use sqlx::Row;
+        let entry_id_bytes: Vec<u8> = row
+            .try_get("id")
+            .context("reading entry id")
+            .map_err(|source| EmailQueueError::Storage { source })?;
+        let email_id_bytes: Vec<u8> = row
+            .try_get("email_id")
+            .context("reading email_id")
+            .map_err(|source| EmailQueueError::Storage { source })?;
+        let attempt: i64 = row
+            .try_get("attempt_count")
+            .context("reading attempt_count")
+            .map_err(|source| EmailQueueError::Storage { source })?;
+        let new_attempt = u32::try_from(attempt)
+            .context("attempt_count out of range")
+            .map_err(|source| EmailQueueError::Storage { source })?;
 
         let maybe_row = sqlx::query(
             "SELECT id, idempotency_key, subject, sender, recipients, body, variables FROM emails WHERE id = ?",
@@ -301,6 +294,26 @@ mod tests {
 
         let (_, _, attempt2, _token2) = adapter.dequeue().await.unwrap();
         assert_eq!(attempt2, 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_try_dequeue_claims_at_most_one_item() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+
+        let (r1, r2) = tokio::join!(adapter.try_dequeue(), adapter.try_dequeue(),);
+
+        let got1 = r1.unwrap();
+        let got2 = r2.unwrap();
+        let claimed_count = [got1.is_some(), got2.is_some()]
+            .iter()
+            .filter(|&&b| b)
+            .count();
+        assert_eq!(
+            claimed_count, 1,
+            "exactly one concurrent dequeue should claim the item"
+        );
     }
 
     #[tokio::test]
