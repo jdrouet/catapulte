@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use crate::entity::sender::{QuotaRange, SenderName, SenderQuota};
+use crate::entity::sender::{SenderName, SenderQuota};
 use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
 use crate::port::email_transport::EmailTransport;
 use crate::port::sender_repository::{SenderRepository, SenderRepositoryError, SenderStats};
@@ -32,28 +32,23 @@ pub struct SenderRoute<T> {
     pub transport: T,
 }
 
-pub struct PriorityEmailSender<T, R = NoopSenderRepository> {
+pub struct RoutedEmailSender<T, R = NoopSenderRepository> {
     routes: Vec<SenderRoute<T>>,
     repo: R,
 }
 
-impl<T, R> PriorityEmailSender<T, R> {
-    pub fn new(mut routes: Vec<SenderRoute<T>>, repo: R) -> Self {
+impl<T, R> RoutedEmailSender<T, R> {
+    /// # Errors
+    ///
+    /// Returns an error if `routes` is empty.
+    pub fn new(mut routes: Vec<SenderRoute<T>>, repo: R) -> anyhow::Result<Self> {
+        anyhow::ensure!(!routes.is_empty(), "routes must not be empty");
         routes.sort_by_key(|r| r.priority);
-        Self { routes, repo }
+        Ok(Self { routes, repo })
     }
 }
 
-fn quota_range_ms(range: &QuotaRange) -> i64 {
-    match range {
-        QuotaRange::Hourly => 3_600_000,
-        QuotaRange::Daily => 86_400_000,
-        QuotaRange::Weekly => 604_800_000,
-        QuotaRange::Monthly => 2_592_000_000,
-    }
-}
-
-impl<T, R> EmailSender for PriorityEmailSender<T, R>
+impl<T, R> EmailSender for RoutedEmailSender<T, R>
 where
     T: EmailTransport,
     R: SenderRepository,
@@ -70,7 +65,7 @@ where
         let mut since_ms_to_names: HashMap<i64, Vec<SenderName>> = HashMap::new();
         for route in &self.routes {
             if let Some(quota) = &route.quota {
-                let since_ms = now_ms - quota_range_ms(&quota.range);
+                let since_ms = quota.range.since_ms(now_ms);
                 since_ms_to_names
                     .entry(since_ms)
                     .or_default()
@@ -80,9 +75,17 @@ where
 
         let mut sent_map: HashMap<SenderName, u64> = HashMap::new();
         for (since_ms, names) in &since_ms_to_names {
-            if let Ok(stats) = self.repo.get_stats(names, *since_ms).await {
-                for stat in stats {
-                    sent_map.insert(stat.name, stat.sent_in_range);
+            match self.repo.get_stats(names, *since_ms).await {
+                Ok(stats) => {
+                    for stat in stats {
+                        sent_map.insert(stat.name, stat.sent_in_range);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "sender repository unavailable; quota checks skipped, all senders treated as eligible"
+                    );
                 }
             }
         }
@@ -124,7 +127,7 @@ where
             }
         }
 
-        Err(last_err.expect("routes must not be empty"))
+        Err(last_err.unwrap_or_else(|| unreachable!("non-empty routes guarantee an error")))
     }
 }
 
@@ -132,7 +135,7 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use super::{NoopSenderRepository, PriorityEmailSender, SenderRoute};
+    use super::{NoopSenderRepository, RoutedEmailSender, SenderRoute};
     use crate::entity::body::{Plain, RenderedBody};
     use crate::entity::sender::{QuotaRange, SenderName, SenderQuota};
     use crate::port::email_sender::{EmailSender, OutboundEmail};
@@ -225,22 +228,33 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn first_sender_fails_second_succeeds() {
-        let sender = PriorityEmailSender::new(
-            vec![fail_route("first", 0, None), ok_route("second", 1, None)],
+    #[test]
+    fn new_with_empty_routes_returns_error() {
+        let result = RoutedEmailSender::new(
+            Vec::<SenderRoute<FakeTransport>>::new(),
             NoopSenderRepository,
         );
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn first_sender_fails_second_succeeds() {
+        let sender = RoutedEmailSender::new(
+            vec![fail_route("first", 0, None), ok_route("second", 1, None)],
+            NoopSenderRepository,
+        )
+        .unwrap();
         let result = sender.send(make_email()).await;
         assert_eq!(result.unwrap().as_str(), "second");
     }
 
     #[tokio::test]
     async fn all_senders_fail_returns_last_error() {
-        let sender = PriorityEmailSender::new(
+        let sender = RoutedEmailSender::new(
             vec![fail_route("first", 0, None), fail_route("second", 1, None)],
             NoopSenderRepository,
-        );
+        )
+        .unwrap();
         let result = sender.send(make_email()).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().sender_name().as_str(), "second");
@@ -248,10 +262,11 @@ mod tests {
 
     #[tokio::test]
     async fn first_sender_succeeds_returns_immediately() {
-        let sender = PriorityEmailSender::new(
+        let sender = RoutedEmailSender::new(
             vec![ok_route("first", 0, None), ok_route("second", 1, None)],
             NoopSenderRepository,
-        );
+        )
+        .unwrap();
         let result = sender.send(make_email()).await;
         assert_eq!(result.unwrap().as_str(), "first");
     }
@@ -259,7 +274,7 @@ mod tests {
     #[tokio::test]
     async fn over_quota_sender_is_skipped_for_eligible_one() {
         let stats: HashMap<String, u64> = [("primary".into(), 1u64)].into_iter().collect();
-        let sender = PriorityEmailSender::new(
+        let sender = RoutedEmailSender::new(
             vec![
                 ok_route(
                     "primary",
@@ -272,7 +287,8 @@ mod tests {
                 ok_route("backup", 1, None),
             ],
             FakeSenderRepository { stats },
-        );
+        )
+        .unwrap();
         let result = sender.send(make_email()).await;
         assert_eq!(result.unwrap().as_str(), "backup");
     }
@@ -282,7 +298,7 @@ mod tests {
         let stats: HashMap<String, u64> = [("primary".into(), 5u64), ("backup".into(), 3u64)]
             .into_iter()
             .collect();
-        let sender = PriorityEmailSender::new(
+        let sender = RoutedEmailSender::new(
             vec![
                 ok_route(
                     "primary",
@@ -302,7 +318,8 @@ mod tests {
                 ),
             ],
             FakeSenderRepository { stats },
-        );
+        )
+        .unwrap();
         let result = sender.send(make_email()).await;
         assert_eq!(result.unwrap().as_str(), "primary");
     }
@@ -310,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn under_quota_sender_is_used_normally() {
         let stats: HashMap<String, u64> = [("primary".into(), 5u64)].into_iter().collect();
-        let sender = PriorityEmailSender::new(
+        let sender = RoutedEmailSender::new(
             vec![ok_route(
                 "primary",
                 0,
@@ -320,14 +337,15 @@ mod tests {
                 }),
             )],
             FakeSenderRepository { stats },
-        );
+        )
+        .unwrap();
         let result = sender.send(make_email()).await;
         assert_eq!(result.unwrap().as_str(), "primary");
     }
 
     #[tokio::test]
     async fn repo_error_treats_all_as_eligible() {
-        let sender = PriorityEmailSender::new(
+        let sender = RoutedEmailSender::new(
             vec![ok_route(
                 "primary",
                 0,
@@ -337,7 +355,8 @@ mod tests {
                 }),
             )],
             ErrorSenderRepository,
-        );
+        )
+        .unwrap();
         let result = sender.send(make_email()).await;
         assert_eq!(result.unwrap().as_str(), "primary");
     }

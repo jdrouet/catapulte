@@ -1,1 +1,1 @@
-pub mod priority_email_sender;
+pub mod routed_email_sender;
