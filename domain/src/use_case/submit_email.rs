@@ -5,7 +5,7 @@ use crate::entity::envelope::Envelope;
 use crate::entity::lifecycle_event::LifecycleEvent;
 use crate::port::email_queue::{EmailQueue, EmailQueueError};
 use crate::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
-use crate::port::event_publisher::{EventPublisher, EventPublisherError};
+use crate::port::event_publisher::EventPublisher;
 
 #[derive(Debug, Error)]
 pub enum SubmitEmailError {
@@ -13,8 +13,6 @@ pub enum SubmitEmailError {
     Persist(#[from] EmailRepositoryError),
     #[error(transparent)]
     Enqueue(#[from] EmailQueueError),
-    #[error(transparent)]
-    Publish(#[from] EventPublisherError),
 }
 
 pub trait SubmitEmailUseCase: Send + Sync + 'static {
@@ -22,7 +20,6 @@ pub trait SubmitEmailUseCase: Send + Sync + 'static {
     ///
     /// Returns `SubmitEmailError::Persist` when saving the envelope fails.
     /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
-    /// Returns `SubmitEmailError::Publish` when publishing the lifecycle event fails.
     fn execute(
         &self,
         envelope: Envelope,
@@ -54,7 +51,6 @@ where
     ///
     /// Returns `SubmitEmailError::Persist` when saving the envelope fails.
     /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
-    /// Returns `SubmitEmailError::Publish` when publishing the Queued event fails.
     pub async fn execute(&self, envelope: Envelope) -> Result<EmailId, SubmitEmailError> {
         let id = EmailId::default();
         let result = self.repository.save(id, &envelope).await?;
@@ -63,9 +59,13 @@ where
             SaveResult::Created(id) => {
                 // enqueue after persist: a failed enqueue leaves an orphan record recoverable by reconciliation; enqueuing first would let consumers observe an event for a non-existent email
                 self.queue.enqueue(id, &envelope).await?;
-                self.event_publisher
+                if let Err(e) = self
+                    .event_publisher
                     .publish(&LifecycleEvent::Queued { id })
-                    .await?;
+                    .await
+                {
+                    tracing::warn!(error = %e, email_id = %id.as_uuid(), "failed to publish queued event");
+                }
                 Ok(id)
             }
         }
@@ -424,14 +424,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_failure_propagates_as_submit_email_error() {
+    async fn publish_failure_does_not_fail_submit() {
         let repo = FakeRepository::new();
         let queue = FakeQueue::new();
         let service = SubmitEmailService::new(repo.clone(), queue.clone(), FailingEventPublisher);
-        let err = service
-            .execute(make_envelope("sender@example.com"))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, SubmitEmailError::Publish(_)));
+        let result = service.execute(make_envelope("sender@example.com")).await;
+        assert!(
+            result.is_ok(),
+            "publish failure must not propagate as error"
+        );
+        assert_eq!(
+            queue.enqueued.lock().unwrap().len(),
+            1,
+            "email must still be enqueued"
+        );
     }
 }
