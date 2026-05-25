@@ -13,3 +13,6 @@ anyhow = { workspace = true }
 catapulte-domain = { path = "../../domain" }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
