@@ -125,7 +125,15 @@ impl PostgresAdapter {
             .map_err(|source| EmailQueueError::Storage { source })?;
 
         match maybe_row {
-            None => Ok(None),
+            None => {
+                sqlx::query("DELETE FROM email_queue WHERE id = $1")
+                    .bind(entry_id)
+                    .execute(self.pool())
+                    .await
+                    .context("deleting orphaned queue entry")
+                    .map_err(|source| EmailQueueError::Storage { source })?;
+                Ok(None)
+            }
             Some(row) => {
                 let envelope =
                     parse_envelope(&row).map_err(|source| EmailQueueError::Storage { source })?;
@@ -272,6 +280,61 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn try_dequeue_cleans_up_orphaned_entry_when_email_missing() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+
+        // Simulate an orphaned queue entry: delete the queue row first (so the FK
+        // allows removing the email), then delete the email, then re-insert a raw
+        // queue entry that references a now-missing email_id.
+        let entry_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM email_queue")
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM email_queue WHERE id = $1")
+            .bind(entry_id)
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM emails WHERE id = $1")
+            .bind(id.as_uuid())
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+        // Re-insert the orphaned queue row on a single connection so the
+        // session-level replication-role override and the INSERT share state.
+        {
+            let mut conn = adapter.pool().acquire().await.unwrap();
+            sqlx::query("SET session_replication_role = replica")
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO email_queue (id, email_id) VALUES ($1, $2)")
+                .bind(entry_id)
+                .bind(id.as_uuid())
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+            sqlx::query("SET session_replication_role = DEFAULT")
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+        }
+
+        // try_dequeue should return None and clean up the orphaned queue entry.
+        let result = adapter.try_dequeue().await.unwrap();
+        assert!(result.is_none());
+
+        // The queue entry must be gone.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM email_queue")
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "orphaned queue entry should have been deleted");
     }
 
     #[tokio::test]
