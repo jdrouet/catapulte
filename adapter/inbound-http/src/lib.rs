@@ -1,5 +1,6 @@
 pub mod dto;
 pub mod error;
+pub mod limited_reader;
 pub mod routes;
 
 use std::net::SocketAddr;

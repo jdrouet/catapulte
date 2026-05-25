@@ -1,28 +1,139 @@
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::body::Body;
+use axum::extract::{FromRequest, Multipart, Query, Request, State};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::port::email_repository::ListEmailsParams;
 use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
-use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
+use catapulte_domain::use_case::submit_email::{AttachmentInput, SubmitEmailUseCase};
+use futures_util::TryStreamExt;
 
 use crate::HttpServerState;
 use crate::dto::{
-    DEFAULT_EMAILS_LIMIT, EmailRecordDto, ListEmailsQuery, ListEmailsResponse, MAX_EMAILS_LIMIT,
-    SubmitEmailRequest, SubmitEmailResponse,
+    DEFAULT_EMAILS_LIMIT, EmailRecordDto, EnvelopeCoreDto, ListEmailsQuery, ListEmailsResponse,
+    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_EMAIL, MAX_EMAILS_LIMIT, MAX_ENVELOPE_BYTES,
+    MAX_REQUEST_BODY_BYTES, SubmitEmailRequest, SubmitEmailResponse,
 };
 use crate::error::AppError;
+use crate::limited_reader::LimitedReader;
+
+fn is_multipart_form_data(content_type: Option<&axum::http::HeaderValue>) -> bool {
+    content_type.and_then(|v| v.to_str().ok()).is_some_and(|s| {
+        let head = s.split(';').next().unwrap_or("").trim();
+        head.eq_ignore_ascii_case("multipart/form-data")
+    })
+}
 
 /// # Errors
 ///
 /// Returns `AppError::BadRequest` on invalid input or `AppError::Submit` on use case failure.
-#[tracing::instrument(skip_all, fields(sender = %request.sender, recipients_count = request.recipients.len()))]
+#[tracing::instrument(skip_all)]
 pub async fn submit_email<S: HttpServerState>(
     State(state): State<S>,
-    Json(request): Json<SubmitEmailRequest>,
+    request: Request<Body>,
 ) -> Result<Json<SubmitEmailResponse>, AppError> {
-    let input = request.into_submit_input()?;
+    let content_type = request.headers().get(axum::http::header::CONTENT_TYPE);
+
+    let input = if is_multipart_form_data(content_type) {
+        handle_multipart(request).await?
+    } else {
+        handle_json(request).await?
+    };
+
     let id = state.submit_email().execute(input).await?;
     Ok(Json(SubmitEmailResponse { id }))
+}
+
+async fn handle_json(
+    request: Request<Body>,
+) -> Result<catapulte_domain::use_case::submit_email::SubmitEmailInput, AppError> {
+    let body_bytes = axum::body::to_bytes(request.into_body(), MAX_REQUEST_BODY_BYTES)
+        .await
+        .map_err(|e| AppError::BadRequestRaw(format!("failed to read request body: {e}")))?;
+    let req: SubmitEmailRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|e| AppError::BadRequestRaw(format!("invalid JSON: {e}")))?;
+    Ok(req.into_submit_input()?)
+}
+
+async fn handle_multipart(
+    request: Request<Body>,
+) -> Result<catapulte_domain::use_case::submit_email::SubmitEmailInput, AppError> {
+    let mut multipart = Multipart::from_request(request, &())
+        .await
+        .map_err(|e| AppError::BadRequestRaw(format!("invalid multipart: {e}")))?;
+
+    let mut envelope: Option<EnvelopeCoreDto> = None;
+    let mut attachments: Vec<AttachmentInput> = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequestRaw(format!("multipart read error: {e}")))?
+    {
+        let name = field.name().unwrap_or("").to_owned();
+        match name.as_str() {
+            "envelope" => {
+                use futures_util::StreamExt;
+                let stream = field.map(|r| r.map_err(std::io::Error::other));
+                let reader = tokio_util::io::StreamReader::new(stream);
+                let limited = LimitedReader::new(reader, MAX_ENVELOPE_BYTES as u64);
+                let mut buf = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut Box::pin(limited), &mut buf)
+                    .await
+                    .map_err(|_| {
+                        AppError::BadRequestRaw("envelope field exceeds size limit".to_owned())
+                    })?;
+                let dto: EnvelopeCoreDto = serde_json::from_slice(&buf)
+                    .map_err(|e| AppError::BadRequestRaw(format!("invalid envelope JSON: {e}")))?;
+                envelope = Some(dto);
+            }
+            "attachment" => {
+                if attachments.len() >= MAX_ATTACHMENTS_PER_EMAIL {
+                    return Err(AppError::BadRequestRaw("too many attachments".to_owned()));
+                }
+
+                let filename = field
+                    .file_name()
+                    .ok_or_else(|| {
+                        AppError::BadRequestRaw(
+                            "attachment field missing filename in Content-Disposition".to_owned(),
+                        )
+                    })?
+                    .to_owned();
+
+                let content_type = field
+                    .content_type()
+                    .unwrap_or("application/octet-stream")
+                    .to_owned();
+
+                // Buffer through LimitedReader to enforce the per-attachment size cap.
+                // The axum Field borrows from Multipart and cannot be made 'static, so
+                // we must drain it here before advancing to the next field.
+                let stream = field.map_err(std::io::Error::other);
+                let stream_reader = tokio_util::io::StreamReader::new(stream);
+                let mut limited = LimitedReader::new(stream_reader, MAX_ATTACHMENT_BYTES);
+                let mut buf = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut buf)
+                    .await
+                    .map_err(|e| {
+                        AppError::BadRequestRaw(format!("attachment too large or read error: {e}"))
+                    })?;
+
+                attachments.push(AttachmentInput::Inline {
+                    filename,
+                    content_type,
+                    bytes: bytes::Bytes::from(buf),
+                });
+            }
+            _ => {
+                // Ignore unknown fields.
+            }
+        }
+    }
+
+    let envelope = envelope
+        .ok_or_else(|| AppError::BadRequestRaw("missing required 'envelope' field".to_owned()))?;
+
+    Ok(envelope.into_submit_input(attachments)?)
 }
 
 /// # Errors
@@ -654,6 +765,226 @@ mod tests {
             .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
             .await
             .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // -- multipart helpers and tests --
+
+    #[allow(clippy::type_complexity)]
+    fn multipart_body(boundary: &str, parts: &[(&str, Option<&str>, Option<&str>, &[u8])]) -> Body {
+        let mut out = Vec::new();
+        for (name, filename, ct, body) in parts {
+            out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            let cd = match filename {
+                Some(f) => {
+                    format!("Content-Disposition: form-data; name=\"{name}\"; filename=\"{f}\"\r\n")
+                }
+                None => format!("Content-Disposition: form-data; name=\"{name}\"\r\n"),
+            };
+            out.extend_from_slice(cd.as_bytes());
+            if let Some(ct) = ct {
+                out.extend_from_slice(format!("Content-Type: {ct}\r\n").as_bytes());
+            }
+            out.extend_from_slice(b"\r\n");
+            out.extend_from_slice(body);
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        Body::from(out)
+    }
+
+    fn post_multipart(boundary: &str, body: Body) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/emails")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .unwrap()
+    }
+
+    fn envelope_json() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"}
+        }))
+        .unwrap()
+    }
+
+    /// A `SubmitEmailUseCase` that reads all stream attachment bytes and stores them for inspection.
+    #[derive(Clone)]
+    struct CapturingSubmit {
+        captured_bytes: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl CapturingSubmit {
+        fn new() -> Self {
+            Self {
+                captured_bytes: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl SubmitEmailUseCase for CapturingSubmit {
+        async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
+            use catapulte_domain::use_case::submit_email::AttachmentInput;
+            for att in input.attachments {
+                if let AttachmentInput::Inline { bytes, .. } = att {
+                    self.captured_bytes.lock().unwrap().push(bytes.to_vec());
+                }
+            }
+            Ok(EmailId::default())
+        }
+    }
+
+    #[derive(Clone)]
+    struct CapturingTestState {
+        submit: Arc<CapturingSubmit>,
+        list_emails: Arc<FakeListEmails>,
+    }
+
+    impl HttpServerState for CapturingTestState {
+        fn submit_email(&self) -> &impl SubmitEmailUseCase {
+            self.submit.as_ref()
+        }
+
+        fn list_emails(&self) -> &impl ListEmailsUseCase {
+            self.list_emails.as_ref()
+        }
+
+        fn list_events(&self) -> &impl ListEventsUseCase {
+            &NoopListEvents
+        }
+
+        fn list_senders(&self) -> &impl ListSendersUseCase {
+            &NoopListSenders
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_multipart_with_one_attachment_returns_200() {
+        let boundary = "testboundary123";
+        let file_content = b"streamed file content";
+        let envelope = envelope_json();
+        let body = multipart_body(
+            boundary,
+            &[
+                ("envelope", None, Some("application/json"), &envelope),
+                (
+                    "attachment",
+                    Some("test.txt"),
+                    Some("text/plain"),
+                    file_content,
+                ),
+            ],
+        );
+
+        let submit = Arc::new(CapturingSubmit::new());
+        let captured = submit.captured_bytes.clone();
+        let app = router(CapturingTestState {
+            submit,
+            list_emails: Arc::new(FakeListEmails::new()),
+        });
+
+        let response = app.oneshot(post_multipart(boundary, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let blobs = captured.lock().unwrap();
+        assert_eq!(blobs.len(), 1);
+        assert_eq!(blobs[0], file_content);
+    }
+
+    #[tokio::test]
+    async fn submit_multipart_missing_envelope_returns_400() {
+        let boundary = "testboundary456";
+        let body = multipart_body(
+            boundary,
+            &[("attachment", Some("file.txt"), Some("text/plain"), b"data")],
+        );
+        let app = make_router();
+        let response = app.oneshot(post_multipart(boundary, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_multipart_too_many_attachments_returns_400() {
+        use crate::dto::MAX_ATTACHMENTS_PER_EMAIL;
+        let boundary = "testboundary789";
+        let envelope = envelope_json();
+        // Build MAX_ATTACHMENTS_PER_EMAIL + 1 attachment parts.
+        #[allow(clippy::type_complexity)]
+        let mut parts: Vec<(&str, Option<&str>, Option<&str>, &[u8])> =
+            vec![("envelope", None, Some("application/json"), &envelope)];
+        for _ in 0..=MAX_ATTACHMENTS_PER_EMAIL {
+            parts.push(("attachment", Some("x.txt"), Some("text/plain"), b"x"));
+        }
+        let body = multipart_body(boundary, &parts);
+        let app = make_router();
+        let response = app.oneshot(post_multipart(boundary, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn multipart_dispatch_is_case_insensitive() {
+        // Content-Type with mixed case must still route to the multipart handler.
+        let boundary = "caseboundary001";
+        let envelope = envelope_json();
+        let body = multipart_body(
+            boundary,
+            &[("envelope", None, Some("application/json"), &envelope)],
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/emails")
+            .header(
+                "content-type",
+                format!("Multipart/Form-Data; boundary={boundary}"),
+            )
+            .body(body)
+            .unwrap();
+        let app = make_router();
+        let response = app.oneshot(request).await.unwrap();
+        // A well-formed multipart request with a valid envelope must succeed.
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn submit_multipart_envelope_too_large_returns_400() {
+        use crate::dto::MAX_ENVELOPE_BYTES;
+        let boundary = "largeenvboundary";
+        // Build an envelope JSON whose total size exceeds MAX_ENVELOPE_BYTES by padding
+        // the subject field with a very long string.
+        let padding = "x".repeat(MAX_ENVELOPE_BYTES + 1);
+        let oversized_envelope = serde_json::to_vec(&serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "subject": padding
+        }))
+        .unwrap();
+        let body = multipart_body(
+            boundary,
+            &[(
+                "envelope",
+                None,
+                Some("application/json"),
+                &oversized_envelope,
+            )],
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/emails")
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .unwrap();
+        let app = make_router();
+        let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

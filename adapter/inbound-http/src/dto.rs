@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 pub const MAX_ATTACHMENTS_PER_EMAIL: usize = 10;
 pub const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024; // 25 MiB
+pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024; // 1 MiB
 // Worst case: 10 attachments × 25 MiB = 250 MiB binary, base64-inflated to ~333 MiB, plus ~1 MiB envelope.
 pub const MAX_REQUEST_BODY_BYTES: usize = 352 * 1024 * 1024; // 352 MiB
 
@@ -118,25 +119,77 @@ pub enum EnvelopeConversionError {
     AttachmentTooLarge { filename: String },
 }
 
+fn validate_sender(sender: &str) -> Result<(), EnvelopeConversionError> {
+    use std::str::FromStr;
+    email_address::EmailAddress::from_str(sender)
+        .context("parsing sender")
+        .map_err(EnvelopeConversionError::InvalidSender)?;
+    Ok(())
+}
+
+fn validate_recipients(
+    recipients: Vec<RecipientDto>,
+) -> Result<Vec<(catapulte_domain::entity::email::RecipientKind, String)>, EnvelopeConversionError>
+{
+    use std::str::FromStr;
+    if recipients.is_empty() {
+        return Err(EnvelopeConversionError::EmptyRecipients);
+    }
+    recipients
+        .into_iter()
+        .map(|r| {
+            email_address::EmailAddress::from_str(&r.address)
+                .context("parsing recipient")
+                .map_err(EnvelopeConversionError::InvalidRecipient)?;
+            Ok((r.kind.into(), r.address))
+        })
+        .collect::<Result<Vec<_>, EnvelopeConversionError>>()
+}
+
+fn attachment_dto_to_input(a: AttachmentDto) -> Result<AttachmentInput, EnvelopeConversionError> {
+    match (a.inline_base64, a.url) {
+        (Some(b64), None) => {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(&b64)
+                .context(format!("decoding base64 for attachment '{}'", a.filename))
+                .map_err(|source| EnvelopeConversionError::InvalidAttachmentBase64 {
+                    filename: a.filename.clone(),
+                    source,
+                })?;
+            if decoded.len() as u64 > MAX_ATTACHMENT_BYTES {
+                return Err(EnvelopeConversionError::AttachmentTooLarge {
+                    filename: a.filename,
+                });
+            }
+            Ok(AttachmentInput::Inline {
+                filename: a.filename,
+                content_type: a.content_type,
+                bytes: bytes::Bytes::from(decoded),
+            })
+        }
+        (None, Some(raw_url)) => {
+            let parsed = url::Url::parse(&raw_url)
+                .context(format!("parsing url for attachment '{}'", a.filename))
+                .map_err(|source| EnvelopeConversionError::InvalidAttachmentUrl {
+                    filename: a.filename.clone(),
+                    source,
+                })?;
+            Ok(AttachmentInput::Remote {
+                filename: a.filename,
+                content_type: a.content_type,
+                url: parsed,
+            })
+        }
+        _ => Err(EnvelopeConversionError::InvalidAttachmentShape {
+            filename: a.filename,
+        }),
+    }
+}
+
 impl SubmitEmailRequest {
     pub fn into_submit_input(self) -> Result<SubmitEmailInput, EnvelopeConversionError> {
-        use std::str::FromStr;
-        email_address::EmailAddress::from_str(&self.sender)
-            .context("parsing sender")
-            .map_err(EnvelopeConversionError::InvalidSender)?;
-        if self.recipients.is_empty() {
-            return Err(EnvelopeConversionError::EmptyRecipients);
-        }
-        let recipients = self
-            .recipients
-            .into_iter()
-            .map(|r| {
-                email_address::EmailAddress::from_str(&r.address)
-                    .context("parsing recipient")
-                    .map_err(EnvelopeConversionError::InvalidRecipient)?;
-                Ok((r.kind.into(), r.address))
-            })
-            .collect::<Result<Vec<_>, EnvelopeConversionError>>()?;
+        validate_sender(&self.sender)?;
+        let recipients = validate_recipients(self.recipients)?;
         let body = self.body.try_into()?;
 
         if self.attachments.len() > MAX_ATTACHMENTS_PER_EMAIL {
@@ -144,46 +197,7 @@ impl SubmitEmailRequest {
         }
         let mut atts = Vec::with_capacity(self.attachments.len());
         for a in self.attachments {
-            let att = match (a.inline_base64, a.url) {
-                (Some(b64), None) => {
-                    let decoded = base64::engine::general_purpose::STANDARD
-                        .decode(&b64)
-                        .context(format!("decoding base64 for attachment '{}'", a.filename))
-                        .map_err(|source| EnvelopeConversionError::InvalidAttachmentBase64 {
-                            filename: a.filename.clone(),
-                            source,
-                        })?;
-                    if decoded.len() as u64 > MAX_ATTACHMENT_BYTES {
-                        return Err(EnvelopeConversionError::AttachmentTooLarge {
-                            filename: a.filename,
-                        });
-                    }
-                    AttachmentInput::Inline {
-                        filename: a.filename,
-                        content_type: a.content_type,
-                        bytes: bytes::Bytes::from(decoded),
-                    }
-                }
-                (None, Some(raw_url)) => {
-                    let parsed = url::Url::parse(&raw_url)
-                        .context(format!("parsing url for attachment '{}'", a.filename))
-                        .map_err(|source| EnvelopeConversionError::InvalidAttachmentUrl {
-                            filename: a.filename.clone(),
-                            source,
-                        })?;
-                    AttachmentInput::Remote {
-                        filename: a.filename,
-                        content_type: a.content_type,
-                        url: parsed,
-                    }
-                }
-                _ => {
-                    return Err(EnvelopeConversionError::InvalidAttachmentShape {
-                        filename: a.filename,
-                    });
-                }
-            };
-            atts.push(att);
+            atts.push(attachment_dto_to_input(a)?);
         }
 
         Ok(SubmitEmailInput {
@@ -194,6 +208,45 @@ impl SubmitEmailRequest {
             body,
             variables: self.variables,
             attachments: atts,
+        })
+    }
+}
+
+/// Envelope-only JSON sent in the `envelope` field of a multipart submission.
+#[derive(Debug, Deserialize)]
+pub struct EnvelopeCoreDto {
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub subject: Option<String>,
+    pub sender: String,
+    pub recipients: Vec<RecipientDto>,
+    pub body: BodyDto,
+    #[serde(default)]
+    pub variables: serde_json::Map<String, serde_json::Value>,
+}
+
+impl EnvelopeCoreDto {
+    /// Convert envelope metadata and pre-built stream attachments into a `SubmitEmailInput`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EnvelopeConversionError` when sender, recipients, or body fail validation.
+    pub fn into_submit_input(
+        self,
+        attachments: Vec<AttachmentInput>,
+    ) -> Result<SubmitEmailInput, EnvelopeConversionError> {
+        validate_sender(&self.sender)?;
+        let recipients = validate_recipients(self.recipients)?;
+        let body = self.body.try_into()?;
+        Ok(SubmitEmailInput {
+            idempotency_key: self.idempotency_key,
+            subject: self.subject,
+            sender: self.sender,
+            recipients,
+            body,
+            variables: self.variables,
+            attachments,
         })
     }
 }

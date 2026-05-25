@@ -4,7 +4,7 @@ use crate::entity::attachment::AttachmentRef;
 use crate::entity::email::EmailId;
 use crate::entity::envelope::Envelope;
 use crate::entity::lifecycle_event::LifecycleEvent;
-use crate::port::attachment_fetcher::{AttachmentFetchError, AttachmentFetcher};
+use crate::port::attachment_fetcher::AttachmentFetcher;
 use crate::port::attachment_store::{AttachmentReader, AttachmentStore};
 use crate::port::email_queue::{EmailQueue, EmailQueueError};
 use crate::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
@@ -15,6 +15,11 @@ pub enum AttachmentInput {
         filename: String,
         content_type: String,
         bytes: bytes::Bytes,
+    },
+    Stream {
+        filename: String,
+        content_type: String,
+        reader: crate::port::attachment_store::AttachmentReader,
     },
     Remote {
         filename: String,
@@ -101,6 +106,7 @@ where
     /// Returns `SubmitEmailError::Persist` when saving the envelope fails.
     /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
     /// Returns `SubmitEmailError::AttachmentStore` when blob upload fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
         let id = EmailId::default();
 
@@ -122,24 +128,39 @@ where
             SaveResult::Created(_) => {}
         }
 
-        let mut written_refs: Vec<AttachmentRef> = Vec::with_capacity(input.attachments.len());
-        for att in &input.attachments {
+        let SubmitEmailInput {
+            idempotency_key,
+            subject,
+            sender,
+            recipients,
+            body,
+            variables,
+            attachments,
+        } = input;
+
+        let mut written_refs: Vec<AttachmentRef> = Vec::with_capacity(attachments.len());
+        for att in attachments {
             let (filename, content_type, reader) = match att {
                 AttachmentInput::Inline {
                     filename,
                     content_type,
                     bytes,
                 } => (
-                    filename.clone(),
-                    content_type.clone(),
+                    filename,
+                    content_type,
                     Box::pin(std::io::Cursor::new(bytes.to_vec())) as AttachmentReader,
                 ),
+                AttachmentInput::Stream {
+                    filename,
+                    content_type,
+                    reader,
+                } => (filename, content_type, reader),
                 AttachmentInput::Remote {
                     filename,
                     content_type,
                     url,
-                } => match self.attachment_fetcher.fetch(url).await {
-                    Ok(r) => (filename.clone(), content_type.clone(), r),
+                } => match self.attachment_fetcher.fetch(&url).await {
+                    Ok(r) => (filename, content_type, r),
                     Err(fetch_err) => {
                         for r in &written_refs {
                             let _ = self.attachment_store.delete(&r.blob).await;
@@ -183,12 +204,12 @@ where
         }
 
         let envelope = Envelope {
-            idempotency_key: input.idempotency_key,
-            subject: input.subject,
-            sender: input.sender,
-            recipients: input.recipients,
-            body: input.body,
-            variables: input.variables,
+            idempotency_key,
+            subject,
+            sender,
+            recipients,
+            body,
+            variables,
             attachments: written_refs,
         };
 
@@ -851,5 +872,83 @@ mod tests {
         let err = service.execute(input).await.unwrap_err();
         assert!(matches!(err, SubmitEmailError::AttachmentFetch { .. }));
         assert!(queue.enqueued.lock().unwrap().is_empty());
+    }
+
+    #[derive(Clone)]
+    struct CapturingAttachmentStore {
+        captured: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl CapturingAttachmentStore {
+        fn new() -> Self {
+            Self {
+                captured: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[allow(async_fn_in_trait)]
+    impl AttachmentStore for CapturingAttachmentStore {
+        async fn put(
+            &self,
+            mut reader: AttachmentReader,
+        ) -> Result<PutResult, AttachmentStoreError> {
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            reader
+                .read_to_end(&mut buf)
+                .await
+                .map_err(|e| AttachmentStoreError::Io {
+                    source: anyhow::Error::new(e),
+                })?;
+            let size_bytes = buf.len() as u64;
+            self.captured.lock().unwrap().push(buf);
+            Ok(PutResult {
+                blob: BlobRef {
+                    backend: "fake".into(),
+                    key: format!("fake-key-{}", uuid::Uuid::now_v7().simple()),
+                },
+                size_bytes,
+            })
+        }
+
+        async fn get(
+            &self,
+            _blob: &crate::entity::attachment::BlobRef,
+        ) -> Result<AttachmentReader, AttachmentStoreError> {
+            Ok(Box::pin(std::io::Cursor::new(b"fake content".to_vec())))
+        }
+
+        async fn delete(
+            &self,
+            _blob: &crate::entity::attachment::BlobRef,
+        ) -> Result<(), AttachmentStoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_writes_stream_attachment_via_attachment_store() {
+        let repo = FakeRepository::new();
+        let queue = FakeQueue::new();
+        let store = CapturingAttachmentStore::new();
+        let captured = store.captured.clone();
+        let mut input = make_input("sender@example.com");
+        input.attachments.push(AttachmentInput::Stream {
+            filename: "streamed.txt".into(),
+            content_type: "text/plain".into(),
+            reader: Box::pin(std::io::Cursor::new(b"streamed bytes".to_vec())),
+        });
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            store,
+            FakeFetcher,
+        );
+        service.execute(input).await.unwrap();
+        let blobs = captured.lock().unwrap();
+        assert_eq!(blobs.len(), 1);
+        assert_eq!(blobs[0], b"streamed bytes");
     }
 }

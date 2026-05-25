@@ -14,6 +14,8 @@ use crate::dto::EnvelopeConversionError;
 pub enum AppError {
     #[error(transparent)]
     BadRequest(#[from] EnvelopeConversionError),
+    #[error("bad request: {0}")]
+    BadRequestRaw(String),
     #[error(transparent)]
     Submit(#[from] SubmitEmailError),
     #[error(transparent)]
@@ -34,10 +36,10 @@ struct ErrorBody<'a> {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
-            Self::BadRequest(_) | Self::InvalidEmailId => {
-                (StatusCode::BAD_REQUEST, "invalid request")
-            }
-            Self::Submit(SubmitEmailError::AttachmentFetch { .. }) => {
+            Self::BadRequest(_)
+            | Self::BadRequestRaw(_)
+            | Self::InvalidEmailId
+            | Self::Submit(SubmitEmailError::AttachmentFetch { .. }) => {
                 (StatusCode::BAD_REQUEST, "invalid request")
             }
             Self::Submit(
