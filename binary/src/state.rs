@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use catapulte_domain::entity::sender::{SenderName, SenderQuota};
+use catapulte_domain::port::clock::SystemClock;
 use catapulte_domain::port::email_queue::EmailQueue;
 use catapulte_domain::port::event_publisher::EventPublisher;
-use catapulte_domain::port::sender_repository::SenderRepository;
 use catapulte_domain::service::routed_email_sender::RoutedEmailSender;
+use catapulte_domain::use_case::list_senders::{ListSendersService, ListSendersUseCase};
 use catapulte_domain::use_case::process_queued_email::{
     ProcessQueuedEmailService, ProcessQueuedEmailUseCase,
 };
@@ -27,15 +27,17 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
     RoutedEmailSender<SmtpSender, StorageAdapter>,
 >;
 
+pub(crate) type ListSendersServiceImpl = ListSendersService<StorageAdapter, SystemClock>;
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) submit_email:
         Arc<SubmitEmailService<StorageAdapter, QueueAdapter, PublisherAdapter>>,
     pub(crate) process_queued_email: Arc<ProcessService>,
+    pub(crate) list_senders: Arc<ListSendersServiceImpl>,
     pub(crate) storage: StorageAdapter,
     pub(crate) queue: QueueAdapter,
     pub(crate) publisher: PublisherAdapter,
-    pub(crate) configured_senders: Arc<Vec<(SenderName, Option<SenderQuota>)>>,
 }
 
 impl HttpServerState for AppState {
@@ -51,12 +53,8 @@ impl HttpServerState for AppState {
         &self.storage
     }
 
-    fn sender_repository(&self) -> &impl SenderRepository {
-        &self.storage
-    }
-
-    fn configured_senders(&self) -> &[(SenderName, Option<SenderQuota>)] {
-        &self.configured_senders
+    fn list_senders(&self) -> &impl ListSendersUseCase {
+        self.list_senders.as_ref()
     }
 }
 

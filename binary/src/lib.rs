@@ -105,11 +105,12 @@ impl AppConfig {
             catapulte_domain::port::clock::SystemClock,
         )
         .context("building routed email sender")?;
-        let configured_senders = Arc::new(
-            sender_configs
-                .iter()
-                .map(|c| (c.name.clone(), c.quota.clone()))
-                .collect::<Vec<_>>(),
+        let list_senders = Arc::new(
+            catapulte_domain::use_case::list_senders::ListSendersService::new(
+                sender_configs,
+                storage.clone(),
+                catapulte_domain::port::clock::SystemClock,
+            ),
         );
         let resolver = self
             .resolver
@@ -131,10 +132,10 @@ impl AppConfig {
         let state = AppState {
             submit_email,
             process_queued_email,
+            list_senders,
             storage,
             queue,
             publisher,
-            configured_senders,
         };
         let server = self.http.build();
         let worker = self.worker.build();
