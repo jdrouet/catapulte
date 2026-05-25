@@ -5,7 +5,6 @@ pub mod email_sender;
 pub mod email_transport;
 pub mod event_publisher;
 pub mod event_repository;
-pub mod sender_repository;
 pub mod sender_usage;
 pub mod template_interpolator;
 pub mod template_renderer;
