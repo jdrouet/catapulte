@@ -352,6 +352,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "catapulte-outbound-attachment-fs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "catapulte-domain",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "catapulte-outbound-interpolator"
 version = "0.1.0"
 dependencies = [
