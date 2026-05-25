@@ -424,6 +424,7 @@ dependencies = [
  "anyhow",
  "catapulte-domain",
  "lettre",
+ "tokio",
 ]
 
 [[package]]

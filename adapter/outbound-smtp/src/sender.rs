@@ -152,7 +152,7 @@ impl SmtpConfig {
         Self::from_lookup(prefix, |key| std::env::var(key))
     }
 
-    fn from_lookup<F>(prefix: &str, lookup: F) -> anyhow::Result<Self>
+    pub(crate) fn from_lookup<F>(prefix: &str, lookup: F) -> anyhow::Result<Self>
     where
         F: Fn(&str) -> Result<String, std::env::VarError>,
     {
@@ -201,7 +201,11 @@ pub struct SmtpSender {
 }
 
 impl SmtpSender {
-    async fn send_inner(&self, email: &OutboundEmail) -> anyhow::Result<()> {
+    pub(crate) fn name(&self) -> &SenderName {
+        &self.name
+    }
+
+    pub(crate) async fn send_inner(&self, email: &OutboundEmail) -> anyhow::Result<()> {
         let from = parse_mailbox(&email.sender)?;
         let builder = apply_recipients(Message::builder().from(from), &email.recipients)?;
         let message = finalize_message(builder, email.subject.as_deref(), &email.body)?;

@@ -12,3 +12,6 @@ workspace = true
 anyhow = { workspace = true }
 catapulte-domain = { path = "../../domain" }
 lettre = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
