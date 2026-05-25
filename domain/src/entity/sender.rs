@@ -40,6 +40,21 @@ impl fmt::Display for QuotaRange {
     }
 }
 
+impl QuotaRange {
+    /// Returns the Unix-epoch millisecond timestamp that marks the start of this
+    /// quota window relative to `now_ms`.
+    #[must_use]
+    pub fn since_ms(&self, now_ms: i64) -> i64 {
+        let offset: i64 = match self {
+            Self::Hourly => 3_600_000,
+            Self::Daily => 86_400_000,
+            Self::Weekly => 604_800_000,
+            Self::Monthly => 2_592_000_000,
+        };
+        now_ms.saturating_sub(offset).max(0)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SenderQuota {
     pub count: u64,
@@ -76,5 +91,18 @@ mod tests {
         };
         assert_eq!(q.count, 1000);
         assert_eq!(q.range, QuotaRange::Daily);
+    }
+
+    #[test]
+    fn since_ms_daily_subtracts_correct_offset() {
+        assert_eq!(
+            QuotaRange::Daily.since_ms(100_000_000),
+            100_000_000 - 86_400_000
+        );
+    }
+
+    #[test]
+    fn since_ms_saturates_at_zero() {
+        assert_eq!(QuotaRange::Hourly.since_ms(0), 0);
     }
 }
