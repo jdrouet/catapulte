@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::env::VarError;
-use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -19,23 +18,18 @@ pub(crate) trait SendRef: Send + Sync {
     fn send_ref<'a>(
         &'a self,
         email: &'a OutboundEmail,
-    ) -> Pin<Box<dyn Future<Output = Result<SenderName, SendError>> + Send + 'a>>;
+    ) -> impl std::future::Future<Output = Result<SenderName, SendError>> + Send + 'a;
 }
 
 impl SendRef for SmtpSender {
-    fn send_ref<'a>(
-        &'a self,
-        email: &'a OutboundEmail,
-    ) -> Pin<Box<dyn Future<Output = Result<SenderName, SendError>> + Send + 'a>> {
-        Box::pin(async move {
-            self.send_inner(email)
-                .await
-                .map_err(|source| SendError::Send {
-                    sender_name: self.name().clone(),
-                    source,
-                })?;
-            Ok(self.name().clone())
-        })
+    async fn send_ref<'a>(&'a self, email: &'a OutboundEmail) -> Result<SenderName, SendError> {
+        self.send_inner(email)
+            .await
+            .map_err(|source| SendError::Send {
+                sender_name: self.name().clone(),
+                source,
+            })?;
+        Ok(self.name().clone())
     }
 }
 
@@ -371,8 +365,6 @@ where
 mod tests {
     use std::collections::HashMap;
     use std::env::VarError;
-    use std::future::Future;
-    use std::pin::Pin;
 
     use catapulte_domain::entity::body::{Plain, RenderedBody};
     use catapulte_domain::entity::email::RecipientKind;
@@ -404,60 +396,29 @@ mod tests {
         }
     }
 
-    struct FailSender {
-        name: SenderName,
-    }
-
-    impl SendRef for FailSender {
-        fn send_ref<'a>(
-            &'a self,
-            _email: &'a OutboundEmail,
-        ) -> Pin<Box<dyn Future<Output = Result<SenderName, SendError>> + Send + 'a>> {
-            let err = SendError::Send {
-                sender_name: self.name.clone(),
-                source: anyhow::anyhow!("simulated failure"),
-            };
-            Box::pin(async move { Err(err) })
-        }
-    }
-
-    struct OkSender {
-        name: SenderName,
-    }
-
-    impl SendRef for OkSender {
-        fn send_ref<'a>(
-            &'a self,
-            _email: &'a OutboundEmail,
-        ) -> Pin<Box<dyn Future<Output = Result<SenderName, SendError>> + Send + 'a>> {
-            let name = self.name.clone();
-            Box::pin(async move { Ok(name) })
-        }
-    }
-
     enum FakeSender {
-        Fail(FailSender),
-        Ok(OkSender),
+        Fail { name: SenderName },
+        Ok { name: SenderName },
     }
 
     impl SendRef for FakeSender {
-        fn send_ref<'a>(
+        async fn send_ref<'a>(
             &'a self,
-            email: &'a OutboundEmail,
-        ) -> Pin<Box<dyn Future<Output = Result<SenderName, SendError>> + Send + 'a>> {
+            _email: &'a OutboundEmail,
+        ) -> Result<SenderName, SendError> {
             match self {
-                Self::Fail(s) => s.send_ref(email),
-                Self::Ok(s) => s.send_ref(email),
+                Self::Fail { name } => Err(SendError::Send {
+                    sender_name: name.clone(),
+                    source: anyhow::anyhow!("simulated failure"),
+                }),
+                Self::Ok { name } => Ok(name.clone()),
             }
         }
     }
 
     impl EmailSender for FakeSender {
-        fn send(
-            &self,
-            email: OutboundEmail,
-        ) -> impl Future<Output = Result<SenderName, SendError>> + Send {
-            async move { self.send_ref(&email).await }
+        async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
+            self.send_ref(&email).await
         }
     }
 
@@ -468,8 +429,7 @@ mod tests {
             .into_iter()
             .map(|(sender, quota)| SenderEntry {
                 name: match &sender {
-                    FakeSender::Ok(s) => s.name.clone(),
-                    FakeSender::Fail(s) => s.name.clone(),
+                    FakeSender::Ok { name } | FakeSender::Fail { name } => name.clone(),
                 },
                 quota,
                 sender,
@@ -524,8 +484,7 @@ mod tests {
             .into_iter()
             .map(|(sender, quota)| SenderEntry {
                 name: match &sender {
-                    FakeSender::Ok(s) => s.name.clone(),
-                    FakeSender::Fail(s) => s.name.clone(),
+                    FakeSender::Ok { name } | FakeSender::Fail { name } => name.clone(),
                 },
                 quota,
                 sender,
@@ -541,15 +500,15 @@ mod tests {
     async fn first_sender_fails_second_succeeds() {
         let multi = make_multi_noop(vec![
             (
-                FakeSender::Fail(FailSender {
+                FakeSender::Fail {
                     name: SenderName::new("first"),
-                }),
+                },
                 None,
             ),
             (
-                FakeSender::Ok(OkSender {
+                FakeSender::Ok {
                     name: SenderName::new("second"),
-                }),
+                },
                 None,
             ),
         ]);
@@ -562,15 +521,15 @@ mod tests {
     async fn all_senders_fail_returns_last_error() {
         let multi = make_multi_noop(vec![
             (
-                FakeSender::Fail(FailSender {
+                FakeSender::Fail {
                     name: SenderName::new("first"),
-                }),
+                },
                 None,
             ),
             (
-                FakeSender::Fail(FailSender {
+                FakeSender::Fail {
                     name: SenderName::new("second"),
-                }),
+                },
                 None,
             ),
         ]);
@@ -583,15 +542,15 @@ mod tests {
     async fn first_sender_succeeds_returns_immediately() {
         let multi = make_multi_noop(vec![
             (
-                FakeSender::Ok(OkSender {
+                FakeSender::Ok {
                     name: SenderName::new("first"),
-                }),
+                },
                 None,
             ),
             (
-                FakeSender::Ok(OkSender {
+                FakeSender::Ok {
                     name: SenderName::new("second"),
-                }),
+                },
                 None,
             ),
         ]);
@@ -609,18 +568,18 @@ mod tests {
         let multi = make_multi_with_repo(
             vec![
                 (
-                    FakeSender::Ok(OkSender {
+                    FakeSender::Ok {
                         name: SenderName::new("primary"),
-                    }),
+                    },
                     Some(SenderQuota {
                         count: 1,
                         range: QuotaRange::Daily,
                     }),
                 ),
                 (
-                    FakeSender::Ok(OkSender {
+                    FakeSender::Ok {
                         name: SenderName::new("backup"),
-                    }),
+                    },
                     None,
                 ),
             ],
@@ -644,18 +603,18 @@ mod tests {
         let multi = make_multi_with_repo(
             vec![
                 (
-                    FakeSender::Ok(OkSender {
+                    FakeSender::Ok {
                         name: SenderName::new("primary"),
-                    }),
+                    },
                     Some(SenderQuota {
                         count: 1,
                         range: QuotaRange::Daily,
                     }),
                 ),
                 (
-                    FakeSender::Ok(OkSender {
+                    FakeSender::Ok {
                         name: SenderName::new("backup"),
-                    }),
+                    },
                     Some(SenderQuota {
                         count: 1,
                         range: QuotaRange::Daily,
@@ -679,9 +638,9 @@ mod tests {
 
         let multi = make_multi_with_repo(
             vec![(
-                FakeSender::Ok(OkSender {
+                FakeSender::Ok {
                     name: SenderName::new("primary"),
-                }),
+                },
                 Some(SenderQuota {
                     count: 10,
                     range: QuotaRange::Hourly,
@@ -700,9 +659,9 @@ mod tests {
         // FailingRepo returns Err -> sender is attempted anyway.
         let multi = make_multi_with_repo(
             vec![(
-                FakeSender::Ok(OkSender {
+                FakeSender::Ok {
                     name: SenderName::new("primary"),
-                }),
+                },
                 Some(SenderQuota {
                     count: 1,
                     range: QuotaRange::Daily,
