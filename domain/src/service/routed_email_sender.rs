@@ -59,9 +59,16 @@ where
     U: SenderUsage,
     C: Clock,
 {
+    /// Sends `email` through the highest-priority eligible sender.
+    ///
+    /// First pass: senders whose quota is exhausted are skipped. If the usage
+    /// port is unavailable the error is logged and every sender is treated as
+    /// eligible (fail-open). Second pass: if every sender was over-quota in
+    /// the first pass, the quota check is bypassed so delivery still succeeds.
+    ///
     /// # Errors
     ///
-    /// Returns `SendError::Send` when all eligible senders fail to deliver.
+    /// Returns `SendError::Send` when all attempted senders fail to deliver.
     async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
         let now_ms = self.clock.now_ms();
 
@@ -197,11 +204,11 @@ mod tests {
         }
     }
 
-    struct FakeSenderUsagePort {
+    struct FakeSenderUsage {
         stats: HashMap<String, u64>,
     }
 
-    impl SenderUsage for FakeSenderUsagePort {
+    impl SenderUsage for FakeSenderUsage {
         async fn get_stats(
             &self,
             names: &[SenderName],
@@ -218,9 +225,9 @@ mod tests {
         }
     }
 
-    struct ErrorSenderUsagePort;
+    struct ErrorSenderUsage;
 
-    impl SenderUsage for ErrorSenderUsagePort {
+    impl SenderUsage for ErrorSenderUsage {
         async fn get_stats(
             &self,
             _names: &[SenderName],
@@ -294,7 +301,7 @@ mod tests {
                 ),
                 ok_route("backup", 1, None),
             ],
-            FakeSenderUsagePort { stats },
+            FakeSenderUsage { stats },
             SystemClock,
         )
         .unwrap();
@@ -326,7 +333,7 @@ mod tests {
                     }),
                 ),
             ],
-            FakeSenderUsagePort { stats },
+            FakeSenderUsage { stats },
             SystemClock,
         )
         .unwrap();
@@ -346,7 +353,7 @@ mod tests {
                     range: QuotaRange::Daily,
                 }),
             )],
-            FakeSenderUsagePort { stats },
+            FakeSenderUsage { stats },
             SystemClock,
         )
         .unwrap();
@@ -365,7 +372,7 @@ mod tests {
                     range: QuotaRange::Daily,
                 }),
             )],
-            ErrorSenderUsagePort,
+            ErrorSenderUsage,
             SystemClock,
         )
         .unwrap();

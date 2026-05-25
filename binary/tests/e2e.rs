@@ -11,7 +11,7 @@ use catapulte_inbound_worker::worker::WorkerConfig;
 use catapulte_outbound_postgres::PostgresConfig;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
 use catapulte_outbound_smtp::multi_sender::MultiSenderConfig;
-use catapulte_outbound_smtp::sender::{SmtpConfig, SmtpTls};
+use catapulte_outbound_smtp::transport::{SmtpConfig, SmtpTls};
 use catapulte_outbound_sqlite::SqliteConfig;
 use testcontainers::GenericImage;
 use testcontainers::ImageExt;

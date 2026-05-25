@@ -4,10 +4,10 @@ use thiserror::Error;
 
 use crate::entity::sender::{SenderConfig, SenderName};
 use crate::port::clock::Clock;
-use crate::port::sender_usage::{SenderStats, SenderUsage as SenderUsagePort, SenderUsageError};
+use crate::port::sender_usage::{SenderStats, SenderUsage, SenderUsageError};
 
 #[derive(Clone, Debug)]
-pub struct SenderUsage {
+pub struct SenderSnapshot {
     pub config: SenderConfig,
     pub sent_in_range: u64,
     pub failed_in_range: u64,
@@ -25,7 +25,7 @@ pub enum ListSendersError {
 pub trait ListSendersUseCase: Send + Sync + 'static {
     fn execute(
         &self,
-    ) -> impl std::future::Future<Output = Result<Vec<SenderUsage>, ListSendersError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Vec<SenderSnapshot>, ListSendersError>> + Send;
 }
 
 pub struct ListSendersService<U, C = crate::port::clock::SystemClock> {
@@ -43,9 +43,9 @@ impl<U, C> ListSendersService<U, C> {
         }
     }
 
-    async fn execute_inner(&self) -> Result<Vec<SenderUsage>, ListSendersError>
+    async fn execute_inner(&self) -> Result<Vec<SenderSnapshot>, ListSendersError>
     where
-        U: SenderUsagePort,
+        U: SenderUsage,
         C: Clock,
     {
         if self.configs.is_empty() {
@@ -83,7 +83,7 @@ impl<U, C> ListSendersService<U, C> {
             .iter()
             .map(|config| {
                 let stats = stats_map.get(&config.name);
-                SenderUsage {
+                SenderSnapshot {
                     config: config.clone(),
                     sent_in_range: stats.map_or(0, |s| s.sent_in_range),
                     failed_in_range: stats.map_or(0, |s| s.failed_in_range),
@@ -95,12 +95,13 @@ impl<U, C> ListSendersService<U, C> {
 
 impl<U, C> ListSendersUseCase for ListSendersService<U, C>
 where
-    U: SenderUsagePort,
+    U: SenderUsage,
     C: Clock,
 {
     fn execute(
         &self,
-    ) -> impl std::future::Future<Output = Result<Vec<SenderUsage>, ListSendersError>> + Send {
+    ) -> impl std::future::Future<Output = Result<Vec<SenderSnapshot>, ListSendersError>> + Send
+    {
         self.execute_inner()
     }
 }

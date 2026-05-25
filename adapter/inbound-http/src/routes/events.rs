@@ -105,7 +105,7 @@ mod tests {
     use catapulte_domain::use_case::list_emails::{ListEmailsError, ListEmailsUseCase};
     use catapulte_domain::use_case::list_events::{ListEventsError, ListEventsUseCase};
     use catapulte_domain::use_case::list_senders::{
-        ListSendersError, ListSendersUseCase, SenderUsage,
+        ListSendersError, ListSendersUseCase, SenderSnapshot,
     };
     use catapulte_domain::use_case::submit_email::{
         SubmitEmailError, SubmitEmailUseCase, SubmitParams,
@@ -121,7 +121,7 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl ListSendersUseCase for NoopListSenders {
-        async fn execute(&self) -> Result<Vec<SenderUsage>, ListSendersError> {
+        async fn execute(&self) -> Result<Vec<SenderSnapshot>, ListSendersError> {
             Ok(vec![])
         }
     }

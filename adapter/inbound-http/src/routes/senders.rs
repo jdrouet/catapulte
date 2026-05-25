@@ -48,7 +48,7 @@ mod tests {
     use catapulte_domain::use_case::list_emails::{ListEmailsError, ListEmailsUseCase};
     use catapulte_domain::use_case::list_events::{ListEventsError, ListEventsUseCase};
     use catapulte_domain::use_case::list_senders::{
-        ListSendersError, ListSendersUseCase, SenderUsage,
+        ListSendersError, ListSendersUseCase, SenderSnapshot,
     };
     use catapulte_domain::use_case::submit_email::{
         SubmitEmailError, SubmitEmailUseCase, SubmitParams,
@@ -98,7 +98,7 @@ mod tests {
 
     #[derive(Clone)]
     struct FakeListSenders {
-        result: Arc<Vec<SenderUsage>>,
+        result: Arc<Vec<SenderSnapshot>>,
     }
 
     impl FakeListSenders {
@@ -108,7 +108,7 @@ mod tests {
             }
         }
 
-        fn with_usage(usage: Vec<SenderUsage>) -> Self {
+        fn with_usage(usage: Vec<SenderSnapshot>) -> Self {
             Self {
                 result: Arc::new(usage),
             }
@@ -116,7 +116,7 @@ mod tests {
     }
 
     impl ListSendersUseCase for FakeListSenders {
-        async fn execute(&self) -> Result<Vec<SenderUsage>, ListSendersError> {
+        async fn execute(&self) -> Result<Vec<SenderSnapshot>, ListSendersError> {
             Ok((*self.result).clone())
         }
     }
@@ -125,7 +125,7 @@ mod tests {
     struct FailingListSenders;
 
     impl ListSendersUseCase for FailingListSenders {
-        async fn execute(&self) -> Result<Vec<SenderUsage>, ListSendersError> {
+        async fn execute(&self) -> Result<Vec<SenderSnapshot>, ListSendersError> {
             Err(ListSendersError::Usage {
                 source: catapulte_domain::port::sender_usage::SenderUsageError::Storage {
                     source: anyhow::anyhow!("db down"),
@@ -202,7 +202,7 @@ mod tests {
     #[tokio::test]
     async fn list_senders_returns_sender_with_stats() {
         let name = SenderName::new("primary");
-        let usage = vec![SenderUsage {
+        let usage = vec![SenderSnapshot {
             config: SenderConfig {
                 name: name.clone(),
                 quota: None,
@@ -229,7 +229,7 @@ mod tests {
     #[tokio::test]
     async fn list_senders_includes_quota_when_configured() {
         let name = SenderName::new("bulk");
-        let usage = vec![SenderUsage {
+        let usage = vec![SenderSnapshot {
             config: SenderConfig {
                 name: name.clone(),
                 quota: Some(SenderQuota {
