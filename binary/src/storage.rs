@@ -2,12 +2,16 @@ use anyhow::Context;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+use catapulte_domain::entity::sender::SenderName;
 use catapulte_domain::port::email_repository::{
     EmailRecord, EmailRepository, EmailRepositoryError, ListEmailsParams, SaveResult,
 };
 use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
 use catapulte_domain::port::event_repository::{
     EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
+};
+use catapulte_domain::port::sender_repository::{
+    SenderRepository, SenderRepositoryError, SenderStats,
 };
 use catapulte_outbound_postgres::{PostgresAdapter, PostgresConfig};
 use catapulte_outbound_sqlite::{SqliteAdapter, SqliteConfig};
@@ -58,6 +62,19 @@ impl EventRepository for StorageAdapter {
         match self {
             Self::Sqlite(a) => a.list_events(params).await,
             Self::Postgres(a) => a.list_events(params).await,
+        }
+    }
+}
+
+impl SenderRepository for StorageAdapter {
+    async fn get_stats(
+        &self,
+        names: &[SenderName],
+        since_ms: i64,
+    ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
+        match self {
+            Self::Sqlite(a) => a.get_stats(names, since_ms).await,
+            Self::Postgres(a) => a.get_stats(names, since_ms).await,
         }
     }
 }
