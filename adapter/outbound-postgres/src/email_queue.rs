@@ -156,15 +156,12 @@ impl EmailQueue for PostgresAdapter {
     }
 
     async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
-        for _ in 0..10 {
+        loop {
             if let Some(item) = self.try_dequeue().await? {
                 return Ok(item);
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        Err(EmailQueueError::Storage {
-            source: anyhow::anyhow!("no items available"),
-        })
     }
 
     async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
