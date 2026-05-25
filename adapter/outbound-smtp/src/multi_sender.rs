@@ -2,8 +2,7 @@ use std::env::VarError;
 
 use anyhow::Context;
 use catapulte_domain::entity::sender::{QuotaRange, SenderName, SenderQuota};
-use catapulte_domain::port::sender_repository::SenderRepository;
-use catapulte_domain::service::priority_email_sender::{PriorityEmailSender, SenderRoute};
+use catapulte_domain::service::routed_email_sender::SenderRoute;
 
 use crate::sender::{SmtpConfig, SmtpSender};
 
@@ -116,18 +115,11 @@ impl MultiSenderConfig {
         Ok(Self { senders })
     }
 
-    /// Builds a `PriorityEmailSender` from the configuration, using the given
-    /// repository for quota stat lookups.
-    ///
     /// # Errors
     ///
     /// Returns an error if any SMTP transport cannot be constructed.
-    pub fn build<R: SenderRepository>(
-        self,
-        repo: R,
-    ) -> anyhow::Result<PriorityEmailSender<SmtpSender, R>> {
-        let routes = self
-            .senders
+    pub fn build_routes(self) -> anyhow::Result<Vec<SenderRoute<SmtpSender>>> {
+        self.senders
             .into_iter()
             .map(|cfg| {
                 let transport = cfg.smtp.build()?;
@@ -138,18 +130,6 @@ impl MultiSenderConfig {
                     transport,
                 })
             })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        Ok(PriorityEmailSender::new(routes, repo))
-    }
-
-    /// Returns the list of sender names and their optional quotas without
-    /// building any SMTP transport.  Useful for registering senders with the
-    /// quota subsystem at startup.
-    #[must_use]
-    pub fn sender_caps(&self) -> Vec<(SenderName, Option<SenderQuota>)> {
-        self.senders
-            .iter()
-            .map(|cfg| (cfg.name.clone(), cfg.quota.clone()))
             .collect()
     }
 }
