@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use catapulte_domain::port::email_repository::EmailRepositoryError;
 use catapulte_domain::port::event_repository::EventRepositoryError;
-use catapulte_domain::port::sender_repository::SenderRepositoryError;
+use catapulte_domain::use_case::list_senders::ListSendersError;
 use catapulte_domain::use_case::submit_email::SubmitEmailError;
 
 use crate::dto::BodyConversionError;
@@ -21,7 +21,7 @@ pub enum AppError {
     #[error("list emails failed")]
     ListEmails(EmailRepositoryError),
     #[error(transparent)]
-    ListSenders(#[from] SenderRepositoryError),
+    ListSenders(#[from] ListSendersError),
     #[error("invalid email id")]
     InvalidEmailId,
 }

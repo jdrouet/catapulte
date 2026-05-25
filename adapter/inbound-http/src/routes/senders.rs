@@ -1,9 +1,6 @@
-use std::collections::HashMap;
-
 use axum::Json;
 use axum::extract::State;
-use catapulte_domain::entity::sender::SenderName;
-use catapulte_domain::port::sender_repository::{SenderRepository, SenderStats};
+use catapulte_domain::use_case::list_senders::ListSendersUseCase;
 
 use crate::HttpServerState;
 use crate::dto::{ListSendersResponse, SenderDto, SenderQuotaDto};
@@ -11,57 +8,24 @@ use crate::error::AppError;
 
 /// # Errors
 ///
-/// Returns `AppError::ListSenders` when the sender repository query fails.
+/// Returns `AppError::ListSenders` when the sender usage query fails.
 #[tracing::instrument(skip_all)]
 pub async fn list_senders<S: HttpServerState>(
     State(state): State<S>,
 ) -> Result<Json<ListSendersResponse>, AppError> {
-    let configured = state.configured_senders();
+    let usage_list = state.list_senders().execute().await?;
 
-    if configured.is_empty() {
-        return Ok(Json(ListSendersResponse { senders: vec![] }));
-    }
-
-    let now_ms = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(i64::MAX);
-
-    // Group senders by their since_ms value (senders with no quota use since_ms=0).
-    // This way we make one DB call per distinct time window.
-    let mut groups: HashMap<i64, Vec<SenderName>> = HashMap::new();
-    for (name, quota) in configured {
-        let since_ms = quota.as_ref().map_or(0, |q| q.range.since_ms(now_ms));
-        groups.entry(since_ms).or_default().push(name.clone());
-    }
-
-    // Collect all stats, keyed by sender name.
-    let mut stats_map: HashMap<SenderName, SenderStats> = HashMap::new();
-    let repo = state.sender_repository();
-    for (since_ms, names) in &groups {
-        let results = repo.get_stats(names, *since_ms).await?;
-        for s in results {
-            stats_map.insert(s.name.clone(), s);
-        }
-    }
-
-    let senders = configured
-        .iter()
-        .map(|(name, quota)| {
-            let sender_stats = stats_map.get(name);
-            let sent_in_range = sender_stats.map_or(0, |s| s.sent_in_range);
-            let failed_in_range = sender_stats.map_or(0, |s| s.failed_in_range);
-            let quota_dto = quota.as_ref().map(|q| SenderQuotaDto {
+    let senders = usage_list
+        .into_iter()
+        .map(|u| {
+            let quota_dto = u.config.quota.as_ref().map(|q| SenderQuotaDto {
                 count: q.count,
                 range: q.range.to_string(),
             });
             SenderDto {
-                name: name.as_str().to_owned(),
-                sent_in_range,
-                failed_in_range,
+                name: u.config.name.as_str().to_owned(),
+                sent_in_range: u.sent_in_range,
+                failed_in_range: u.failed_in_range,
                 quota: quota_dto,
             }
         })
@@ -78,15 +42,15 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::entity::sender::{QuotaRange, SenderName, SenderQuota};
+    use catapulte_domain::entity::sender::{QuotaRange, SenderConfig, SenderName, SenderQuota};
     use catapulte_domain::port::email_repository::{
         EmailRecord, EmailRepository, EmailRepositoryError, ListEmailsParams, SaveResult,
     };
     use catapulte_domain::port::event_repository::{
         EventRecord, EventRepository, EventRepositoryError, ListEventsParams,
     };
-    use catapulte_domain::port::sender_repository::{
-        SenderRepository, SenderRepositoryError, SenderStats,
+    use catapulte_domain::use_case::list_senders::{
+        ListSendersError, ListSendersUseCase, SenderUsage,
     };
     use catapulte_domain::use_case::submit_email::{
         SubmitEmailError, SubmitEmailUseCase, SubmitParams,
@@ -144,54 +108,46 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct FakeSenderRepository {
-        stats: Arc<Vec<SenderStats>>,
+    struct FakeListSenders {
+        result: Arc<Vec<SenderUsage>>,
     }
 
-    impl FakeSenderRepository {
+    impl FakeListSenders {
         fn empty() -> Self {
             Self {
-                stats: Arc::new(vec![]),
+                result: Arc::new(vec![]),
             }
         }
 
-        fn with_stats(stats: Vec<SenderStats>) -> Self {
+        fn with_usage(usage: Vec<SenderUsage>) -> Self {
             Self {
-                stats: Arc::new(stats),
+                result: Arc::new(usage),
             }
         }
     }
 
-    #[allow(async_fn_in_trait)]
-    impl SenderRepository for FakeSenderRepository {
-        async fn get_stats(
-            &self,
-            _names: &[SenderName],
-            _since_ms: i64,
-        ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
-            Ok((*self.stats).clone())
+    impl ListSendersUseCase for FakeListSenders {
+        async fn execute(&self) -> Result<Vec<SenderUsage>, ListSendersError> {
+            Ok((*self.result).clone())
         }
     }
 
-    struct FailingSenderRepository;
+    #[derive(Clone)]
+    struct FailingListSenders;
 
-    #[allow(async_fn_in_trait)]
-    impl SenderRepository for FailingSenderRepository {
-        async fn get_stats(
-            &self,
-            _names: &[SenderName],
-            _since_ms: i64,
-        ) -> Result<Vec<SenderStats>, SenderRepositoryError> {
-            Err(SenderRepositoryError::Storage {
-                source: anyhow::anyhow!("db down"),
+    impl ListSendersUseCase for FailingListSenders {
+        async fn execute(&self) -> Result<Vec<SenderUsage>, ListSendersError> {
+            Err(ListSendersError::Usage {
+                source: catapulte_domain::port::sender_usage::SenderUsageError::Storage {
+                    source: anyhow::anyhow!("db down"),
+                },
             })
         }
     }
 
     #[derive(Clone)]
     struct TestState {
-        sender_repo: Arc<FakeSenderRepository>,
-        configured: Arc<Vec<(SenderName, Option<SenderQuota>)>>,
+        list_senders: Arc<FakeListSenders>,
     }
 
     impl HttpServerState for TestState {
@@ -207,19 +163,13 @@ mod tests {
             &FakeEmailRepository
         }
 
-        fn sender_repository(&self) -> &impl SenderRepository {
-            self.sender_repo.as_ref()
-        }
-
-        fn configured_senders(&self) -> &[(SenderName, Option<SenderQuota>)] {
-            &self.configured
+        fn list_senders(&self) -> &impl ListSendersUseCase {
+            self.list_senders.as_ref()
         }
     }
 
     #[derive(Clone)]
-    struct FailingState {
-        configured: Arc<Vec<(SenderName, Option<SenderQuota>)>>,
-    }
+    struct FailingState;
 
     impl HttpServerState for FailingState {
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
@@ -234,12 +184,8 @@ mod tests {
             &FakeEmailRepository
         }
 
-        fn sender_repository(&self) -> &impl SenderRepository {
-            &FailingSenderRepository
-        }
-
-        fn configured_senders(&self) -> &[(SenderName, Option<SenderQuota>)] {
-            &self.configured
+        fn list_senders(&self) -> &impl ListSendersUseCase {
+            &FailingListSenders
         }
     }
 
@@ -254,8 +200,7 @@ mod tests {
     #[tokio::test]
     async fn list_senders_returns_200_with_empty_array_when_no_senders_configured() {
         let state = TestState {
-            sender_repo: Arc::new(FakeSenderRepository::empty()),
-            configured: Arc::new(vec![]),
+            list_senders: Arc::new(FakeListSenders::empty()),
         };
         let app = router(state);
         let response = app.oneshot(get_senders()).await.unwrap();
@@ -268,14 +213,16 @@ mod tests {
     #[tokio::test]
     async fn list_senders_returns_sender_with_stats() {
         let name = SenderName::new("primary");
-        let stats = vec![SenderStats {
-            name: name.clone(),
+        let usage = vec![SenderUsage {
+            config: SenderConfig {
+                name: name.clone(),
+                quota: None,
+            },
             sent_in_range: 42,
             failed_in_range: 3,
         }];
         let state = TestState {
-            sender_repo: Arc::new(FakeSenderRepository::with_stats(stats)),
-            configured: Arc::new(vec![(name, None)]),
+            list_senders: Arc::new(FakeListSenders::with_usage(usage)),
         };
         let app = router(state);
         let response = app.oneshot(get_senders()).await.unwrap();
@@ -293,15 +240,19 @@ mod tests {
     #[tokio::test]
     async fn list_senders_includes_quota_when_configured() {
         let name = SenderName::new("bulk");
-        let state = TestState {
-            sender_repo: Arc::new(FakeSenderRepository::empty()),
-            configured: Arc::new(vec![(
-                name,
-                Some(SenderQuota {
+        let usage = vec![SenderUsage {
+            config: SenderConfig {
+                name: name.clone(),
+                quota: Some(SenderQuota {
                     count: 1000,
                     range: QuotaRange::Daily,
                 }),
-            )]),
+            },
+            sent_in_range: 0,
+            failed_in_range: 0,
+        }];
+        let state = TestState {
+            list_senders: Arc::new(FakeListSenders::with_usage(usage)),
         };
         let app = router(state);
         let response = app.oneshot(get_senders()).await.unwrap();
@@ -316,11 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_senders_returns_500_when_repository_fails() {
-        let name = SenderName::new("default");
-        let state = FailingState {
-            configured: Arc::new(vec![(name, None)]),
-        };
-        let app = router(state);
+        let app = router(FailingState);
         let response = app.oneshot(get_senders()).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }

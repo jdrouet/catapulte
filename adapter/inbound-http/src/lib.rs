@@ -8,10 +8,9 @@ use anyhow::Context;
 use axum::Router;
 use axum::routing::get;
 use axum::routing::post;
-use catapulte_domain::entity::sender::{SenderName, SenderQuota};
 use catapulte_domain::port::email_repository::EmailRepository;
 use catapulte_domain::port::event_repository::EventRepository;
-use catapulte_domain::port::sender_repository::SenderRepository;
+use catapulte_domain::use_case::list_senders::ListSendersUseCase;
 use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 use tower_http::trace::TraceLayer;
 
@@ -19,8 +18,7 @@ pub trait HttpServerState: Clone + Send + Sync + 'static {
     fn submit_email(&self) -> &impl SubmitEmailUseCase;
     fn event_repository(&self) -> &impl EventRepository;
     fn email_repository(&self) -> &impl EmailRepository;
-    fn sender_repository(&self) -> &impl SenderRepository;
-    fn configured_senders(&self) -> &[(SenderName, Option<SenderQuota>)];
+    fn list_senders(&self) -> &impl ListSendersUseCase;
 }
 
 pub fn router<S: HttpServerState>(state: S) -> Router {
