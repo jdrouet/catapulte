@@ -213,7 +213,10 @@ mod tests {
 
     use crate::PostgresAdapter;
 
-    async fn fresh_adapter() -> PostgresAdapter {
+    async fn fresh_adapter() -> (
+        PostgresAdapter,
+        testcontainers::ContainerAsync<testcontainers::GenericImage>,
+    ) {
         use testcontainers::GenericImage;
         use testcontainers::ImageExt;
         use testcontainers::core::WaitFor;
@@ -234,8 +237,7 @@ mod tests {
         let url = format!("postgres://catapulte:catapulte@127.0.0.1:{port}/catapulte");
         let adapter = PostgresAdapter::connect(&url).await.unwrap();
         adapter.migrate().await.unwrap();
-        std::mem::forget(pg);
-        adapter
+        (adapter, pg)
     }
 
     fn sample_envelope() -> Envelope {
@@ -256,7 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn enqueue_then_dequeue_returns_email() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
@@ -266,7 +268,7 @@ mod tests {
 
     #[tokio::test]
     async fn ack_removes_item_from_queue() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
@@ -284,7 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_dequeue_cleans_up_orphaned_entry_when_email_missing() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
@@ -339,7 +341,7 @@ mod tests {
 
     #[tokio::test]
     async fn nack_updates_claimed_until() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 

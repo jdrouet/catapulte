@@ -183,7 +183,10 @@ mod tests {
 
     use crate::PostgresAdapter;
 
-    async fn fresh_adapter() -> PostgresAdapter {
+    async fn fresh_adapter() -> (
+        PostgresAdapter,
+        testcontainers::ContainerAsync<testcontainers::GenericImage>,
+    ) {
         use testcontainers::GenericImage;
         use testcontainers::ImageExt;
         use testcontainers::core::WaitFor;
@@ -204,8 +207,7 @@ mod tests {
         let url = format!("postgres://catapulte:catapulte@127.0.0.1:{port}/catapulte");
         let adapter = PostgresAdapter::connect(&url).await.unwrap();
         adapter.migrate().await.unwrap();
-        std::mem::forget(pg);
-        adapter
+        (adapter, pg)
     }
 
     fn sample_envelope() -> Envelope {
@@ -221,7 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_inserts_a_row() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
 
@@ -234,7 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_with_same_idempotency_key_returns_duplicate() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id1 = EmailId::default();
         let mut envelope = sample_envelope();
         envelope.idempotency_key = Some("key-abc".to_owned());
@@ -252,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_without_idempotency_key_always_inserts() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let envelope = sample_envelope(); // idempotency_key: None
 
         let r1 = adapter.save(EmailId::default(), &envelope).await.unwrap();
@@ -281,14 +283,14 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_returns_empty_when_no_emails() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let emails = adapter.list_emails(default_list_params()).await.unwrap();
         assert!(emails.is_empty());
     }
 
     #[tokio::test]
     async fn list_emails_status_defaults_to_queued_when_no_events() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
 
@@ -299,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_status_sent_for_latest_event_sent() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
         adapter
@@ -326,7 +328,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_status_failed_filter() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
         adapter
@@ -350,7 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_status_queued_filter_includes_no_events_and_processing() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
 
         // First: no events
         let id1 = EmailId::default();
@@ -387,7 +389,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_filters_by_id() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id1 = EmailId::default();
         let id2 = EmailId::default();
         adapter.save(id1, &sample_envelope()).await.unwrap();
@@ -406,7 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_filters_by_recipient() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id = EmailId::default();
         let mut envelope = sample_envelope();
         envelope.recipients = vec![(RecipientKind::To, "alice@example.com".into())];
@@ -433,7 +435,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_filters_by_created_at_range() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id1 = uuid::Uuid::now_v7();
         let id2 = uuid::Uuid::now_v7();
         let env = sample_envelope();
@@ -480,7 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_orders_by_created_at_desc() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         let id1 = EmailId::default();
         let id2 = EmailId::default();
         adapter.save(id1, &sample_envelope()).await.unwrap();
@@ -493,7 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_respects_limit_and_offset() {
-        let adapter = fresh_adapter().await;
+        let (adapter, _container) = fresh_adapter().await;
         for _ in 0..5 {
             adapter
                 .save(EmailId::default(), &sample_envelope())
