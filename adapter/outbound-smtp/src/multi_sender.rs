@@ -101,6 +101,32 @@ impl MultiSenderConfig {
         }
     }
 
+    /// Creates an empty config (use with `with_sender` to add entries).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self { senders: vec![] }
+    }
+
+    /// Adds a named sender entry to this config (sorted by priority at build time).
+    /// Useful for constructing multi-sender configs in tests.
+    #[must_use]
+    pub fn with_sender(
+        mut self,
+        name: impl Into<String>,
+        smtp: SmtpConfig,
+        priority: u8,
+        quota: Option<SenderQuota>,
+    ) -> Self {
+        self.senders.push(SingleSenderConfig {
+            name: SenderName::new(name),
+            smtp,
+            priority,
+            quota,
+        });
+        self.senders.sort_by_key(|s| s.priority);
+        self
+    }
+
     /// Reads all sender configuration from the real environment.
     ///
     /// # Errors
