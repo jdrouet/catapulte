@@ -36,21 +36,21 @@ impl ProcessQueuedEmailError {
     }
 }
 
-pub struct ProcessQueuedEmailService<R, I, P, S> {
+pub struct ProcessQueuedEmailService<R, I, Rdr, S> {
     resolver: R,
     interpolator: I,
-    renderer: P,
+    renderer: Rdr,
     sender: S,
 }
 
-impl<R, I, P, S> ProcessQueuedEmailService<R, I, P, S>
+impl<R, I, Rdr, S> ProcessQueuedEmailService<R, I, Rdr, S>
 where
     R: TemplateResolver,
     I: TemplateInterpolator,
-    P: TemplateRenderer,
+    Rdr: TemplateRenderer,
     S: EmailSender,
 {
-    pub fn new(resolver: R, interpolator: I, renderer: P, sender: S) -> Self {
+    pub fn new(resolver: R, interpolator: I, renderer: Rdr, sender: S) -> Self {
         Self {
             resolver,
             interpolator,
@@ -87,12 +87,12 @@ where
     }
 }
 
-impl<R, I, P, S> ProcessQueuedEmailUseCase for ProcessQueuedEmailService<R, I, P, S>
+impl<R, I, Rdr, S> ProcessQueuedEmailUseCase for ProcessQueuedEmailService<R, I, Rdr, S>
 where
-    R: TemplateResolver + Send + Sync + 'static,
-    I: TemplateInterpolator + Send + Sync + 'static,
-    P: TemplateRenderer + Send + Sync + 'static,
-    S: EmailSender + Send + Sync + 'static,
+    R: TemplateResolver,
+    I: TemplateInterpolator,
+    Rdr: TemplateRenderer,
+    S: EmailSender,
 {
     fn execute(
         &self,

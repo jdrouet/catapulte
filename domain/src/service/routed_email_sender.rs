@@ -1,10 +1,18 @@
 use std::collections::HashMap;
 
+use thiserror::Error;
+
 use crate::entity::sender::{SenderName, SenderQuota};
 use crate::port::clock::{Clock, SystemClock};
 use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
 use crate::port::email_transport::EmailTransport;
 use crate::port::sender_usage::{SenderStats, SenderUsage};
+
+#[derive(Debug, Error)]
+pub enum RoutedEmailSenderError {
+    #[error("routes must not be empty")]
+    EmptyRoutes,
+}
 
 pub struct NoopSenderUsage;
 
@@ -41,9 +49,15 @@ pub struct RoutedEmailSender<T, U = NoopSenderUsage, C = SystemClock> {
 impl<T, U, C> RoutedEmailSender<T, U, C> {
     /// # Errors
     ///
-    /// Returns an error if `routes` is empty.
-    pub fn new(mut routes: Vec<SenderRoute<T>>, usage: U, clock: C) -> anyhow::Result<Self> {
-        anyhow::ensure!(!routes.is_empty(), "routes must not be empty");
+    /// Returns `RoutedEmailSenderError::EmptyRoutes` if `routes` is empty.
+    pub fn new(
+        mut routes: Vec<SenderRoute<T>>,
+        usage: U,
+        clock: C,
+    ) -> Result<Self, RoutedEmailSenderError> {
+        if routes.is_empty() {
+            return Err(RoutedEmailSenderError::EmptyRoutes);
+        }
         routes.sort_by_key(|r| r.priority);
         Ok(Self {
             routes,
