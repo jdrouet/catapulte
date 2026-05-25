@@ -59,6 +59,9 @@ where
     U: SenderUsage,
     C: Clock,
 {
+    /// # Errors
+    ///
+    /// Returns `SendError::Send` when all eligible senders fail to deliver.
     async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
         let now_ms = self.clock.now_ms();
 
