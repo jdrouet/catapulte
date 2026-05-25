@@ -55,6 +55,20 @@ pub struct PublisherAdapterConfig {
 }
 
 impl PublisherAdapterConfig {
+    #[must_use]
+    pub fn storage_only() -> Self {
+        Self {
+            webhook: WebhookConfig {
+                url: None,
+                timeout_ms: 5_000,
+            },
+            nats_events: NatsEventConfig {
+                url: None,
+                subject: "catapulte.lifecycle".to_owned(),
+            },
+        }
+    }
+
     /// # Errors
     ///
     /// Returns an error if any sub-config fails to load from env.

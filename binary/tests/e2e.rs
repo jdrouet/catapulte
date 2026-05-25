@@ -3,6 +3,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 use catapulte::AppConfig;
+use catapulte::publisher::PublisherAdapterConfig;
 use catapulte::queue::QueueBackendConfig;
 use catapulte::storage::StorageBackendConfig;
 use catapulte_inbound_http::InboundHttpConfig;
@@ -172,6 +173,7 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
         resolver: base_resolver(),
         worker: WorkerConfig {},
         queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -198,6 +200,7 @@ async fn submit_plain_email_with_memory_queue_is_delivered() {
         resolver: base_resolver(),
         worker: WorkerConfig {},
         queue: QueueBackendConfig::Memory,
+        publisher: PublisherAdapterConfig::storage_only(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -227,6 +230,7 @@ async fn submit_email_sqlite_storage_nats_queue_is_delivered() {
         resolver: base_resolver(),
         worker: WorkerConfig {},
         queue: QueueBackendConfig::Nats(test_nats_config(format!("nats://127.0.0.1:{nats_port}"))),
+        publisher: PublisherAdapterConfig::storage_only(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -254,6 +258,7 @@ async fn submit_email_postgres_storage_storage_queue_is_delivered() {
         resolver: base_resolver(),
         worker: WorkerConfig {},
         queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -281,6 +286,7 @@ async fn submit_email_postgres_storage_memory_queue_is_delivered() {
         resolver: base_resolver(),
         worker: WorkerConfig {},
         queue: QueueBackendConfig::Memory,
+        publisher: PublisherAdapterConfig::storage_only(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
@@ -307,6 +313,7 @@ async fn lifecycle_events_endpoint_returns_queued_and_sent() {
         resolver: base_resolver(),
         worker: WorkerConfig {},
         queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -418,6 +425,7 @@ async fn list_endpoints_return_submitted_email() {
         resolver: base_resolver(),
         worker: WorkerConfig {},
         queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -559,6 +567,7 @@ async fn submit_email_postgres_storage_nats_queue_is_delivered() {
         resolver: base_resolver(),
         worker: WorkerConfig {},
         queue: QueueBackendConfig::Nats(test_nats_config(format!("nats://127.0.0.1:{nats_port}"))),
+        publisher: PublisherAdapterConfig::storage_only(),
     };
 
     assert_email_delivered(config, http_port, api_port).await;
