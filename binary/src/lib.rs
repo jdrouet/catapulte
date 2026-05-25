@@ -167,11 +167,21 @@ impl Application {
     /// Returns an error when the HTTP server fails to bind or exits unexpectedly.
     pub async fn run(self) -> anyhow::Result<()> {
         tracing::info!("catapulte starting");
+        let cancel = tokio_util::sync::CancellationToken::new();
         let http = self.server.run(self.state.clone());
-        let worker = self.worker.run(self.state);
+        let worker = self.worker.run(self.state, cancel.clone());
         tokio::select! {
-            result = http => result.context("http server stopped"),
+            result = http => {
+                cancel.cancel();
+                result.context("http server stopped")
+            }
             () = worker => Ok(()),
+            result = tokio::signal::ctrl_c() => {
+                result.context("failed to listen for shutdown signal")?;
+                tracing::info!("shutdown signal received");
+                cancel.cancel();
+                Ok(())
+            }
         }
     }
 }

@@ -35,18 +35,39 @@ fn backoff(attempt: u32) -> std::time::Duration {
 }
 
 impl Worker {
-    pub async fn run<S: WorkerState>(self, state: S) {
+    pub async fn run<S: WorkerState>(self, state: S, cancel: tokio_util::sync::CancellationToken) {
         loop {
-            match state.email_queue().dequeue().await {
+            let result = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                result = state.email_queue().dequeue() => result,
+            };
+
+            match result {
                 Ok((id, envelope, attempt, token)) => {
+                    if cancel.is_cancelled() {
+                        if let Err(e) = state
+                            .email_queue()
+                            .nack(token, std::time::Duration::ZERO)
+                            .await
+                        {
+                            tracing::error!(error = %e, "failed to nack message on shutdown");
+                        }
+                        break;
+                    }
                     process_one(&state, id, envelope, attempt, token).await;
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to dequeue");
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => break,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                    }
                 }
             }
         }
+        tracing::info!("worker stopped");
     }
 }
 
@@ -134,7 +155,7 @@ mod tests {
         ProcessQueuedEmailError, ProcessQueuedEmailUseCase,
     };
 
-    use super::{WorkerState, process_one};
+    use super::{Worker, WorkerState, process_one};
 
     fn sample_envelope() -> Envelope {
         Envelope {
@@ -215,6 +236,74 @@ mod tests {
         fn event_publisher(&self) -> &impl EventPublisher {
             &self.publisher
         }
+    }
+
+    #[derive(Clone)]
+    struct NoopQueue;
+
+    impl EmailQueue for NoopQueue {
+        async fn enqueue(&self, _: EmailId, _: &Envelope) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
+            std::future::pending().await
+        }
+
+        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        async fn nack(&self, _: AckToken, _: Duration) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct NoopPublisher;
+
+    impl EventPublisher for NoopPublisher {
+        async fn publish(&self, _: &LifecycleEvent) -> Result<(), EventPublisherError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestStateNoop;
+
+    impl WorkerState for TestStateNoop {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &OkProcessor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &NoopQueue
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &NoopPublisher
+        }
+    }
+
+    #[tokio::test]
+    async fn run_stops_when_token_is_cancelled() {
+        use tokio_util::sync::CancellationToken;
+
+        let cancel = CancellationToken::new();
+        let worker = Worker {};
+        let cancel_clone = cancel.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            cancel_clone.cancel();
+        });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            worker.run(TestStateNoop, cancel),
+        )
+        .await
+        .expect("Worker::run must return after cancellation");
     }
 
     #[tokio::test]

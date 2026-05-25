@@ -12,6 +12,7 @@ workspace = true
 anyhow = { workspace = true }
 catapulte-domain = { path = "../../domain" }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
