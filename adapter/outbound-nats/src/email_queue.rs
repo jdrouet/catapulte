@@ -42,6 +42,11 @@ fn nats_boxed_err(e: async_nats::Error) -> anyhow::Error {
     anyhow::Error::from(NatsBoxedError(e))
 }
 
+fn nak_payload(delay: std::time::Duration) -> String {
+    let delay_ns = i64::try_from(delay.as_nanos()).unwrap_or(i64::MAX);
+    format!("-NAK {{\"delay\":{delay_ns}}}")
+}
+
 impl EmailQueue for NatsAdapter {
     async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
         let payload = QueuedEmailPayload::from((&id, envelope));
@@ -123,7 +128,7 @@ impl EmailQueue for NatsAdapter {
         let reply = String::from_utf8(token.into_bytes())
             .context("invalid nack token encoding")
             .map_err(|source| EmailQueueError::Storage { source })?;
-        let payload = format!("-NAK {{\"delay\":{}}}", delay.as_nanos());
+        let payload = nak_payload(delay);
         self.client()
             .publish(reply, payload.into())
             .await
@@ -131,6 +136,26 @@ impl EmailQueue for NatsAdapter {
             .context("publishing nack to NATS")
             .map_err(|source| EmailQueueError::Storage { source })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod nak_tests {
+    use super::nak_payload;
+    use std::time::Duration;
+
+    #[test]
+    fn one_hour_delay_formats_correctly() {
+        let s = nak_payload(Duration::from_secs(3600));
+        assert_eq!(s, format!("-NAK {{\"delay\":{}}}", 3_600_000_000_000i64));
+    }
+
+    #[test]
+    fn overflow_delay_clamps_to_i64_max() {
+        // Duration::from_nanos(u64::MAX) has u64::MAX nanos > i64::MAX nanos.
+        let huge = Duration::from_nanos(u64::MAX);
+        let s = nak_payload(huge);
+        assert_eq!(s, format!("-NAK {{\"delay\":{}}}", i64::MAX));
     }
 }
 
