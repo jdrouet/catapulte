@@ -184,6 +184,7 @@ mod tests {
         }
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn enqueue_then_dequeue_returns_same_id_and_envelope() {
         let (adapter, _nats) = fresh_adapter().await;
@@ -203,6 +204,7 @@ mod tests {
         assert_eq!(returned_envelope.subject, envelope.subject);
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn dequeue_returns_attempt_one_on_first_delivery() {
         let (adapter, _nats) = fresh_adapter().await;
@@ -220,6 +222,7 @@ mod tests {
         assert_eq!(attempt, 1);
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn ack_removes_message() {
         let (adapter, _nats) = fresh_adapter().await;
