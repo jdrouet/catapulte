@@ -4,7 +4,7 @@ use sqlx::{QueryBuilder, Row};
 
 use crate::PostgresAdapter;
 
-impl catapulte_domain::port::sender_usage::SenderUsagePort for PostgresAdapter {
+impl catapulte_domain::port::sender_usage::SenderUsage for PostgresAdapter {
     async fn get_stats(
         &self,
         names: &[SenderName],

@@ -4,11 +4,11 @@ use crate::entity::sender::{SenderName, SenderQuota};
 use crate::port::clock::{Clock, SystemClock};
 use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
 use crate::port::email_transport::EmailTransport;
-use crate::port::sender_usage::{SenderStats, SenderUsagePort};
+use crate::port::sender_usage::{SenderStats, SenderUsage};
 
-pub struct NoopSenderUsagePort;
+pub struct NoopSenderUsage;
 
-impl SenderUsagePort for NoopSenderUsagePort {
+impl SenderUsage for NoopSenderUsage {
     async fn get_stats(
         &self,
         names: &[SenderName],
@@ -32,7 +32,7 @@ pub struct SenderRoute<T> {
     pub transport: T,
 }
 
-pub struct RoutedEmailSender<T, U = NoopSenderUsagePort, C = SystemClock> {
+pub struct RoutedEmailSender<T, U = NoopSenderUsage, C = SystemClock> {
     routes: Vec<SenderRoute<T>>,
     usage: U,
     clock: C,
@@ -56,7 +56,7 @@ impl<T, U, C> RoutedEmailSender<T, U, C> {
 impl<T, U, C> EmailSender for RoutedEmailSender<T, U, C>
 where
     T: EmailTransport,
-    U: SenderUsagePort,
+    U: SenderUsage,
     C: Clock,
 {
     async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
@@ -135,13 +135,13 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use super::{NoopSenderUsagePort, RoutedEmailSender, SenderRoute};
+    use super::{NoopSenderUsage, RoutedEmailSender, SenderRoute};
     use crate::entity::body::{Plain, RenderedBody};
     use crate::entity::sender::{QuotaRange, SenderName, SenderQuota};
     use crate::port::clock::SystemClock;
     use crate::port::email_sender::{EmailSender, OutboundEmail};
     use crate::port::email_transport::EmailTransport;
-    use crate::port::sender_usage::{SenderStats, SenderUsageError, SenderUsagePort};
+    use crate::port::sender_usage::{SenderStats, SenderUsage, SenderUsageError};
 
     enum FakeTransport {
         Ok,
@@ -198,7 +198,7 @@ mod tests {
         stats: HashMap<String, u64>,
     }
 
-    impl SenderUsagePort for FakeSenderUsagePort {
+    impl SenderUsage for FakeSenderUsagePort {
         async fn get_stats(
             &self,
             names: &[SenderName],
@@ -217,7 +217,7 @@ mod tests {
 
     struct ErrorSenderUsagePort;
 
-    impl SenderUsagePort for ErrorSenderUsagePort {
+    impl SenderUsage for ErrorSenderUsagePort {
         async fn get_stats(
             &self,
             _names: &[SenderName],
@@ -233,7 +233,7 @@ mod tests {
     fn new_with_empty_routes_returns_error() {
         let result = RoutedEmailSender::new(
             Vec::<SenderRoute<FakeTransport>>::new(),
-            NoopSenderUsagePort,
+            NoopSenderUsage,
             SystemClock,
         );
         assert!(result.is_err());
@@ -243,7 +243,7 @@ mod tests {
     async fn first_sender_fails_second_succeeds() {
         let sender = RoutedEmailSender::new(
             vec![fail_route("first", 0, None), ok_route("second", 1, None)],
-            NoopSenderUsagePort,
+            NoopSenderUsage,
             SystemClock,
         )
         .unwrap();
@@ -255,7 +255,7 @@ mod tests {
     async fn all_senders_fail_returns_last_error() {
         let sender = RoutedEmailSender::new(
             vec![fail_route("first", 0, None), fail_route("second", 1, None)],
-            NoopSenderUsagePort,
+            NoopSenderUsage,
             SystemClock,
         )
         .unwrap();
@@ -268,7 +268,7 @@ mod tests {
     async fn first_sender_succeeds_returns_immediately() {
         let sender = RoutedEmailSender::new(
             vec![ok_route("first", 0, None), ok_route("second", 1, None)],
-            NoopSenderUsagePort,
+            NoopSenderUsage,
             SystemClock,
         )
         .unwrap();

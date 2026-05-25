@@ -18,7 +18,7 @@ pub enum SenderUsageError {
     },
 }
 
-pub trait SenderUsagePort: Send + Sync + 'static {
+pub trait SenderUsage: Send + Sync + 'static {
     fn get_stats(
         &self,
         names: &[SenderName],

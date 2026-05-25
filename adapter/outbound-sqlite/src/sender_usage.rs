@@ -3,7 +3,7 @@ use sqlx::{QueryBuilder, Row, Sqlite};
 
 use crate::SqliteAdapter;
 
-impl catapulte_domain::port::sender_usage::SenderUsagePort for SqliteAdapter {
+impl catapulte_domain::port::sender_usage::SenderUsage for SqliteAdapter {
     async fn get_stats(
         &self,
         names: &[catapulte_domain::entity::sender::SenderName],
@@ -80,7 +80,7 @@ mod tests {
     use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::EmailRepository;
     use catapulte_domain::port::event_publisher::EventPublisher;
-    use catapulte_domain::port::sender_usage::SenderUsagePort;
+    use catapulte_domain::port::sender_usage::SenderUsage;
 
     use crate::SqliteAdapter;
 

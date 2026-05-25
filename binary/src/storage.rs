@@ -62,7 +62,7 @@ impl EventRepository for StorageAdapter {
     }
 }
 
-impl catapulte_domain::port::sender_usage::SenderUsagePort for StorageAdapter {
+impl catapulte_domain::port::sender_usage::SenderUsage for StorageAdapter {
     async fn get_stats(
         &self,
         names: &[catapulte_domain::entity::sender::SenderName],
@@ -73,11 +73,11 @@ impl catapulte_domain::port::sender_usage::SenderUsagePort for StorageAdapter {
     > {
         match self {
             Self::Sqlite(a) => {
-                catapulte_domain::port::sender_usage::SenderUsagePort::get_stats(a, names, since_ms)
+                catapulte_domain::port::sender_usage::SenderUsage::get_stats(a, names, since_ms)
                     .await
             }
             Self::Postgres(a) => {
-                catapulte_domain::port::sender_usage::SenderUsagePort::get_stats(a, names, since_ms)
+                catapulte_domain::port::sender_usage::SenderUsage::get_stats(a, names, since_ms)
                     .await
             }
         }

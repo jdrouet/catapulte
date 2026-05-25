@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::entity::sender::{SenderConfig, SenderName};
 use crate::port::clock::Clock;
-use crate::port::sender_usage::{SenderStats, SenderUsageError, SenderUsagePort};
+use crate::port::sender_usage::{SenderStats, SenderUsage as SenderUsagePort, SenderUsageError};
 
 #[derive(Clone, Debug)]
 pub struct SenderUsage {
