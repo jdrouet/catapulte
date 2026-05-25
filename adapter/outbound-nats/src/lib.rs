@@ -32,7 +32,7 @@ impl NatsAdapter {
             .map(|&s| std::time::Duration::from_secs(s))
             .collect();
 
-        let stream = js
+        let mut stream = js
             .get_or_create_stream(jetstream::stream::Config {
                 name: config.stream.clone(),
                 subjects: vec![config.subject.clone()],
@@ -42,6 +42,15 @@ impl NatsAdapter {
             })
             .await
             .context("creating NATS stream")?;
+
+        let stream_info = stream.info().await.context("fetching NATS stream info")?;
+        anyhow::ensure!(
+            stream_info.config.subjects.contains(&config.subject),
+            "NATS stream {:?} does not include subject {:?}; found: {:?}",
+            config.stream,
+            config.subject,
+            stream_info.config.subjects,
+        );
 
         let consumer = stream
             .get_or_create_consumer(
