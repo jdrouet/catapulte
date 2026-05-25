@@ -1,4 +1,5 @@
 use anyhow::Context;
+use catapulte_domain::entity::attachment::AttachmentRef;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::port::email_repository::{
@@ -150,6 +151,75 @@ impl EmailRepository for PostgresAdapter {
             .collect::<anyhow::Result<Vec<_>>>()
             .map_err(|source| EmailRepositoryError::Storage { source })
     }
+
+    async fn set_attachments(
+        &self,
+        id: EmailId,
+        attachments: &[AttachmentRef],
+    ) -> Result<(), EmailRepositoryError> {
+        use crate::dto::EnvelopeBodyDtoDeser;
+
+        let id_uuid = id.as_uuid();
+
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .context("starting transaction")
+            .map_err(|source| EmailRepositoryError::Storage { source })?;
+
+        let row: Option<sqlx::types::Json<EnvelopeBodyDtoDeser>> =
+            sqlx::query_scalar("SELECT body FROM emails WHERE id = $1 FOR UPDATE")
+                .bind(id_uuid)
+                .fetch_optional(&mut *tx)
+                .await
+                .context("reading body for set_attachments")
+                .map_err(|source| EmailRepositoryError::Storage { source })?;
+
+        let existing_body = row.ok_or_else(|| EmailRepositoryError::Storage {
+            source: anyhow::anyhow!("email not found for set_attachments: id={}", id.as_uuid()),
+        })?;
+
+        let (source, _) = existing_body.0.split();
+        let new_dtos: Vec<AttachmentRefDto> =
+            attachments.iter().map(AttachmentRefDto::from).collect();
+        let new_body = EnvelopeBodyDto {
+            source,
+            attachments: new_dtos,
+        };
+
+        let result = sqlx::query("UPDATE emails SET body = $1 WHERE id = $2")
+            .bind(sqlx::types::Json(&new_body))
+            .bind(id_uuid)
+            .execute(&mut *tx)
+            .await
+            .context("writing body for set_attachments")
+            .map_err(|source| EmailRepositoryError::Storage { source })?;
+
+        if result.rows_affected() == 0 {
+            return Err(EmailRepositoryError::Storage {
+                source: anyhow::anyhow!("email not found for set_attachments: id={}", id.as_uuid()),
+            });
+        }
+
+        tx.commit()
+            .await
+            .context("committing set_attachments transaction")
+            .map_err(|source| EmailRepositoryError::Storage { source })?;
+
+        Ok(())
+    }
+
+    async fn delete(&self, id: EmailId) -> Result<(), EmailRepositoryError> {
+        let id_uuid = id.as_uuid();
+        sqlx::query("DELETE FROM emails WHERE id = $1")
+            .bind(id_uuid)
+            .execute(self.pool())
+            .await
+            .context("deleting email")
+            .map_err(|source| EmailRepositoryError::Storage { source })?;
+        Ok(())
+    }
 }
 
 impl PostgresAdapter {
@@ -185,13 +255,14 @@ impl PostgresAdapter {
 
 #[cfg(test)]
 mod tests {
+    use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
     use catapulte_domain::entity::body::{BodySource, Plain};
     use catapulte_domain::entity::email::{EmailId, RecipientKind};
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
     use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::{
-        EmailRepository, EmailStatus, ListEmailsParams, SaveResult,
+        EmailRepository, EmailRepositoryError, EmailStatus, ListEmailsParams, SaveResult,
     };
     use catapulte_domain::port::event_publisher::EventPublisher;
 
@@ -552,5 +623,144 @@ mod tests {
             result.is_err(),
             "expected error on duplicate id with no idempotency key"
         );
+    }
+
+    #[tokio::test]
+    async fn set_attachments_persists_refs_and_preserves_body() {
+        use crate::dto::EnvelopeBodyDtoDeser;
+
+        let (adapter, _container) = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+
+        let attachments = vec![
+            AttachmentRef {
+                filename: "invoice.pdf".to_owned(),
+                content_type: "application/pdf".to_owned(),
+                size_bytes: 1024,
+                blob: BlobRef {
+                    backend: "s3".to_owned(),
+                    key: "uploads/invoice.pdf".to_owned(),
+                },
+            },
+            AttachmentRef {
+                filename: "photo.png".to_owned(),
+                content_type: "image/png".to_owned(),
+                size_bytes: 2048,
+                blob: BlobRef {
+                    backend: "gcs".to_owned(),
+                    key: "media/photo.png".to_owned(),
+                },
+            },
+        ];
+        adapter.set_attachments(id, &attachments).await.unwrap();
+
+        let body_json: serde_json::Value = sqlx::query_scalar("SELECT body FROM emails")
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+
+        let deser: EnvelopeBodyDtoDeser = serde_json::from_value(body_json).unwrap();
+        let (source_dto, attachment_dtos) = deser.split();
+
+        let body = BodySource::try_from(source_dto).unwrap();
+        assert!(matches!(body, BodySource::Plain(_)));
+
+        assert_eq!(attachment_dtos.len(), 2);
+        assert_eq!(attachment_dtos[0].filename, "invoice.pdf");
+        assert_eq!(attachment_dtos[0].blob.backend, "s3");
+        assert_eq!(attachment_dtos[1].filename, "photo.png");
+        assert_eq!(attachment_dtos[1].blob.backend, "gcs");
+    }
+
+    #[tokio::test]
+    async fn set_attachments_on_missing_id_returns_storage_error() {
+        let (adapter, _container) = fresh_adapter().await;
+        let id = EmailId::default();
+        let result = adapter.set_attachments(id, &[]).await;
+        assert!(
+            matches!(result, Err(EmailRepositoryError::Storage { .. })),
+            "expected Storage error for missing id"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_attachments_normalizes_legacy_body_shape() {
+        use crate::dto::EnvelopeBodyDtoDeser;
+
+        let (adapter, _container) = fresh_adapter().await;
+        let id = EmailId::default();
+        let id_uuid = id.as_uuid();
+
+        // Insert a row with a legacy bare-BodySourceDto JSON, bypassing save().
+        sqlx::query(
+            "INSERT INTO emails (id, sender, recipients, body, variables) \
+             VALUES ($1, 'sender@example.com', '[]'::jsonb, '{\"kind\":\"plain\",\"text\":\"hi\",\"html\":null}'::jsonb, '{}'::jsonb)",
+        )
+        .bind(id_uuid)
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+
+        let attachments = vec![AttachmentRef {
+            filename: "doc.pdf".to_owned(),
+            content_type: "application/pdf".to_owned(),
+            size_bytes: 512,
+            blob: BlobRef {
+                backend: "s3".to_owned(),
+                key: "docs/doc.pdf".to_owned(),
+            },
+        }];
+        adapter.set_attachments(id, &attachments).await.unwrap();
+
+        let body_value: serde_json::Value =
+            sqlx::query_scalar("SELECT body FROM emails WHERE id = $1")
+                .bind(id_uuid)
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+
+        // Check wrapped shape: has "source", no top-level "kind".
+        assert!(
+            body_value.get("source").is_some(),
+            "expected top-level 'source' key, got: {body_value}"
+        );
+        assert!(
+            body_value.get("kind").is_none(),
+            "expected no top-level 'kind' key (legacy shape), got: {body_value}"
+        );
+
+        // Check that deserialization produces the original body and the new attachments.
+        let deser: EnvelopeBodyDtoDeser = serde_json::from_value(body_value).unwrap();
+        let (source_dto, attachment_dtos) = deser.split();
+
+        let body = BodySource::try_from(source_dto).unwrap();
+        match body {
+            BodySource::Plain(ref p) => {
+                assert_eq!(p.text(), Some("hi"));
+                assert_eq!(p.html(), None);
+            }
+            BodySource::Mjml(_) => panic!("expected Plain body, got {body:?}"),
+        }
+        assert_eq!(attachment_dtos.len(), 1);
+        assert_eq!(attachment_dtos[0].filename, "doc.pdf");
+    }
+
+    #[tokio::test]
+    async fn delete_removes_the_row() {
+        let (adapter, _container) = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+
+        adapter.delete(id).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM emails")
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+
+        // idempotent: second delete must also succeed
+        adapter.delete(id).await.unwrap();
     }
 }

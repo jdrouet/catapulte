@@ -90,6 +90,7 @@ where
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use crate::entity::attachment::AttachmentRef;
     use crate::entity::body::Plain;
     use crate::entity::email::{EmailId, RecipientKind};
     use crate::entity::envelope::Envelope;
@@ -147,6 +148,18 @@ mod tests {
         ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
             Ok(vec![])
         }
+
+        async fn set_attachments(
+            &self,
+            _id: EmailId,
+            _attachments: &[AttachmentRef],
+        ) -> Result<(), EmailRepositoryError> {
+            Ok(())
+        }
+
+        async fn delete(&self, _id: EmailId) -> Result<(), EmailRepositoryError> {
+            Ok(())
+        }
     }
 
     struct FailingRepository;
@@ -169,6 +182,22 @@ mod tests {
         ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
             Ok(vec![])
         }
+
+        async fn set_attachments(
+            &self,
+            _id: EmailId,
+            _attachments: &[AttachmentRef],
+        ) -> Result<(), EmailRepositoryError> {
+            Err(EmailRepositoryError::Storage {
+                source: anyhow::anyhow!("storage down"),
+            })
+        }
+
+        async fn delete(&self, _id: EmailId) -> Result<(), EmailRepositoryError> {
+            Err(EmailRepositoryError::Storage {
+                source: anyhow::anyhow!("storage down"),
+            })
+        }
     }
 
     struct DuplicatingRepository {
@@ -190,6 +219,18 @@ mod tests {
             _params: crate::port::email_repository::ListEmailsParams,
         ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
             Ok(vec![])
+        }
+
+        async fn set_attachments(
+            &self,
+            _id: EmailId,
+            _attachments: &[AttachmentRef],
+        ) -> Result<(), EmailRepositoryError> {
+            Ok(())
+        }
+
+        async fn delete(&self, _id: EmailId) -> Result<(), EmailRepositoryError> {
+            Ok(())
         }
     }
 

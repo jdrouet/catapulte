@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use crate::entity::attachment::AttachmentRef;
 use crate::entity::email::{EmailId, RecipientKind};
 use crate::entity::envelope::Envelope;
 
@@ -34,6 +35,26 @@ pub trait EmailRepository: Send + Sync + 'static {
         &self,
         params: ListEmailsParams,
     ) -> impl std::future::Future<Output = Result<Vec<EmailRecord>, EmailRepositoryError>> + Send;
+
+    /// # Errors
+    ///
+    /// Returns `EmailRepositoryError::Storage` if the row is missing or the
+    /// update fails.
+    fn set_attachments(
+        &self,
+        id: EmailId,
+        attachments: &[AttachmentRef],
+    ) -> impl std::future::Future<Output = Result<(), EmailRepositoryError>> + Send;
+
+    /// # Errors
+    ///
+    /// Returns `EmailRepositoryError::Storage` when the delete fails for a
+    /// reason other than a missing row. A missing row is NOT an error —
+    /// delete is idempotent.
+    fn delete(
+        &self,
+        id: EmailId,
+    ) -> impl std::future::Future<Output = Result<(), EmailRepositoryError>> + Send;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
