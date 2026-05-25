@@ -114,22 +114,34 @@ impl NatsConfig {
             .unwrap_or_else(|_| "catapulte.emails.queued".to_owned());
         let consumer = std::env::var(format!("{prefix}_CONSUMER"))
             .unwrap_or_else(|_| "catapulte-worker".to_owned());
-        let ack_wait_secs = std::env::var(format!("{prefix}_ACK_WAIT_SECS"))
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(30u64);
-        let max_deliver = std::env::var(format!("{prefix}_MAX_DELIVER"))
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3i64);
-        let backoff_secs = std::env::var(format!("{prefix}_BACKOFF")).ok().map_or_else(
-            || vec![30, 60, 120],
-            |v| {
-                v.split(',')
-                    .filter_map(|s| s.trim().parse::<u64>().ok())
-                    .collect()
-            },
-        );
+        let ack_wait_key = format!("{prefix}_ACK_WAIT_SECS");
+        let ack_wait_secs = match std::env::var(&ack_wait_key) {
+            Err(_) => 30u64,
+            Ok(v) => v
+                .parse::<u64>()
+                .with_context(|| format!("invalid {ack_wait_key}: {v:?}"))?,
+        };
+
+        let max_deliver_key = format!("{prefix}_MAX_DELIVER");
+        let max_deliver = match std::env::var(&max_deliver_key) {
+            Err(_) => 3i64,
+            Ok(v) => v
+                .parse::<i64>()
+                .with_context(|| format!("invalid {max_deliver_key}: {v:?}"))?,
+        };
+
+        let backoff_key = format!("{prefix}_BACKOFF");
+        let backoff_secs = match std::env::var(&backoff_key) {
+            Err(_) => vec![30u64, 60, 120],
+            Ok(v) => v
+                .split(',')
+                .map(|s| {
+                    s.trim()
+                        .parse::<u64>()
+                        .with_context(|| format!("invalid value in {backoff_key}: {s:?}"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        };
 
         Ok(Self {
             url,
