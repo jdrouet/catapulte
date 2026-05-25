@@ -72,7 +72,8 @@ impl QueueBackendConfig {
         match std::env::var(&key).as_deref() {
             Ok("memory") => Ok(Self::Memory),
             Ok("nats") => Ok(Self::Nats(NatsConfig::from_env(prefix)?)),
-            _ => Ok(Self::Storage),
+            Ok("storage") | Err(_) => Ok(Self::Storage),
+            Ok(unknown) => anyhow::bail!("unknown queue backend {unknown:?} in env var {key}"),
         }
     }
 

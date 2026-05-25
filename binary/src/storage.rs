@@ -94,17 +94,19 @@ impl StorageBackendConfig {
     ///
     /// Returns an error if the backend env var is unknown or the sub-config is missing.
     pub fn from_env() -> anyhow::Result<Self> {
-        match std::env::var("CATAPULTE_STORAGE_BACKEND")
-            .as_deref()
-            .unwrap_or("sqlite")
-        {
+        let backend =
+            std::env::var("CATAPULTE_STORAGE_BACKEND").unwrap_or_else(|_| "sqlite".to_owned());
+        match backend.as_str() {
             "postgres" | "pg" => Ok(Self::Postgres(
                 PostgresConfig::from_env("CATAPULTE_POSTGRES")
                     .context("loading postgres config")?,
             )),
-            _ => Ok(Self::Sqlite(
+            "sqlite" => Ok(Self::Sqlite(
                 SqliteConfig::from_env("CATAPULTE_SQLITE").context("loading sqlite config")?,
             )),
+            other => anyhow::bail!(
+                "unknown storage backend {other:?} in env var CATAPULTE_STORAGE_BACKEND"
+            ),
         }
     }
 
