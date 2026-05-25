@@ -2,28 +2,12 @@ use std::collections::HashMap;
 
 use axum::Json;
 use axum::extract::State;
-use catapulte_domain::entity::sender::{QuotaRange, SenderName};
+use catapulte_domain::entity::sender::SenderName;
 use catapulte_domain::port::sender_repository::{SenderRepository, SenderStats};
 
 use crate::HttpServerState;
 use crate::dto::{ListSendersResponse, SenderDto, SenderQuotaDto};
 use crate::error::AppError;
-
-fn since_ms_for_range(range: &QuotaRange) -> i64 {
-    let now_ms = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(i64::MAX);
-    match range {
-        QuotaRange::Hourly => now_ms - 3_600_000,
-        QuotaRange::Daily => now_ms - 86_400_000,
-        QuotaRange::Weekly => now_ms - 604_800_000,
-        QuotaRange::Monthly => now_ms - 2_592_000_000,
-    }
-}
 
 /// # Errors
 ///
@@ -38,11 +22,19 @@ pub async fn list_senders<S: HttpServerState>(
         return Ok(Json(ListSendersResponse { senders: vec![] }));
     }
 
+    let now_ms = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX);
+
     // Group senders by their since_ms value (senders with no quota use since_ms=0).
     // This way we make one DB call per distinct time window.
     let mut groups: HashMap<i64, Vec<SenderName>> = HashMap::new();
     for (name, quota) in configured {
-        let since_ms = quota.as_ref().map_or(0, |q| since_ms_for_range(&q.range));
+        let since_ms = quota.as_ref().map_or(0, |q| q.range.since_ms(now_ms));
         groups.entry(since_ms).or_default().push(name.clone());
     }
 
