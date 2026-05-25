@@ -119,22 +119,25 @@ impl PostgresAdapter {
         .context("fetching email for dequeue")
         .map_err(|source| EmailQueueError::Storage { source })?;
 
-        tx.commit()
-            .await
-            .context("committing dequeue transaction")
-            .map_err(|source| EmailQueueError::Storage { source })?;
-
         match maybe_row {
             None => {
                 sqlx::query("DELETE FROM email_queue WHERE id = $1")
                     .bind(entry_id)
-                    .execute(self.pool())
+                    .execute(&mut *tx)
                     .await
                     .context("deleting orphaned queue entry")
+                    .map_err(|source| EmailQueueError::Storage { source })?;
+                tx.commit()
+                    .await
+                    .context("committing orphan cleanup transaction")
                     .map_err(|source| EmailQueueError::Storage { source })?;
                 Ok(None)
             }
             Some(row) => {
+                tx.commit()
+                    .await
+                    .context("committing dequeue transaction")
+                    .map_err(|source| EmailQueueError::Storage { source })?;
                 let envelope =
                     parse_envelope(&row).map_err(|source| EmailQueueError::Storage { source })?;
                 let token = AckToken::new(entry_id.as_bytes().to_vec());
