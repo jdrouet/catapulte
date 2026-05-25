@@ -4,6 +4,7 @@ use catapulte_domain::entity::sender::{SenderName, SenderQuota};
 use catapulte_domain::port::email_queue::EmailQueue;
 use catapulte_domain::port::event_publisher::EventPublisher;
 use catapulte_domain::port::sender_repository::SenderRepository;
+use catapulte_domain::service::priority_email_sender::PriorityEmailSender;
 use catapulte_domain::use_case::process_queued_email::{
     ProcessQueuedEmailService, ProcessQueuedEmailUseCase,
 };
@@ -13,7 +14,6 @@ use catapulte_inbound_worker::worker::WorkerState;
 use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverAdapter;
-use catapulte_outbound_smtp::multi_sender::MultiSmtpSender;
 use catapulte_outbound_smtp::sender::SmtpSender;
 
 use crate::publisher::PublisherAdapter;
@@ -24,7 +24,7 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
     TemplateResolverAdapter,
     MiniJinjaInterpolator,
     MjmlRenderer,
-    MultiSmtpSender<SmtpSender, StorageAdapter>,
+    PriorityEmailSender<SmtpSender, StorageAdapter>,
 >;
 
 #[derive(Clone)]
