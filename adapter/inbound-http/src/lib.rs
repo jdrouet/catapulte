@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 
 use anyhow::Context;
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::get;
 use axum::routing::post;
 use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
@@ -40,6 +41,7 @@ pub fn router<S: HttpServerState>(state: S) -> Router {
         .route("/health/live", get(crate::routes::health::live))
         .route("/health/ready", get(crate::routes::health::ready))
         .layer(TraceLayer::new_for_http())
+        .layer(DefaultBodyLimit::max(crate::dto::MAX_REQUEST_BODY_BYTES))
         .with_state(state)
 }
 

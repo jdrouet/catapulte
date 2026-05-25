@@ -37,7 +37,11 @@ impl IntoResponse for AppError {
             Self::BadRequest(_) | Self::InvalidEmailId => {
                 (StatusCode::BAD_REQUEST, "invalid request")
             }
-            Self::Submit(SubmitEmailError::Persist(_) | SubmitEmailError::Enqueue(_))
+            Self::Submit(
+                SubmitEmailError::Persist(_)
+                | SubmitEmailError::Enqueue(_)
+                | SubmitEmailError::AttachmentStore { .. },
+            )
             | Self::ListEmails(_)
             | Self::ListEvents(_)
             | Self::ListSenders(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),

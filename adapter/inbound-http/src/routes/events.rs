@@ -97,7 +97,6 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use catapulte_domain::entity::email::EmailId;
-    use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::port::email_repository::{EmailRecord, ListEmailsParams};
     use catapulte_domain::port::event_repository::{
         EventRecord, EventRepositoryError, ListEventsParams,
@@ -140,7 +139,10 @@ mod tests {
     struct FakeSubmit;
 
     impl SubmitEmailUseCase for FakeSubmit {
-        async fn execute(&self, _envelope: Envelope) -> Result<EmailId, SubmitEmailError> {
+        async fn execute(
+            &self,
+            _input: catapulte_domain::use_case::submit_email::SubmitEmailInput,
+        ) -> Result<EmailId, SubmitEmailError> {
             Ok(EmailId::default())
         }
     }

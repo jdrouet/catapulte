@@ -1,9 +1,10 @@
 use anyhow::Context;
+use catapulte_domain::entity::attachment::ResolvedAttachment;
 use catapulte_domain::entity::body::RenderedBody;
 use catapulte_domain::entity::email::RecipientKind;
 use catapulte_domain::port::email_sender::OutboundEmail;
 use catapulte_domain::port::email_transport::EmailTransport;
-use lettre::message::header::ContentType;
+use lettre::message::header::{ContentDisposition, ContentType};
 use lettre::message::{Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -77,35 +78,25 @@ fn apply_recipients(
     Ok(builder)
 }
 
-fn finalize_message(
-    builder: lettre::message::MessageBuilder,
-    subject: Option<&str>,
-    body: &RenderedBody,
-) -> anyhow::Result<Message> {
-    let builder = match subject {
-        Some(s) => builder.subject(s),
-        None => builder,
-    };
-    let msg = match (body.text(), body.html()) {
-        (Some(text), Some(html)) => builder.multipart(
-            MultiPart::alternative()
-                .singlepart(
-                    SinglePart::builder()
-                        .header(ContentType::TEXT_PLAIN)
-                        .body(text.to_owned()),
-                )
-                .singlepart(
-                    SinglePart::builder()
-                        .header(ContentType::TEXT_HTML)
-                        .body(html.to_owned()),
-                ),
-        ),
-        (Some(text), None) => builder.singlepart(
+fn build_body_part(body: &RenderedBody) -> anyhow::Result<MultiPart> {
+    let part = match (body.text(), body.html()) {
+        (Some(text), Some(html)) => MultiPart::alternative()
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(text.to_owned()),
+            )
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_HTML)
+                    .body(html.to_owned()),
+            ),
+        (Some(text), None) => MultiPart::alternative().singlepart(
             SinglePart::builder()
                 .header(ContentType::TEXT_PLAIN)
                 .body(text.to_owned()),
         ),
-        (None, Some(html)) => builder.singlepart(
+        (None, Some(html)) => MultiPart::alternative().singlepart(
             SinglePart::builder()
                 .header(ContentType::TEXT_HTML)
                 .body(html.to_owned()),
@@ -114,7 +105,68 @@ fn finalize_message(
             unreachable!("Plain invariant: at least one of text or html must be provided")
         }
     };
-    msg.context("building email message")
+    Ok(part)
+}
+
+fn finalize_message(
+    builder: lettre::message::MessageBuilder,
+    subject: Option<&str>,
+    body: &RenderedBody,
+    attachments: &[ResolvedAttachment],
+) -> anyhow::Result<Message> {
+    let builder = match subject {
+        Some(s) => builder.subject(s),
+        None => builder,
+    };
+
+    if attachments.is_empty() {
+        let msg = match (body.text(), body.html()) {
+            (Some(text), Some(html)) => builder.multipart(
+                MultiPart::alternative()
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_PLAIN)
+                            .body(text.to_owned()),
+                    )
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_HTML)
+                            .body(html.to_owned()),
+                    ),
+            ),
+            (Some(text), None) => builder.singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(text.to_owned()),
+            ),
+            (None, Some(html)) => builder.singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_HTML)
+                    .body(html.to_owned()),
+            ),
+            (None, None) => {
+                unreachable!("Plain invariant: at least one of text or html must be provided")
+            }
+        };
+        msg.context("building email message")
+    } else {
+        let body_part = build_body_part(body)?;
+        let mut mixed = MultiPart::mixed().multipart(body_part);
+        for att in attachments {
+            let content_type = ContentType::parse(&att.content_type).with_context(|| {
+                format!("invalid attachment content-type: {}", att.content_type)
+            })?;
+            mixed = mixed.singlepart(
+                SinglePart::builder()
+                    .header(content_type)
+                    .header(ContentDisposition::attachment(&att.filename))
+                    .body(att.bytes.to_vec()),
+            );
+        }
+        builder
+            .multipart(mixed)
+            .context("building email message with attachments")
+    }
 }
 
 type TransportBuilder = lettre::transport::smtp::AsyncSmtpTransportBuilder;
@@ -196,7 +248,12 @@ impl SmtpTransport {
     pub(crate) async fn send_inner(&self, email: &OutboundEmail) -> anyhow::Result<()> {
         let from = parse_mailbox(&email.sender)?;
         let builder = apply_recipients(Message::builder().from(from), &email.recipients)?;
-        let message = finalize_message(builder, email.subject.as_deref(), &email.body)?;
+        let message = finalize_message(
+            builder,
+            email.subject.as_deref(),
+            &email.body,
+            &email.attachments,
+        )?;
         self.transport
             .send(message)
             .await
@@ -216,6 +273,8 @@ mod tests {
     use std::collections::HashMap;
     use std::env::VarError;
 
+    use catapulte_domain::entity::attachment::ResolvedAttachment;
+    use catapulte_domain::entity::body::{Plain, RenderedBody};
     use lettre::Address;
 
     use super::{SmtpConfig, SmtpTls, finalize_message, parse_port, parse_tls};
@@ -229,6 +288,23 @@ mod tests {
                 .map(|v| (*v).to_owned())
                 .ok_or(VarError::NotPresent)
         }
+    }
+
+    fn base_builder() -> lettre::message::MessageBuilder {
+        lettre::Message::builder()
+            .from("from@example.com".parse::<Address>().unwrap().into())
+            .to("to@example.com".parse::<Address>().unwrap().into())
+    }
+
+    fn plain_text_body() -> RenderedBody {
+        let plain = Plain::try_new(Some("hello".to_string()), None).unwrap();
+        RenderedBody::new(plain)
+    }
+
+    fn multipart_body() -> RenderedBody {
+        let plain =
+            Plain::try_new(Some("text".to_string()), Some("<p>html</p>".to_string())).unwrap();
+        RenderedBody::new(plain)
     }
 
     #[test]
@@ -305,36 +381,59 @@ mod tests {
 
     #[test]
     fn finalize_message_text_only() {
-        use catapulte_domain::entity::body::{Plain, RenderedBody};
-        let plain = Plain::try_new(Some("hello".to_string()), None).unwrap();
-        let body = RenderedBody::new(plain);
-        let builder = lettre::Message::builder()
-            .from("from@example.com".parse::<Address>().unwrap().into())
-            .to("to@example.com".parse::<Address>().unwrap().into());
-        assert!(finalize_message(builder, Some("Test Subject"), &body).is_ok());
+        let body = plain_text_body();
+        assert!(finalize_message(base_builder(), Some("Test Subject"), &body, &[]).is_ok());
     }
 
     #[test]
     fn finalize_message_html_only() {
-        use catapulte_domain::entity::body::{Plain, RenderedBody};
         let plain = Plain::try_new(None, Some("<p>hi</p>".to_string())).unwrap();
         let body = RenderedBody::new(plain);
-        let builder = lettre::Message::builder()
-            .from("from@example.com".parse::<Address>().unwrap().into())
-            .to("to@example.com".parse::<Address>().unwrap().into());
-        assert!(finalize_message(builder, None, &body).is_ok());
+        assert!(finalize_message(base_builder(), None, &body, &[]).is_ok());
     }
 
     #[test]
     fn finalize_message_multipart() {
-        use catapulte_domain::entity::body::{Plain, RenderedBody};
-        let plain =
-            Plain::try_new(Some("text".to_string()), Some("<p>html</p>".to_string())).unwrap();
-        let body = RenderedBody::new(plain);
-        let builder = lettre::Message::builder()
-            .from("from@example.com".parse::<Address>().unwrap().into())
-            .to("to@example.com".parse::<Address>().unwrap().into());
-        assert!(finalize_message(builder, Some("Test Subject"), &body).is_ok());
+        let body = multipart_body();
+        assert!(finalize_message(base_builder(), Some("Test Subject"), &body, &[]).is_ok());
+    }
+
+    #[test]
+    fn finalize_message_with_one_attachment_produces_message() {
+        let body = plain_text_body();
+        let att = ResolvedAttachment {
+            filename: "test.txt".to_owned(),
+            content_type: "text/plain".to_owned(),
+            bytes: bytes::Bytes::from_static(b"hello attachment"),
+        };
+        assert!(finalize_message(base_builder(), Some("With Attachment"), &body, &[att]).is_ok());
+    }
+
+    #[test]
+    fn finalize_message_with_multiple_attachments_and_multipart_body_produces_message() {
+        let body = multipart_body();
+        let att1 = ResolvedAttachment {
+            filename: "a.txt".to_owned(),
+            content_type: "text/plain".to_owned(),
+            bytes: bytes::Bytes::from_static(b"file a"),
+        };
+        let att2 = ResolvedAttachment {
+            filename: "b.txt".to_owned(),
+            content_type: "text/plain".to_owned(),
+            bytes: bytes::Bytes::from_static(b"file b"),
+        };
+        assert!(finalize_message(base_builder(), Some("Multi"), &body, &[att1, att2]).is_ok());
+    }
+
+    #[test]
+    fn finalize_message_with_invalid_content_type_returns_error() {
+        let body = plain_text_body();
+        let att = ResolvedAttachment {
+            filename: "bad.bin".to_owned(),
+            content_type: "not a content type///".to_owned(),
+            bytes: bytes::Bytes::from_static(b"data"),
+        };
+        assert!(finalize_message(base_builder(), None, &body, &[att]).is_err());
     }
 
     #[test]

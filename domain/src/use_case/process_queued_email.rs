@@ -1,7 +1,10 @@
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 
+use crate::entity::attachment::{AttachmentRef, ResolvedAttachment};
 use crate::entity::envelope::Envelope;
 use crate::entity::sender::SenderName;
+use crate::port::attachment_store::AttachmentStore;
 use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
 use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
 use crate::port::template_renderer::{RenderError, TemplateRenderer};
@@ -24,6 +27,11 @@ pub enum ProcessQueuedEmailError {
     Render(#[from] RenderError),
     #[error(transparent)]
     Send(#[from] SendError),
+    #[error("attachment resolve failed")]
+    AttachmentResolve {
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 impl ProcessQueuedEmailError {
@@ -36,26 +44,35 @@ impl ProcessQueuedEmailError {
     }
 }
 
-pub struct ProcessQueuedEmailService<R, I, Rdr, S> {
+pub struct ProcessQueuedEmailService<R, I, Rdr, S, A> {
     resolver: R,
     interpolator: I,
     renderer: Rdr,
     sender: S,
+    attachment_store: A,
 }
 
-impl<R, I, Rdr, S> ProcessQueuedEmailService<R, I, Rdr, S>
+impl<R, I, Rdr, S, A> ProcessQueuedEmailService<R, I, Rdr, S, A>
 where
     R: TemplateResolver,
     I: TemplateInterpolator,
     Rdr: TemplateRenderer,
     S: EmailSender,
+    A: AttachmentStore,
 {
-    pub fn new(resolver: R, interpolator: I, renderer: Rdr, sender: S) -> Self {
+    pub fn new(
+        resolver: R,
+        interpolator: I,
+        renderer: Rdr,
+        sender: S,
+        attachment_store: A,
+    ) -> Self {
         Self {
             resolver,
             interpolator,
             renderer,
             sender,
+            attachment_store,
         }
     }
 
@@ -69,12 +86,14 @@ where
             recipients,
             body,
             variables,
-            attachments: _attachment_refs,
+            attachments,
             ..
         } = envelope;
         let resolved = self.resolver.resolve(body).await?;
         let interpolated = self.interpolator.interpolate(resolved, &variables)?;
         let rendered = self.renderer.render(interpolated)?;
+        let resolved_attachments =
+            resolve_attachments(&self.attachment_store, &attachments).await?;
         let sender_name = self
             .sender
             .send(OutboundEmail {
@@ -82,19 +101,48 @@ where
                 subject,
                 recipients,
                 body: rendered,
-                attachments: vec![],
+                attachments: resolved_attachments,
             })
             .await?;
         Ok(sender_name)
     }
 }
 
-impl<R, I, Rdr, S> ProcessQueuedEmailUseCase for ProcessQueuedEmailService<R, I, Rdr, S>
+async fn resolve_attachments<A: AttachmentStore>(
+    store: &A,
+    refs: &[AttachmentRef],
+) -> Result<Vec<ResolvedAttachment>, ProcessQueuedEmailError> {
+    let mut resolved = Vec::with_capacity(refs.len());
+    for att in refs {
+        let mut reader =
+            store
+                .get(&att.blob)
+                .await
+                .map_err(|e| ProcessQueuedEmailError::AttachmentResolve {
+                    source: anyhow::Error::new(e),
+                })?;
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).await.map_err(|e| {
+            ProcessQueuedEmailError::AttachmentResolve {
+                source: anyhow::Error::new(e),
+            }
+        })?;
+        resolved.push(ResolvedAttachment {
+            filename: att.filename.clone(),
+            content_type: att.content_type.clone(),
+            bytes: bytes::Bytes::from(buf),
+        });
+    }
+    Ok(resolved)
+}
+
+impl<R, I, Rdr, S, A> ProcessQueuedEmailUseCase for ProcessQueuedEmailService<R, I, Rdr, S, A>
 where
     R: TemplateResolver,
     I: TemplateInterpolator,
     Rdr: TemplateRenderer,
     S: EmailSender,
+    A: AttachmentStore,
 {
     fn execute(
         &self,
@@ -110,18 +158,45 @@ mod tests {
 
     use serde_json::{Map, Value};
 
+    use crate::entity::attachment::{AttachmentRef, BlobRef};
     use crate::entity::body::{
         BodySource, InterpolatedBody, MjmlSource, Plain, RenderedBody, ResolvedBody,
     };
     use crate::entity::email::RecipientKind;
     use crate::entity::envelope::Envelope;
     use crate::entity::sender::SenderName;
+    use crate::port::attachment_store::{
+        AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
+    };
     use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
     use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
     use crate::port::template_renderer::{RenderError, TemplateRenderer};
     use crate::port::template_resolver::{ResolveError, TemplateResolver};
 
     use super::{ProcessQueuedEmailError, ProcessQueuedEmailService};
+
+    struct FakeAttachmentStore;
+
+    #[allow(async_fn_in_trait)]
+    impl AttachmentStore for FakeAttachmentStore {
+        async fn put(&self, _reader: AttachmentReader) -> Result<PutResult, AttachmentStoreError> {
+            Ok(PutResult {
+                blob: BlobRef {
+                    backend: "fake".into(),
+                    key: "fake-key".into(),
+                },
+                size_bytes: 0,
+            })
+        }
+
+        async fn get(&self, _blob: &BlobRef) -> Result<AttachmentReader, AttachmentStoreError> {
+            Ok(Box::pin(std::io::Cursor::new(b"fake content".to_vec())))
+        }
+
+        async fn delete(&self, _blob: &BlobRef) -> Result<(), AttachmentStoreError> {
+            Ok(())
+        }
+    }
 
     struct FakeResolver {
         inline_mjml: String,
@@ -297,8 +372,13 @@ mod tests {
         }
     }
 
-    fn default_service()
-    -> ProcessQueuedEmailService<FakeResolver, FakeInterpolator, FakeRenderer, FakeSender> {
+    fn default_service() -> ProcessQueuedEmailService<
+        FakeResolver,
+        FakeInterpolator,
+        FakeRenderer,
+        FakeSender,
+        FakeAttachmentStore,
+    > {
         ProcessQueuedEmailService::new(
             FakeResolver {
                 inline_mjml: String::new(),
@@ -306,6 +386,7 @@ mod tests {
             FakeInterpolator,
             FakeRenderer,
             FakeSender,
+            FakeAttachmentStore,
         )
     }
 
@@ -362,6 +443,7 @@ mod tests {
             FakeInterpolator,
             FakeRenderer,
             FakeSender,
+            FakeAttachmentStore,
         );
         let body = BodySource::Mjml(MjmlSource::Named("welcome".into()));
         let envelope = default_envelope(body);
@@ -375,6 +457,7 @@ mod tests {
             FakeInterpolator,
             FakeRenderer,
             FakeSender,
+            FakeAttachmentStore,
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
@@ -391,6 +474,7 @@ mod tests {
             FakeInterpolator,
             FakeRenderer,
             FailingSender,
+            FakeAttachmentStore,
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
@@ -407,6 +491,7 @@ mod tests {
             FailingInterpolator,
             FakeRenderer,
             FakeSender,
+            FakeAttachmentStore,
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
@@ -423,6 +508,7 @@ mod tests {
             FakeInterpolator,
             FailingRenderer,
             FakeSender,
+            FakeAttachmentStore,
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
@@ -431,7 +517,13 @@ mod tests {
     }
 
     fn capturing_service() -> (
-        ProcessQueuedEmailService<FakeResolver, FakeInterpolator, FakeRenderer, CapturingSender>,
+        ProcessQueuedEmailService<
+            FakeResolver,
+            FakeInterpolator,
+            FakeRenderer,
+            CapturingSender,
+            FakeAttachmentStore,
+        >,
         Arc<Mutex<Option<OutboundEmail>>>,
     ) {
         let (sender, spy) = CapturingSender::new();
@@ -442,6 +534,7 @@ mod tests {
             FakeInterpolator,
             FakeRenderer,
             sender,
+            FakeAttachmentStore,
         );
         (service, spy)
     }
@@ -485,5 +578,27 @@ mod tests {
         let captured = spy.lock().unwrap();
         let email = captured.as_ref().unwrap();
         assert_eq!(email.body.html(), Some("<p>hello</p>"));
+    }
+
+    #[tokio::test]
+    async fn attachments_are_resolved_from_store() {
+        let (service, spy) = capturing_service();
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let mut envelope = default_envelope(body);
+        envelope.attachments.push(AttachmentRef {
+            filename: "doc.txt".into(),
+            content_type: "text/plain".into(),
+            size_bytes: 12,
+            blob: BlobRef {
+                backend: "fake".into(),
+                key: "fake-key".into(),
+            },
+        });
+        service.execute(envelope).await.unwrap();
+        let captured = spy.lock().unwrap();
+        let email = captured.as_ref().unwrap();
+        assert_eq!(email.attachments.len(), 1);
+        assert_eq!(email.attachments[0].filename, "doc.txt");
+        assert_eq!(email.attachments[0].bytes.as_ref(), b"fake content");
     }
 }

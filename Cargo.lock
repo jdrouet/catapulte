@@ -283,9 +283,11 @@ name = "catapulte"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "catapulte-domain",
  "catapulte-inbound-http",
  "catapulte-inbound-worker",
+ "catapulte-outbound-attachment-fs",
  "catapulte-outbound-interpolator",
  "catapulte-outbound-mjml",
  "catapulte-outbound-nats",
@@ -325,6 +327,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
+ "bytes",
  "catapulte-domain",
  "email_address",
  "http-body-util",
@@ -442,6 +446,7 @@ name = "catapulte-outbound-smtp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "catapulte-domain",
  "lettre",
  "tokio",

@@ -10,6 +10,7 @@ use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
 use catapulte_outbound_smtp::multi_sender::MultiSenderConfig;
 
+pub mod attachment_store;
 pub mod publisher;
 pub mod queue;
 mod state;
@@ -27,6 +28,7 @@ pub struct AppConfig {
     pub worker: WorkerConfig,
     pub queue: queue::QueueBackendConfig,
     pub publisher: PublisherAdapterConfig,
+    pub attachment_store: attachment_store::AttachmentStoreBackendConfig,
 }
 
 impl AppConfig {
@@ -43,6 +45,8 @@ impl AppConfig {
         let queue = queue::QueueBackendConfig::from_env("CATAPULTE_QUEUE")
             .context("loading queue backend config")?;
         let publisher = PublisherAdapterConfig::from_env().context("loading publisher config")?;
+        let attachment_store = attachment_store::AttachmentStoreBackendConfig::from_env()
+            .context("loading attachment store config")?;
         Ok(Self {
             storage,
             http,
@@ -51,6 +55,7 @@ impl AppConfig {
             worker,
             queue,
             publisher,
+            attachment_store,
         })
     }
 
@@ -123,16 +128,24 @@ impl AppConfig {
             .build()
             .context("building template resolver")?;
 
+        let attachment_store = self
+            .attachment_store
+            .build()
+            .await
+            .context("building attachment store adapter")?;
+
         let submit_email = Arc::new(SubmitEmailService::new(
             storage.clone(),
             queue.clone(),
             publisher.clone(),
+            attachment_store.clone(),
         ));
         let process_queued_email = Arc::new(ProcessQueuedEmailService::new(
             resolver,
             MiniJinjaInterpolator::new(),
             MjmlRenderer::new(),
             smtp,
+            attachment_store.clone(),
         ));
 
         let state = AppState {

@@ -1,9 +1,22 @@
 use anyhow::Context;
+use base64::Engine;
 use catapulte_domain::entity::body::{BodySource, InvalidPlainBody, MjmlSource, Plain};
 use catapulte_domain::entity::email::{EmailId, RecipientKind};
-use catapulte_domain::entity::envelope::Envelope;
+use catapulte_domain::use_case::submit_email::{AttachmentInput, SubmitEmailInput};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
+
+pub const MAX_ATTACHMENTS_PER_EMAIL: usize = 10;
+pub const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024; // 25 MiB
+// Worst case: 10 attachments × 25 MiB = 250 MiB binary, base64-inflated to ~333 MiB, plus ~1 MiB envelope.
+pub const MAX_REQUEST_BODY_BYTES: usize = 352 * 1024 * 1024; // 352 MiB
+
+#[derive(Debug, Deserialize)]
+pub struct AttachmentDto {
+    pub filename: String,
+    pub content_type: String,
+    pub inline_base64: String,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct SubmitEmailRequest {
@@ -16,6 +29,8 @@ pub struct SubmitEmailRequest {
     pub body: BodyDto,
     #[serde(default)]
     pub variables: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub attachments: Vec<AttachmentDto>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,10 +95,20 @@ pub enum EnvelopeConversionError {
     EmptyRecipients,
     #[error("invalid recipient address")]
     InvalidRecipient(#[source] anyhow::Error),
+    #[error("invalid attachment base64")]
+    InvalidAttachmentBase64 {
+        filename: String,
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("too many attachments")]
+    TooManyAttachments,
+    #[error("attachment too large")]
+    AttachmentTooLarge { filename: String },
 }
 
 impl SubmitEmailRequest {
-    pub fn into_envelope(self) -> Result<Envelope, EnvelopeConversionError> {
+    pub fn into_submit_input(self) -> Result<SubmitEmailInput, EnvelopeConversionError> {
         use std::str::FromStr;
         email_address::EmailAddress::from_str(&self.sender)
             .context("parsing sender")
@@ -102,14 +127,39 @@ impl SubmitEmailRequest {
             })
             .collect::<Result<Vec<_>, EnvelopeConversionError>>()?;
         let body = self.body.try_into()?;
-        Ok(Envelope {
+
+        if self.attachments.len() > MAX_ATTACHMENTS_PER_EMAIL {
+            return Err(EnvelopeConversionError::TooManyAttachments);
+        }
+        let mut atts = Vec::with_capacity(self.attachments.len());
+        for a in self.attachments {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(&a.inline_base64)
+                .context(format!("decoding base64 for attachment '{}'", a.filename))
+                .map_err(|source| EnvelopeConversionError::InvalidAttachmentBase64 {
+                    filename: a.filename.clone(),
+                    source,
+                })?;
+            if decoded.len() as u64 > MAX_ATTACHMENT_BYTES {
+                return Err(EnvelopeConversionError::AttachmentTooLarge {
+                    filename: a.filename,
+                });
+            }
+            atts.push(AttachmentInput {
+                filename: a.filename,
+                content_type: a.content_type,
+                bytes: bytes::Bytes::from(decoded),
+            });
+        }
+
+        Ok(SubmitEmailInput {
             idempotency_key: self.idempotency_key,
             subject: self.subject,
             sender: self.sender,
             recipients,
             body,
             variables: self.variables,
-            attachments: vec![],
+            attachments: atts,
         })
     }
 }
@@ -156,9 +206,27 @@ impl TryFrom<BodyDto> for BodySource {
 #[cfg(test)]
 mod tests {
     use super::{
-        BodyConversionError, BodyDto, BodySource, EnvelopeConversionError, MjmlSource,
-        RecipientDto, RecipientKindDto, SubmitEmailRequest,
+        AttachmentDto, BodyConversionError, BodyDto, BodySource, EnvelopeConversionError,
+        MjmlSource, RecipientDto, RecipientKindDto, SubmitEmailRequest,
     };
+
+    fn base_request() -> SubmitEmailRequest {
+        SubmitEmailRequest {
+            idempotency_key: None,
+            subject: None,
+            sender: "a@b.c".into(),
+            recipients: vec![RecipientDto {
+                kind: RecipientKindDto::To,
+                address: "t@x.y".into(),
+            }],
+            body: BodyDto::Plain {
+                text: Some("hi".into()),
+                html: None,
+            },
+            variables: serde_json::Map::new(),
+            attachments: vec![],
+        }
+    }
 
     #[test]
     fn plain_with_text_converts_to_plain_body() {
@@ -231,21 +299,11 @@ mod tests {
     #[test]
     fn invalid_sender_returns_error() {
         let req = SubmitEmailRequest {
-            idempotency_key: None,
-            subject: None,
             sender: "not-an-email".into(),
-            recipients: vec![RecipientDto {
-                kind: RecipientKindDto::To,
-                address: "t@x.y".into(),
-            }],
-            body: BodyDto::Plain {
-                text: Some("hi".into()),
-                html: None,
-            },
-            variables: serde_json::Map::new(),
+            ..base_request()
         };
         assert!(matches!(
-            req.into_envelope(),
+            req.into_submit_input(),
             Err(EnvelopeConversionError::InvalidSender(_))
         ));
     }
@@ -253,18 +311,11 @@ mod tests {
     #[test]
     fn empty_recipients_returns_error() {
         let req = SubmitEmailRequest {
-            idempotency_key: None,
-            subject: None,
-            sender: "a@b.c".into(),
             recipients: vec![],
-            body: BodyDto::Plain {
-                text: Some("hi".into()),
-                html: None,
-            },
-            variables: serde_json::Map::new(),
+            ..base_request()
         };
         assert!(matches!(
-            req.into_envelope(),
+            req.into_submit_input(),
             Err(EnvelopeConversionError::EmptyRecipients)
         ));
     }
@@ -272,22 +323,91 @@ mod tests {
     #[test]
     fn invalid_recipient_returns_error() {
         let req = SubmitEmailRequest {
-            idempotency_key: None,
-            subject: None,
-            sender: "a@b.c".into(),
             recipients: vec![RecipientDto {
                 kind: RecipientKindDto::To,
                 address: "bad".into(),
             }],
-            body: BodyDto::Plain {
-                text: Some("hi".into()),
-                html: None,
-            },
-            variables: serde_json::Map::new(),
+            ..base_request()
         };
         assert!(matches!(
-            req.into_envelope(),
+            req.into_submit_input(),
             Err(EnvelopeConversionError::InvalidRecipient(_))
+        ));
+    }
+
+    #[test]
+    fn valid_base64_attachment_decodes_correctly() {
+        use base64::Engine;
+        let content = b"hello attachment";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(content);
+        let req = SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: "test.txt".into(),
+                content_type: "text/plain".into(),
+                inline_base64: encoded,
+            }],
+            ..base_request()
+        };
+        let input = req.into_submit_input().unwrap();
+        assert_eq!(input.attachments.len(), 1);
+        assert_eq!(input.attachments[0].bytes.as_ref(), content);
+    }
+
+    #[test]
+    fn invalid_base64_attachment_returns_error() {
+        let req = SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: "bad.txt".into(),
+                content_type: "text/plain".into(),
+                inline_base64: "not valid base64!!!".into(),
+            }],
+            ..base_request()
+        };
+        assert!(matches!(
+            req.into_submit_input(),
+            Err(EnvelopeConversionError::InvalidAttachmentBase64 { .. })
+        ));
+    }
+
+    #[test]
+    fn too_many_attachments_returns_error() {
+        use super::MAX_ATTACHMENTS_PER_EMAIL;
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"x");
+        let attachments = (0..=MAX_ATTACHMENTS_PER_EMAIL)
+            .map(|i| AttachmentDto {
+                filename: format!("file{i}.txt"),
+                content_type: "text/plain".into(),
+                inline_base64: encoded.clone(),
+            })
+            .collect();
+        let req = SubmitEmailRequest {
+            attachments,
+            ..base_request()
+        };
+        assert!(matches!(
+            req.into_submit_input(),
+            Err(EnvelopeConversionError::TooManyAttachments)
+        ));
+    }
+
+    #[test]
+    fn oversize_attachment_returns_error() {
+        use super::MAX_ATTACHMENT_BYTES;
+        use base64::Engine;
+        let big = vec![0u8; (MAX_ATTACHMENT_BYTES + 1) as usize];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&big);
+        let req = SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: "big.bin".into(),
+                content_type: "application/octet-stream".into(),
+                inline_base64: encoded,
+            }],
+            ..base_request()
+        };
+        assert!(matches!(
+            req.into_submit_input(),
+            Err(EnvelopeConversionError::AttachmentTooLarge { .. })
         ));
     }
 }

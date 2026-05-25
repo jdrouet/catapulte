@@ -20,8 +20,8 @@ pub async fn submit_email<S: HttpServerState>(
     State(state): State<S>,
     Json(request): Json<SubmitEmailRequest>,
 ) -> Result<Json<SubmitEmailResponse>, AppError> {
-    let envelope = request.into_envelope()?;
-    let id = state.submit_email().execute(envelope).await?;
+    let input = request.into_submit_input()?;
+    let id = state.submit_email().execute(input).await?;
     Ok(Json(SubmitEmailResponse { id }))
 }
 
@@ -75,14 +75,15 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use catapulte_domain::entity::email::EmailId;
-    use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::port::email_repository::{
         EmailRecord, EmailRepositoryError, EmailStatus, ListEmailsParams,
     };
     use catapulte_domain::port::event_repository::{EventRecord, ListEventsParams};
     use catapulte_domain::use_case::list_emails::{ListEmailsError, ListEmailsUseCase};
     use catapulte_domain::use_case::list_events::{ListEventsError, ListEventsUseCase};
-    use catapulte_domain::use_case::submit_email::{SubmitEmailError, SubmitEmailUseCase};
+    use catapulte_domain::use_case::submit_email::{
+        SubmitEmailError, SubmitEmailInput, SubmitEmailUseCase,
+    };
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -119,7 +120,7 @@ mod tests {
     struct FakeSubmit;
 
     impl SubmitEmailUseCase for FakeSubmit {
-        async fn execute(&self, _envelope: Envelope) -> Result<EmailId, SubmitEmailError> {
+        async fn execute(&self, _input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
             Ok(EmailId::default())
         }
     }
@@ -128,7 +129,7 @@ mod tests {
     struct FailingSubmit;
 
     impl SubmitEmailUseCase for FailingSubmit {
-        async fn execute(&self, _envelope: Envelope) -> Result<EmailId, SubmitEmailError> {
+        async fn execute(&self, _input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
             Err(SubmitEmailError::Persist(EmailRepositoryError::Storage {
                 source: anyhow::anyhow!("nope"),
             }))
@@ -486,5 +487,107 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_with_one_attachment_returns_200() {
+        use base64::Engine;
+        let app = make_router();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"hello from attachment");
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "attachments": [{"filename": "test.txt", "content_type": "text/plain", "inline_base64": encoded}]
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn submit_with_too_many_attachments_returns_400() {
+        use crate::dto::MAX_ATTACHMENTS_PER_EMAIL;
+        use base64::Engine;
+        let app = make_router();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"x");
+        let attachments: Vec<_> = (0..=MAX_ATTACHMENTS_PER_EMAIL)
+            .map(|i| {
+                serde_json::json!({"filename": format!("f{i}.txt"), "content_type": "text/plain", "inline_base64": encoded})
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "attachments": attachments
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_with_oversize_attachment_returns_400() {
+        use crate::dto::MAX_ATTACHMENT_BYTES;
+        use base64::Engine;
+        let app = make_router();
+        let big = vec![0u8; (MAX_ATTACHMENT_BYTES + 1) as usize];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&big);
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "attachments": [{"filename": "big.bin", "content_type": "application/octet-stream", "inline_base64": encoded}]
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_with_invalid_base64_returns_400() {
+        let app = make_router();
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "attachments": [{"filename": "bad.txt", "content_type": "text/plain", "inline_base64": "not valid base64!!!"}]
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_with_large_inline_attachment_within_limit_succeeds_through_router() {
+        use base64::Engine;
+        // ~10 MiB raw — above axum's 2 MiB default limit, well below the 25 MiB per-attachment cap.
+        let raw = vec![0u8; 10 * 1024 * 1024];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
+        let app = make_router();
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "attachments": [{"filename": "large.bin", "content_type": "application/octet-stream", "inline_base64": encoded}]
+        });
+        let response = app
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "router body limit must not reject a 10 MiB attachment"
+        );
     }
 }

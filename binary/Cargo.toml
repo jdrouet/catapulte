@@ -22,12 +22,14 @@ catapulte-outbound-webhook = { path = "../adapter/outbound-webhook" }
 catapulte-outbound-queue-memory = { path = "../adapter/outbound-queue-memory" }
 catapulte-outbound-postgres = { path = "../adapter/outbound-postgres" }
 catapulte-outbound-sqlite = { path = "../adapter/outbound-sqlite" }
+catapulte-outbound-attachment-fs = { path = "../adapter/outbound-attachment-fs" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+base64 = { version = "0.22" }
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

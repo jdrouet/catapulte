@@ -1,11 +1,29 @@
 use thiserror::Error;
 
+use crate::entity::attachment::AttachmentRef;
 use crate::entity::email::EmailId;
 use crate::entity::envelope::Envelope;
 use crate::entity::lifecycle_event::LifecycleEvent;
+use crate::port::attachment_store::{AttachmentReader, AttachmentStore};
 use crate::port::email_queue::{EmailQueue, EmailQueueError};
 use crate::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
 use crate::port::event_publisher::EventPublisher;
+
+pub struct AttachmentInput {
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: bytes::Bytes,
+}
+
+pub struct SubmitEmailInput {
+    pub idempotency_key: Option<String>,
+    pub subject: Option<String>,
+    pub sender: String,
+    pub recipients: Vec<(crate::entity::email::RecipientKind, String)>,
+    pub body: crate::entity::body::BodySource,
+    pub variables: serde_json::Map<String, serde_json::Value>,
+    pub attachments: Vec<AttachmentInput>,
+}
 
 #[derive(Debug, Error)]
 pub enum SubmitEmailError {
@@ -13,6 +31,11 @@ pub enum SubmitEmailError {
     Persist(#[from] EmailRepositoryError),
     #[error(transparent)]
     Enqueue(#[from] EmailQueueError),
+    #[error("attachment store failed")]
+    AttachmentStore {
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 pub trait SubmitEmailUseCase: Send + Sync + 'static {
@@ -20,30 +43,34 @@ pub trait SubmitEmailUseCase: Send + Sync + 'static {
     ///
     /// Returns `SubmitEmailError::Persist` when saving the envelope fails.
     /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
+    /// Returns `SubmitEmailError::AttachmentStore` when blob upload fails.
     fn execute(
         &self,
-        envelope: Envelope,
+        input: SubmitEmailInput,
     ) -> impl std::future::Future<Output = Result<EmailId, SubmitEmailError>> + Send;
 }
 
-pub struct SubmitEmailService<R, Q, P> {
+pub struct SubmitEmailService<R, Q, P, A> {
     repository: R,
     queue: Q,
     event_publisher: P,
+    attachment_store: A,
 }
 
-impl<R, Q, P> SubmitEmailService<R, Q, P>
+impl<R, Q, P, A> SubmitEmailService<R, Q, P, A>
 where
     R: EmailRepository,
     Q: EmailQueue,
     P: EventPublisher,
+    A: AttachmentStore,
 {
     #[must_use]
-    pub fn new(repository: R, queue: Q, event_publisher: P) -> Self {
+    pub fn new(repository: R, queue: Q, event_publisher: P, attachment_store: A) -> Self {
         Self {
             repository,
             queue,
             event_publisher,
+            attachment_store,
         }
     }
 
@@ -51,38 +78,96 @@ where
     ///
     /// Returns `SubmitEmailError::Persist` when saving the envelope fails.
     /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
-    pub async fn execute(&self, envelope: Envelope) -> Result<EmailId, SubmitEmailError> {
+    /// Returns `SubmitEmailError::AttachmentStore` when blob upload fails.
+    pub async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
         let id = EmailId::default();
-        let result = self.repository.save(id, &envelope).await?;
+
+        // Reserve the row with an empty attachment list first; the final list is
+        // patched in after blobs are written so the worker never sees stale refs.
+        let envelope_for_reservation = Envelope {
+            idempotency_key: input.idempotency_key.clone(),
+            subject: input.subject.clone(),
+            sender: input.sender.clone(),
+            recipients: input.recipients.clone(),
+            body: input.body.clone(),
+            variables: input.variables.clone(),
+            attachments: vec![],
+        };
+
+        let result = self.repository.save(id, &envelope_for_reservation).await?;
         match result {
-            SaveResult::Duplicate(existing_id) => Ok(existing_id),
-            SaveResult::Created(id) => {
-                // enqueue after persist: a failed enqueue leaves an orphan record recoverable by reconciliation; enqueuing first would let consumers observe an event for a non-existent email
-                self.queue.enqueue(id, &envelope).await?;
-                if let Err(e) = self
-                    .event_publisher
-                    .publish(&LifecycleEvent::Queued { id })
-                    .await
-                {
-                    tracing::warn!(error = %e, email_id = %id.as_uuid(), "failed to publish queued event");
+            SaveResult::Duplicate(existing_id) => return Ok(existing_id),
+            SaveResult::Created(_) => {}
+        }
+
+        let mut written_refs: Vec<AttachmentRef> = Vec::with_capacity(input.attachments.len());
+        for att in &input.attachments {
+            let reader: AttachmentReader = Box::pin(std::io::Cursor::new(att.bytes.to_vec()));
+            match self.attachment_store.put(reader).await {
+                Ok(put_result) => {
+                    written_refs.push(AttachmentRef {
+                        filename: att.filename.clone(),
+                        content_type: att.content_type.clone(),
+                        size_bytes: put_result.size_bytes,
+                        blob: put_result.blob,
+                    });
                 }
-                Ok(id)
+                Err(store_err) => {
+                    for r in &written_refs {
+                        let _ = self.attachment_store.delete(&r.blob).await;
+                    }
+                    let _ = self.repository.delete(id).await;
+                    return Err(SubmitEmailError::AttachmentStore {
+                        source: anyhow::Error::new(store_err),
+                    });
+                }
             }
         }
+
+        if !written_refs.is_empty() {
+            if let Err(e) = self.repository.set_attachments(id, &written_refs).await {
+                for r in &written_refs {
+                    let _ = self.attachment_store.delete(&r.blob).await;
+                }
+                let _ = self.repository.delete(id).await;
+                return Err(SubmitEmailError::Persist(e));
+            }
+        }
+
+        let envelope = Envelope {
+            idempotency_key: input.idempotency_key,
+            subject: input.subject,
+            sender: input.sender,
+            recipients: input.recipients,
+            body: input.body,
+            variables: input.variables,
+            attachments: written_refs,
+        };
+
+        self.queue.enqueue(id, &envelope).await?;
+        if let Err(e) = self
+            .event_publisher
+            .publish(&LifecycleEvent::Queued { id })
+            .await
+        {
+            tracing::warn!(error = %e, email_id = %id.as_uuid(), "failed to publish queued event");
+        }
+        Ok(id)
     }
 }
 
-impl<R, Q, P> SubmitEmailUseCase for SubmitEmailService<R, Q, P>
+impl<R, Q, P, A> SubmitEmailUseCase for SubmitEmailService<R, Q, P, A>
 where
     R: EmailRepository + Send + Sync + 'static,
     Q: EmailQueue + Send + Sync + 'static,
     P: EventPublisher + Send + Sync + 'static,
+    A: AttachmentStore + Send + Sync + 'static,
 {
     fn execute(
         &self,
-        envelope: Envelope,
+        input: SubmitEmailInput,
     ) -> impl std::future::Future<Output = Result<EmailId, SubmitEmailError>> + Send {
-        Self::execute(self, envelope)
+        Self::execute(self, input)
     }
 }
 
@@ -90,19 +175,22 @@ where
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::entity::attachment::AttachmentRef;
+    use crate::entity::attachment::{AttachmentRef, BlobRef};
     use crate::entity::body::Plain;
     use crate::entity::email::{EmailId, RecipientKind};
     use crate::entity::envelope::Envelope;
     use crate::entity::lifecycle_event::LifecycleEvent;
+    use crate::port::attachment_store::{
+        AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
+    };
     use crate::port::email_queue::{EmailQueue, EmailQueueError};
     use crate::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
     use crate::port::event_publisher::{EventPublisher, EventPublisherError};
 
-    use super::{SubmitEmailError, SubmitEmailService};
+    use super::{AttachmentInput, SubmitEmailError, SubmitEmailInput, SubmitEmailService};
 
-    fn make_envelope(sender: &str) -> Envelope {
-        Envelope {
+    fn make_input(sender: &str) -> SubmitEmailInput {
+        SubmitEmailInput {
             idempotency_key: None,
             subject: None,
             sender: sender.into(),
@@ -342,14 +430,96 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct FakeAttachmentStore {
+        put_count: Arc<Mutex<usize>>,
+    }
+
+    impl FakeAttachmentStore {
+        fn new() -> Self {
+            Self {
+                put_count: Arc::new(Mutex::new(0)),
+            }
+        }
+    }
+
+    #[allow(async_fn_in_trait)]
+    impl AttachmentStore for FakeAttachmentStore {
+        async fn put(
+            &self,
+            mut reader: AttachmentReader,
+        ) -> Result<PutResult, AttachmentStoreError> {
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            reader
+                .read_to_end(&mut buf)
+                .await
+                .map_err(|e| AttachmentStoreError::Io {
+                    source: anyhow::Error::new(e),
+                })?;
+            let size_bytes = buf.len() as u64;
+            *self.put_count.lock().unwrap() += 1;
+            Ok(PutResult {
+                blob: BlobRef {
+                    backend: "fake".into(),
+                    key: format!("fake-key-{}", uuid::Uuid::now_v7().simple()),
+                },
+                size_bytes,
+            })
+        }
+
+        async fn get(
+            &self,
+            _blob: &crate::entity::attachment::BlobRef,
+        ) -> Result<AttachmentReader, AttachmentStoreError> {
+            Ok(Box::pin(std::io::Cursor::new(b"fake content".to_vec())))
+        }
+
+        async fn delete(
+            &self,
+            _blob: &crate::entity::attachment::BlobRef,
+        ) -> Result<(), AttachmentStoreError> {
+            Ok(())
+        }
+    }
+
+    struct FailingAttachmentStore;
+
+    #[allow(async_fn_in_trait)]
+    impl AttachmentStore for FailingAttachmentStore {
+        async fn put(&self, _reader: AttachmentReader) -> Result<PutResult, AttachmentStoreError> {
+            Err(AttachmentStoreError::Io {
+                source: anyhow::anyhow!("store down"),
+            })
+        }
+
+        async fn get(
+            &self,
+            _blob: &crate::entity::attachment::BlobRef,
+        ) -> Result<AttachmentReader, AttachmentStoreError> {
+            Err(AttachmentStoreError::NotFound)
+        }
+
+        async fn delete(
+            &self,
+            _blob: &crate::entity::attachment::BlobRef,
+        ) -> Result<(), AttachmentStoreError> {
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn execute_persists_the_envelope() {
         let repo = FakeRepository::new();
         let queue = FakeQueue::new();
-        let service =
-            SubmitEmailService::new(repo.clone(), queue.clone(), FakeEventPublisher::new());
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+        );
         let id = service
-            .execute(make_envelope("sender@example.com"))
+            .execute(make_input("sender@example.com"))
             .await
             .unwrap();
         let saved = repo.saved.lock().unwrap();
@@ -362,10 +532,14 @@ mod tests {
     async fn execute_enqueues_the_email() {
         let repo = FakeRepository::new();
         let queue = FakeQueue::new();
-        let service =
-            SubmitEmailService::new(repo.clone(), queue.clone(), FakeEventPublisher::new());
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+        );
         let id = service
-            .execute(make_envelope("sender@example.com"))
+            .execute(make_input("sender@example.com"))
             .await
             .unwrap();
         let enqueued = queue.enqueued.lock().unwrap();
@@ -376,10 +550,14 @@ mod tests {
     #[tokio::test]
     async fn persistence_failure_propagates_as_submit_email_error() {
         let queue = FakeQueue::new();
-        let service =
-            SubmitEmailService::new(FailingRepository, queue.clone(), FakeEventPublisher::new());
+        let service = SubmitEmailService::new(
+            FailingRepository,
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+        );
         let err = service
-            .execute(make_envelope("sender@example.com"))
+            .execute(make_input("sender@example.com"))
             .await
             .unwrap_err();
         assert!(matches!(err, SubmitEmailError::Persist(_)));
@@ -389,10 +567,14 @@ mod tests {
     #[tokio::test]
     async fn enqueue_failure_propagates_as_submit_email_error() {
         let repo = FakeRepository::new();
-        let service =
-            SubmitEmailService::new(repo.clone(), FailingQueue, FakeEventPublisher::new());
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            FailingQueue,
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+        );
         let err = service
-            .execute(make_envelope("sender@example.com"))
+            .execute(make_input("sender@example.com"))
             .await
             .unwrap_err();
         assert!(matches!(err, SubmitEmailError::Enqueue(_)));
@@ -403,14 +585,18 @@ mod tests {
     async fn execute_returns_a_fresh_id_each_call() {
         let repo = FakeRepository::new();
         let queue = FakeQueue::new();
-        let service =
-            SubmitEmailService::new(repo.clone(), queue.clone(), FakeEventPublisher::new());
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+        );
         let id1 = service
-            .execute(make_envelope("sender@example.com"))
+            .execute(make_input("sender@example.com"))
             .await
             .unwrap();
         let id2 = service
-            .execute(make_envelope("sender@example.com"))
+            .execute(make_input("sender@example.com"))
             .await
             .unwrap();
         assert_ne!(id1, id2);
@@ -424,9 +610,10 @@ mod tests {
             DuplicatingRepository { existing_id },
             queue.clone(),
             FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
         );
         let returned_id = service
-            .execute(make_envelope("sender@example.com"))
+            .execute(make_input("sender@example.com"))
             .await
             .unwrap();
         assert_eq!(returned_id, existing_id);
@@ -438,9 +625,14 @@ mod tests {
         let repo = FakeRepository::new();
         let queue = FakeQueue::new();
         let spy = FakeEventPublisher::new();
-        let service = SubmitEmailService::new(repo.clone(), queue.clone(), spy.clone());
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            spy.clone(),
+            FakeAttachmentStore::new(),
+        );
         let id = service
-            .execute(make_envelope("sender@example.com"))
+            .execute(make_input("sender@example.com"))
             .await
             .unwrap();
         let events = spy.published.lock().unwrap();
@@ -457,9 +649,10 @@ mod tests {
             DuplicatingRepository { existing_id },
             queue.clone(),
             spy.clone(),
+            FakeAttachmentStore::new(),
         );
         service
-            .execute(make_envelope("sender@example.com"))
+            .execute(make_input("sender@example.com"))
             .await
             .unwrap();
         assert!(spy.published.lock().unwrap().is_empty());
@@ -469,8 +662,13 @@ mod tests {
     async fn publish_failure_does_not_fail_submit() {
         let repo = FakeRepository::new();
         let queue = FakeQueue::new();
-        let service = SubmitEmailService::new(repo.clone(), queue.clone(), FailingEventPublisher);
-        let result = service.execute(make_envelope("sender@example.com")).await;
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FailingEventPublisher,
+            FakeAttachmentStore::new(),
+        );
+        let result = service.execute(make_input("sender@example.com")).await;
         assert!(
             result.is_ok(),
             "publish failure must not propagate as error"
@@ -480,5 +678,49 @@ mod tests {
             1,
             "email must still be enqueued"
         );
+    }
+
+    #[tokio::test]
+    async fn attachment_store_failure_propagates_as_error_and_cleans_up() {
+        let repo = FakeRepository::new();
+        let queue = FakeQueue::new();
+        let mut input = make_input("sender@example.com");
+        input.attachments.push(AttachmentInput {
+            filename: "file.txt".into(),
+            content_type: "text/plain".into(),
+            bytes: bytes::Bytes::from_static(b"hello"),
+        });
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FailingAttachmentStore,
+        );
+        let err = service.execute(input).await.unwrap_err();
+        assert!(matches!(err, SubmitEmailError::AttachmentStore { .. }));
+        assert!(queue.enqueued.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn attachments_are_uploaded_before_enqueue() {
+        let repo = FakeRepository::new();
+        let queue = FakeQueue::new();
+        let store = FakeAttachmentStore::new();
+        let put_count = store.put_count.clone();
+        let mut input = make_input("sender@example.com");
+        input.attachments.push(AttachmentInput {
+            filename: "test.txt".into(),
+            content_type: "text/plain".into(),
+            bytes: bytes::Bytes::from_static(b"attachment content"),
+        });
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            store,
+        );
+        service.execute(input).await.unwrap();
+        assert_eq!(*put_count.lock().unwrap(), 1);
+        assert_eq!(queue.enqueued.lock().unwrap().len(), 1);
     }
 }
