@@ -90,7 +90,10 @@ impl QueueBackendConfig {
                 StorageAdapter::Sqlite(a) => QueueAdapter::Sqlite(a.clone()),
                 StorageAdapter::Postgres(a) => QueueAdapter::Postgres(a.clone()),
             }),
-            Self::Memory => Ok(QueueAdapter::Memory(MemoryQueue::new())),
+            Self::Memory => {
+                tracing::warn!("using in-memory queue: all queued emails will be lost on restart");
+                Ok(QueueAdapter::Memory(MemoryQueue::new()))
+            }
             Self::Nats(config) => {
                 let adapter = config.build().await?;
                 Ok(QueueAdapter::Nats(adapter))
