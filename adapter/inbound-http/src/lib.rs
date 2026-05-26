@@ -14,6 +14,7 @@ use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
 use catapulte_domain::use_case::list_events::ListEventsUseCase;
 use catapulte_domain::use_case::list_senders::ListSendersUseCase;
 use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
+use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 
 /// Provides the use-case instances that HTTP route handlers dispatch into.
@@ -84,12 +85,17 @@ impl InboundHttpServer {
     /// # Errors
     ///
     /// Returns an error when the listener fails to bind or `axum::serve` exits with an error.
-    pub async fn run<S: HttpServerState>(self, state: S) -> anyhow::Result<()> {
+    pub async fn run<S: HttpServerState>(
+        self,
+        state: S,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<()> {
         let listener = tokio::net::TcpListener::bind(self.address)
             .await
             .context("binding http listener")?;
         tracing::info!(address = %self.address, "http server listening");
         axum::serve(listener, router(state))
+            .with_graceful_shutdown(async move { cancel.cancelled().await })
             .await
             .context("http server stopped")?;
         Ok(())

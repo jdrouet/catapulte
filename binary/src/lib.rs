@@ -246,120 +246,79 @@ impl Application {
     ///
     /// Returns an error when the HTTP server fails to bind or exits unexpectedly.
     pub async fn run(self) -> anyhow::Result<()> {
-        tracing::info!("catapulte starting");
         let cancel = tokio_util::sync::CancellationToken::new();
-        let http = self.server.run(self.state.clone());
+        let cancel_signal = cancel.clone();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            cancel_signal.cancel();
+        });
+        self.run_with_shutdown(cancel).await
+    }
 
-        let inbound_nats_handle = self.inbound_nats_server.map(|s| {
-            let s_state = self.state.clone();
-            let s_cancel = cancel.clone();
-            tokio::spawn(async move { s.run(s_state, s_cancel).await })
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP server fails to bind or exits unexpectedly.
+    pub async fn run_with_shutdown(
+        self,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<()> {
+        tracing::info!("catapulte starting");
+
+        let state = self.state;
+        let mut tasks: tokio::task::JoinSet<anyhow::Result<()>> = tokio::task::JoinSet::new();
+
+        // HTTP server
+        let http_cancel = cancel.clone();
+        let http_state = state.clone();
+        tasks.spawn(async move { self.server.run(http_state, http_cancel).await });
+
+        // Worker
+        let worker_cancel = cancel.clone();
+        let worker_state = state.clone();
+        tasks.spawn(async move {
+            self.worker.run(worker_state, worker_cancel).await;
+            Ok(())
         });
 
-        let worker = self.worker.run(self.state, cancel.clone());
-
-        let gc_handle = self.gc.map(|gc| {
+        // GC
+        if let Some(gc) = self.gc {
             let gc_cancel = cancel.clone();
-            tokio::spawn(async move { gc.run(gc_cancel).await })
-        });
-
-        match (gc_handle, inbound_nats_handle) {
-            (Some(gc_handle), Some(inbound_nats_handle)) => {
-                tokio::select! {
-                    result = http => {
-                        cancel.cancel();
-                        result.context("http server stopped")
-                    }
-                    () = worker => Ok(()),
-                    result = gc_handle => {
-                        if let Err(e) = result {
-                            tracing::error!(error = %e, "attachment GC task ended unexpectedly");
-                        } else {
-                            tracing::info!("attachment GC task ended");
-                        }
-                        cancel.cancel();
-                        Ok(())
-                    }
-                    result = inbound_nats_handle => {
-                        if let Err(e) = result {
-                            tracing::error!(error = %e, "inbound NATS task ended unexpectedly");
-                        } else {
-                            tracing::info!("inbound NATS task ended");
-                        }
-                        cancel.cancel();
-                        Ok(())
-                    }
-                    result = tokio::signal::ctrl_c() => {
-                        result.context("failed to listen for shutdown signal")?;
-                        tracing::info!("shutdown signal received");
-                        cancel.cancel();
-                        Ok(())
-                    }
-                }
-            }
-            (Some(gc_handle), None) => {
-                tokio::select! {
-                    result = http => {
-                        cancel.cancel();
-                        result.context("http server stopped")
-                    }
-                    () = worker => Ok(()),
-                    result = gc_handle => {
-                        if let Err(e) = result {
-                            tracing::error!(error = %e, "attachment GC task ended unexpectedly");
-                        } else {
-                            tracing::info!("attachment GC task ended");
-                        }
-                        cancel.cancel();
-                        Ok(())
-                    }
-                    result = tokio::signal::ctrl_c() => {
-                        result.context("failed to listen for shutdown signal")?;
-                        tracing::info!("shutdown signal received");
-                        cancel.cancel();
-                        Ok(())
-                    }
-                }
-            }
-            (None, Some(inbound_nats_handle)) => {
-                tokio::select! {
-                    result = http => {
-                        cancel.cancel();
-                        result.context("http server stopped")
-                    }
-                    () = worker => Ok(()),
-                    result = inbound_nats_handle => {
-                        if let Err(e) = result {
-                            tracing::error!(error = %e, "inbound NATS task ended unexpectedly");
-                        } else {
-                            tracing::info!("inbound NATS task ended");
-                        }
-                        cancel.cancel();
-                        Ok(())
-                    }
-                    result = tokio::signal::ctrl_c() => {
-                        result.context("failed to listen for shutdown signal")?;
-                        tracing::info!("shutdown signal received");
-                        cancel.cancel();
-                        Ok(())
-                    }
-                }
-            }
-            (None, None) => {
-                tokio::select! {
-                    result = http => {
-                        cancel.cancel();
-                        result.context("http server stopped")
-                    }
-                    () = worker => Ok(()),
-                    result = tokio::signal::ctrl_c() => {
-                        result.context("failed to listen for shutdown signal")?;
-                        tracing::info!("shutdown signal received");
-                        cancel.cancel();
-                        Ok(())
-                    }
-                }
-            }
+            tasks.spawn(async move {
+                gc.run(gc_cancel).await;
+                Ok(())
+            });
         }
+
+        // Inbound NATS (optional)
+        if let Some(inbound) = self.inbound_nats_server {
+            let inb_cancel = cancel.clone();
+            let inb_state = state.clone();
+            tasks.spawn(async move {
+                inbound.run(inb_state, inb_cancel).await;
+                Ok(())
+            });
+        }
+
+        // Wait for the cancellation signal. The ctrl_c handler (wired in run())
+        // calls cancel.cancel(); tests can call it directly.
+        cancel.cancelled().await;
+
+        // Drain all tasks with a bounded timeout so in-flight work can finish.
+        let drain_timeout = std::time::Duration::from_secs(30);
+        let drain = async {
+            while let Some(joined) = tasks.join_next().await {
+                match joined {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => tracing::warn!(error = %e, "background task ended with error"),
+                    Err(e) => tracing::warn!(error = %e, "background task panicked or was aborted"),
+                }
+            }
+        };
+        if tokio::time::timeout(drain_timeout, drain).await.is_err() {
+            tracing::warn!("background tasks did not finish within shutdown timeout; aborting");
+            tasks.abort_all();
+        }
+
+        Ok(())
     }
 }
