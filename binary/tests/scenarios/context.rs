@@ -53,6 +53,20 @@ impl TestContext {
         }
     }
 
+    pub async fn fetch_mailpit_message(&self, message_id: &str) -> serde_json::Value {
+        self.client
+            .get(format!(
+                "{}/api/v1/message/{message_id}",
+                self.mailpit_api_base
+            ))
+            .send()
+            .await
+            .expect("GET /api/v1/message/{id} failed")
+            .json()
+            .await
+            .expect("failed to parse mailpit message response")
+    }
+
     pub async fn wait_for_event(
         &self,
         email_id: &str,

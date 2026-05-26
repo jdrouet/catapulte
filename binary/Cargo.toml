@@ -37,6 +37,7 @@ futures-util = "0.3"
 paste = "1"
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
+serial_test = "3"
 tempfile = { workspace = true }
 testcontainers = { version = "0.23" }
 tokio = { workspace = true }

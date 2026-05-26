@@ -120,6 +120,7 @@ macro_rules! e2e_matrix {
             paste::paste! {
                 #[allow(non_snake_case)]
                 #[tokio::test(flavor = "multi_thread")]
+                #[serial_test::serial]
                 async fn [<$scenario __ $backend>]() {
                     $crate::scenarios::runner::run_scenario(
                         stringify!($scenario),
