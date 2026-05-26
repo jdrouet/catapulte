@@ -91,7 +91,7 @@ where
         } = envelope;
         let resolved = self.resolver.resolve(body).await?;
         let interpolated = self.interpolator.interpolate(resolved, &variables)?;
-        let rendered = self.renderer.render(interpolated)?;
+        let rendered = self.renderer.render(interpolated).await?;
         let resolved_attachments =
             resolve_attachments(&self.attachment_store, &attachments).await?;
         let sender_name = self
@@ -261,7 +261,7 @@ mod tests {
     struct FakeRenderer;
 
     impl TemplateRenderer for FakeRenderer {
-        fn render(&self, body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
+        async fn render(&self, body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
             match body {
                 InterpolatedBody::Plain(p) => Ok(RenderedBody::new(p)),
                 InterpolatedBody::Mjml(s) => {
@@ -341,7 +341,7 @@ mod tests {
     struct FailingRenderer;
 
     impl TemplateRenderer for FailingRenderer {
-        fn render(&self, _body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
+        async fn render(&self, _body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
             Err(RenderError::Mjml {
                 source: anyhow::anyhow!("render failed"),
             })

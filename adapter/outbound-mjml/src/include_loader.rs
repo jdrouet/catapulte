@@ -1,12 +1,41 @@
 use std::collections::HashSet;
 use std::env::VarError;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
-use mrml::prelude::parser::http_loader::{HttpIncludeLoader, UreqFetcher};
-use mrml::prelude::parser::loader::{IncludeLoader, IncludeLoaderError};
+use mrml::prelude::parser::http_loader::{AsyncReqwestFetcher, HttpIncludeLoader};
+use mrml::prelude::parser::loader::{AsyncIncludeLoader, IncludeLoader, IncludeLoaderError};
 use mrml::prelude::parser::local_loader::LocalIncludeLoader;
+use mrml::prelude::parser::multi_loader::MultiIncludeLoaderAsync;
 use mrml::prelude::parser::noop_loader::NoopIncludeLoader;
+
+#[derive(Debug)]
+struct SpawnBlockingLocalLoader {
+    inner: Arc<LocalIncludeLoader>,
+}
+
+impl SpawnBlockingLocalLoader {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            inner: Arc::new(LocalIncludeLoader::new(root)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AsyncIncludeLoader for SpawnBlockingLocalLoader {
+    async fn async_resolve(&self, path: &str) -> Result<String, IncludeLoaderError> {
+        let inner = Arc::clone(&self.inner);
+        let path_owned = path.to_owned();
+        let join = tokio::task::spawn_blocking(move || inner.resolve(&path_owned)).await;
+        match join {
+            Ok(result) => result,
+            Err(_) => Err(IncludeLoaderError::new(path, std::io::ErrorKind::Other)
+                .with_message("local include task panicked")),
+        }
+    }
+}
 
 #[derive(Debug)]
 enum HttpOriginConfig {
@@ -78,82 +107,49 @@ impl IncludeLoaderConfig {
         })
     }
 
-    pub fn build(self) -> Box<dyn IncludeLoader + Send + Sync> {
-        let fs: Option<LocalIncludeLoader> = self.fs_root.map(LocalIncludeLoader::new);
+    pub fn build(self) -> Box<dyn AsyncIncludeLoader + Send + Sync> {
+        let fs: Option<SpawnBlockingLocalLoader> = self.fs_root.map(SpawnBlockingLocalLoader::new);
         let http_origin = self.http_origin;
 
         match (fs, http_origin) {
             (None, None) => Box::new(NoopIncludeLoader),
             (Some(fs), None) => Box::new(fs),
-            (None, Some(origin)) => Box::new(build_http_loader(origin)),
-            (Some(fs), Some(origin)) => {
-                // Two separate loaders because HttpIncludeLoader is not Clone.
+            (None, Some(origin)) => {
+                // Two separate loaders (http and https) because HttpIncludeLoader is not Clone.
                 let (loader_http, loader_https) = build_http_loader_pair(origin);
-                Box::new(PrefixDispatchLoader {
-                    fs: Some(fs),
-                    http: Some(loader_http),
-                    https: Some(loader_https),
-                })
+                let multi = MultiIncludeLoaderAsync::new()
+                    .with_starts_with("http://", Box::new(loader_http))
+                    .with_starts_with("https://", Box::new(loader_https))
+                    .with_any(Box::<NoopIncludeLoader>::default());
+                Box::new(multi)
+            }
+            (Some(fs), Some(origin)) => {
+                let (loader_http, loader_https) = build_http_loader_pair(origin);
+                let multi = MultiIncludeLoaderAsync::new()
+                    .with_starts_with("file://", Box::new(fs))
+                    .with_starts_with("http://", Box::new(loader_http))
+                    .with_starts_with("https://", Box::new(loader_https))
+                    .with_any(Box::<NoopIncludeLoader>::default());
+                Box::new(multi)
             }
         }
-    }
-}
-
-/// Dispatches includes by URL scheme: `file://` → `LocalIncludeLoader`,
-/// `http://` / `https://` → `HttpIncludeLoader`, anything else → `NotFound`.
-///
-/// Used only when both the filesystem and HTTP backends are configured.
-#[derive(Debug)]
-struct PrefixDispatchLoader {
-    fs: Option<LocalIncludeLoader>,
-    http: Option<HttpIncludeLoader<UreqFetcher>>,
-    https: Option<HttpIncludeLoader<UreqFetcher>>,
-}
-
-impl IncludeLoader for PrefixDispatchLoader {
-    fn resolve(&self, path: &str) -> Result<String, IncludeLoaderError> {
-        if path.starts_with("file://") {
-            self.fs.as_ref().map_or_else(
-                || Err(IncludeLoaderError::not_found(path)),
-                |l| l.resolve(path),
-            )
-        } else if path.starts_with("http://") {
-            self.http.as_ref().map_or_else(
-                || Err(IncludeLoaderError::not_found(path)),
-                |l| l.resolve(path),
-            )
-        } else if path.starts_with("https://") {
-            self.https.as_ref().map_or_else(
-                || Err(IncludeLoaderError::not_found(path)),
-                |l| l.resolve(path),
-            )
-        } else {
-            Err(IncludeLoaderError::not_found(path))
-        }
-    }
-}
-
-fn build_http_loader(origin: HttpOriginConfig) -> HttpIncludeLoader<UreqFetcher> {
-    match origin {
-        HttpOriginConfig::Allow(set) => HttpIncludeLoader::<UreqFetcher>::new_allow(set),
-        HttpOriginConfig::Deny(set) => HttpIncludeLoader::<UreqFetcher>::new_deny(set),
     }
 }
 
 fn build_http_loader_pair(
     origin: HttpOriginConfig,
 ) -> (
-    HttpIncludeLoader<UreqFetcher>,
-    HttpIncludeLoader<UreqFetcher>,
+    HttpIncludeLoader<AsyncReqwestFetcher>,
+    HttpIncludeLoader<AsyncReqwestFetcher>,
 ) {
     match origin {
         HttpOriginConfig::Allow(set) => (
-            HttpIncludeLoader::<UreqFetcher>::new_allow(set.clone()),
-            HttpIncludeLoader::<UreqFetcher>::new_allow(set),
+            HttpIncludeLoader::<AsyncReqwestFetcher>::new_allow(set.clone()),
+            HttpIncludeLoader::<AsyncReqwestFetcher>::new_allow(set),
         ),
         HttpOriginConfig::Deny(set) => (
-            HttpIncludeLoader::<UreqFetcher>::new_deny(set.clone()),
-            HttpIncludeLoader::<UreqFetcher>::new_deny(set),
+            HttpIncludeLoader::<AsyncReqwestFetcher>::new_deny(set.clone()),
+            HttpIncludeLoader::<AsyncReqwestFetcher>::new_deny(set),
         ),
     }
 }

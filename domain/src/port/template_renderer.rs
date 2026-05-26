@@ -15,5 +15,8 @@ pub trait TemplateRenderer: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns a `RenderError` when the mjml renderer fails to compile the body.
-    fn render(&self, body: InterpolatedBody) -> Result<RenderedBody, RenderError>;
+    fn render(
+        &self,
+        body: InterpolatedBody,
+    ) -> impl std::future::Future<Output = Result<RenderedBody, RenderError>> + Send;
 }

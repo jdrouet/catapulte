@@ -3,18 +3,18 @@ use std::sync::Arc;
 use anyhow::Context;
 use catapulte_domain::entity::body::{InterpolatedBody, Plain, RenderedBody};
 use catapulte_domain::port::template_renderer::{RenderError, TemplateRenderer};
-use mrml::prelude::parser::ParserOptions;
-use mrml::prelude::parser::loader::{IncludeLoader, IncludeLoaderError};
+use mrml::prelude::parser::AsyncParserOptions;
+use mrml::prelude::parser::loader::AsyncIncludeLoader;
 
 pub struct MjmlRenderer {
-    include_loader: Arc<dyn IncludeLoader + Send + Sync>,
+    parser_options: Arc<AsyncParserOptions>,
 }
 
 impl MjmlRenderer {
     #[must_use]
-    pub fn new(include_loader: Box<dyn IncludeLoader + Send + Sync>) -> Self {
+    pub fn new(include_loader: Box<dyn AsyncIncludeLoader + Send + Sync>) -> Self {
         Self {
-            include_loader: Arc::from(include_loader),
+            parser_options: Arc::new(AsyncParserOptions { include_loader }),
         }
     }
 }
@@ -23,32 +23,22 @@ impl TemplateRenderer for MjmlRenderer {
     /// # Errors
     ///
     /// Returns a `RenderError` when the mjml source fails to parse or render.
-    fn render(&self, body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
+    async fn render(&self, body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
         match body {
             InterpolatedBody::Plain(plain) => Ok(RenderedBody::new(plain)),
             InterpolatedBody::Mjml(source) => {
-                let opts = ParserOptions {
-                    include_loader: Box::new(ArcLoader(Arc::clone(&self.include_loader))),
-                };
-                render_mjml(&source, &opts)
+                render_mjml(&source, Arc::clone(&self.parser_options)).await
             }
         }
     }
 }
 
-/// Owns an `Arc` to the real loader and delegates to it.
-/// This is `'static` (no lifetime parameters) so it fits inside `ParserOptions`.
-#[derive(Debug)]
-struct ArcLoader(Arc<dyn IncludeLoader + Send + Sync>);
-
-impl IncludeLoader for ArcLoader {
-    fn resolve(&self, path: &str) -> Result<String, IncludeLoaderError> {
-        self.0.resolve(path)
-    }
-}
-
-fn render_mjml(source: &str, opts: &ParserOptions) -> Result<RenderedBody, RenderError> {
-    let parsed = mrml::parse_with_options(source, opts)
+async fn render_mjml(
+    source: &str,
+    opts: Arc<AsyncParserOptions>,
+) -> Result<RenderedBody, RenderError> {
+    let parsed = mrml::async_parse_with_options(source, opts)
+        .await
         .context("failed to parse mjml")
         .map_err(|source| RenderError::Mjml { source })?;
 
@@ -80,31 +70,31 @@ mod tests {
         MjmlRenderer::new(Box::new(NoopIncludeLoader))
     }
 
-    #[test]
-    fn render_plain_pass_through_text_only() {
+    #[tokio::test]
+    async fn render_plain_pass_through_text_only() {
         let renderer = noop_renderer();
         let plain = Plain::try_new(Some("hi".to_string()), None).unwrap();
         let body = InterpolatedBody::Plain(plain);
-        let result = renderer.render(body).unwrap();
+        let result = renderer.render(body).await.unwrap();
         let output = result.into_plain();
         assert_eq!(output.text(), Some("hi"));
         assert_eq!(output.html(), None);
     }
 
-    #[test]
-    fn render_plain_pass_through_both() {
+    #[tokio::test]
+    async fn render_plain_pass_through_both() {
         let renderer = noop_renderer();
         let plain =
             Plain::try_new(Some("text".to_string()), Some("<p>html</p>".to_string())).unwrap();
         let body = InterpolatedBody::Plain(plain);
-        let result = renderer.render(body).unwrap();
+        let result = renderer.render(body).await.unwrap();
         let output = result.into_plain();
         assert_eq!(output.text(), Some("text"));
         assert_eq!(output.html(), Some("<p>html</p>"));
     }
 
-    #[test]
-    fn render_mjml_with_preview_produces_text_and_html() {
+    #[tokio::test]
+    async fn render_mjml_with_preview_produces_text_and_html() {
         let renderer = noop_renderer();
         let source = r"<mjml>
   <mj-head>
@@ -119,7 +109,7 @@ mod tests {
   </mj-body>
 </mjml>";
         let body = InterpolatedBody::Mjml(source.to_string());
-        let result = renderer.render(body).unwrap();
+        let result = renderer.render(body).await.unwrap();
         let output = result.into_plain();
         assert_eq!(output.text(), Some("preview text"));
         let html = output.html().unwrap();
@@ -127,8 +117,8 @@ mod tests {
         assert!(html.contains("Hello world"));
     }
 
-    #[test]
-    fn render_mjml_without_preview_produces_html_only() {
+    #[tokio::test]
+    async fn render_mjml_without_preview_produces_html_only() {
         let renderer = noop_renderer();
         let source = r"<mjml>
   <mj-body>
@@ -140,7 +130,7 @@ mod tests {
   </mj-body>
 </mjml>";
         let body = InterpolatedBody::Mjml(source.to_string());
-        let result = renderer.render(body).unwrap();
+        let result = renderer.render(body).await.unwrap();
         let output = result.into_plain();
         assert_eq!(output.text(), None);
         let html = output.html().unwrap();
@@ -148,16 +138,16 @@ mod tests {
         assert!(html.contains("Hello world"));
     }
 
-    #[test]
-    fn render_invalid_mjml_returns_render_error() {
+    #[tokio::test]
+    async fn render_invalid_mjml_returns_render_error() {
         let renderer = noop_renderer();
         let body = InterpolatedBody::Mjml("<not mjml".to_string());
-        let result = renderer.render(body);
+        let result = renderer.render(body).await;
         assert!(matches!(result, Err(RenderError::Mjml { .. })));
     }
 
-    #[test]
-    fn render_with_local_include_resolves() {
+    #[tokio::test]
+    async fn render_with_local_include_resolves() {
         use mrml::prelude::parser::local_loader::LocalIncludeLoader;
         use std::io::Write;
 
@@ -184,7 +174,7 @@ mod tests {
   </mj-body>
 </mjml>"#;
         let body = InterpolatedBody::Mjml(source.to_string());
-        let result = renderer.render(body).unwrap();
+        let result = renderer.render(body).await.unwrap();
         let html = result.into_plain().html().unwrap().to_string();
         assert!(
             html.contains("Hello include"),
@@ -192,8 +182,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn render_with_local_include_path_traversal_fails() {
+    #[tokio::test]
+    async fn render_with_local_include_path_traversal_fails() {
         use mrml::prelude::parser::local_loader::LocalIncludeLoader;
 
         let dir = tempfile::tempdir().unwrap();
@@ -210,12 +200,12 @@ mod tests {
   </mj-body>
 </mjml>"#;
         let body = InterpolatedBody::Mjml(source.to_string());
-        let result = renderer.render(body);
+        let result = renderer.render(body).await;
         assert!(matches!(result, Err(RenderError::Mjml { .. })));
     }
 
-    #[test]
-    fn render_without_include_loader_errors_on_mj_include() {
+    #[tokio::test]
+    async fn render_without_include_loader_errors_on_mj_include() {
         let renderer = noop_renderer();
         let source = r#"<mjml>
   <mj-body>
@@ -227,7 +217,7 @@ mod tests {
   </mj-body>
 </mjml>"#;
         let body = InterpolatedBody::Mjml(source.to_string());
-        let result = renderer.render(body);
+        let result = renderer.render(body).await;
         assert!(
             matches!(result, Err(RenderError::Mjml { .. })),
             "expected RenderError from noop loader, got Ok"
