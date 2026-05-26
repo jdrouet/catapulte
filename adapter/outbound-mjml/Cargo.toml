@@ -11,4 +11,8 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 catapulte-domain = { path = "../../domain" }
-mrml = { version = "6.0.1" }
+mrml = { version = "6.0.1", default-features = false, features = ["parse", "render", "local-loader", "http-loader-ureq"] }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

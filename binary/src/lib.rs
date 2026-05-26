@@ -36,6 +36,7 @@ pub struct AppConfig {
     pub attachment_store: attachment_store::AttachmentStoreBackendConfig,
     pub attachment_fetcher:
         catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcherConfig,
+    pub include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig,
     pub gc_sweep_interval: Duration,
     pub gc_grace_period: Duration,
 }
@@ -61,6 +62,11 @@ impl AppConfig {
                 "CATAPULTE_ATTACHMENT_FETCHER",
             )
             .context("loading attachment fetcher config")?;
+        let include_loader =
+            catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::from_env(
+                "CATAPULTE_INCLUDE_LOADER",
+            )
+            .context("loading include loader config")?;
         let gc_sweep_secs: u64 = std::env::var("CATAPULTE_GC_SWEEP_INTERVAL_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -81,6 +87,7 @@ impl AppConfig {
             publisher,
             attachment_store,
             attachment_fetcher,
+            include_loader,
             gc_sweep_interval,
             gc_grace_period,
         })
@@ -173,10 +180,11 @@ impl AppConfig {
             attachment_store.clone(),
             attachment_fetcher,
         ));
+        let mjml_renderer = MjmlRenderer::new(self.include_loader.build());
         let process_queued_email = Arc::new(ProcessQueuedEmailService::new(
             resolver,
             MiniJinjaInterpolator::new(),
-            MjmlRenderer::new(),
+            mjml_renderer,
             smtp,
             attachment_store.clone(),
         ));

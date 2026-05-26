@@ -193,6 +193,7 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -224,6 +225,7 @@ async fn submit_plain_email_with_memory_queue_is_delivered() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -258,6 +260,7 @@ async fn submit_email_sqlite_storage_nats_queue_is_delivered() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -290,6 +293,7 @@ async fn submit_email_postgres_storage_storage_queue_is_delivered() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -322,6 +326,7 @@ async fn submit_email_postgres_storage_memory_queue_is_delivered() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -353,6 +358,7 @@ async fn lifecycle_events_endpoint_returns_queued_and_sent() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -469,6 +475,7 @@ async fn list_endpoints_return_submitted_email() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -615,6 +622,7 @@ async fn submit_email_postgres_storage_nats_queue_is_delivered() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -672,6 +680,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -807,6 +816,7 @@ async fn submit_mjml_inline_with_variables_renders_and_delivers() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -929,6 +939,7 @@ async fn idempotency_key_deduplicates_submission() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -1070,6 +1081,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -1213,6 +1225,7 @@ async fn submit_email_with_inline_attachment_is_delivered_with_attachment() {
             root: attachment_dir.path().to_path_buf(),
         }),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -1345,6 +1358,7 @@ async fn sent_email_blob_is_deleted_after_delivery() {
             root: attachment_dir.path().to_path_buf(),
         }),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -1487,6 +1501,7 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
                 max_bytes: 25 * 1024 * 1024,
                 fetch_timeout: Duration::from_secs(30),
             },
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -1608,6 +1623,7 @@ async fn batch_submit_delivers_multiple_emails() {
             root: attachment_dir.path().to_path_buf(),
         }),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };
@@ -1732,6 +1748,7 @@ async fn submit_email_with_disallowed_remote_attachment_returns_400() {
             root: attachment_dir.path().to_path_buf(),
         }),
         attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
         gc_sweep_interval: Duration::from_secs(3600),
         gc_grace_period: Duration::from_secs(3600),
     };

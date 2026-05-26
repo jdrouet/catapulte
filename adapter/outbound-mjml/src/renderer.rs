@@ -1,14 +1,21 @@
+use std::sync::Arc;
+
 use anyhow::Context;
 use catapulte_domain::entity::body::{InterpolatedBody, Plain, RenderedBody};
 use catapulte_domain::port::template_renderer::{RenderError, TemplateRenderer};
+use mrml::prelude::parser::ParserOptions;
+use mrml::prelude::parser::loader::{IncludeLoader, IncludeLoaderError};
 
-#[derive(Debug, Default)]
-pub struct MjmlRenderer;
+pub struct MjmlRenderer {
+    include_loader: Arc<dyn IncludeLoader + Send + Sync>,
+}
 
 impl MjmlRenderer {
     #[must_use]
-    pub fn new() -> Self {
-        Self
+    pub fn new(include_loader: Box<dyn IncludeLoader + Send + Sync>) -> Self {
+        Self {
+            include_loader: Arc::from(include_loader),
+        }
     }
 }
 
@@ -19,20 +26,36 @@ impl TemplateRenderer for MjmlRenderer {
     fn render(&self, body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
         match body {
             InterpolatedBody::Plain(plain) => Ok(RenderedBody::new(plain)),
-            InterpolatedBody::Mjml(source) => render_mjml(&source),
+            InterpolatedBody::Mjml(source) => {
+                let opts = ParserOptions {
+                    include_loader: Box::new(ArcLoader(Arc::clone(&self.include_loader))),
+                };
+                render_mjml(&source, &opts)
+            }
         }
     }
 }
 
-fn render_mjml(source: &str) -> Result<RenderedBody, RenderError> {
-    let parsed = mrml::parse(source)
+/// Owns an `Arc` to the real loader and delegates to it.
+/// This is `'static` (no lifetime parameters) so it fits inside `ParserOptions`.
+#[derive(Debug)]
+struct ArcLoader(Arc<dyn IncludeLoader + Send + Sync>);
+
+impl IncludeLoader for ArcLoader {
+    fn resolve(&self, path: &str) -> Result<String, IncludeLoaderError> {
+        self.0.resolve(path)
+    }
+}
+
+fn render_mjml(source: &str, opts: &ParserOptions) -> Result<RenderedBody, RenderError> {
+    let parsed = mrml::parse_with_options(source, opts)
         .context("failed to parse mjml")
         .map_err(|source| RenderError::Mjml { source })?;
 
-    let opts = mrml::prelude::render::RenderOptions::default();
+    let render_opts = mrml::prelude::render::RenderOptions::default();
     let html = parsed
         .element
-        .render(&opts)
+        .render(&render_opts)
         .context("failed to render mjml")
         .map_err(|source| RenderError::Mjml { source })?;
 
@@ -49,12 +72,17 @@ fn render_mjml(source: &str) -> Result<RenderedBody, RenderError> {
 mod tests {
     use catapulte_domain::entity::body::{InterpolatedBody, Plain};
     use catapulte_domain::port::template_renderer::{RenderError, TemplateRenderer};
+    use mrml::prelude::parser::noop_loader::NoopIncludeLoader;
 
     use super::MjmlRenderer;
 
+    fn noop_renderer() -> MjmlRenderer {
+        MjmlRenderer::new(Box::new(NoopIncludeLoader))
+    }
+
     #[test]
     fn render_plain_pass_through_text_only() {
-        let renderer = MjmlRenderer::new();
+        let renderer = noop_renderer();
         let plain = Plain::try_new(Some("hi".to_string()), None).unwrap();
         let body = InterpolatedBody::Plain(plain);
         let result = renderer.render(body).unwrap();
@@ -65,7 +93,7 @@ mod tests {
 
     #[test]
     fn render_plain_pass_through_both() {
-        let renderer = MjmlRenderer::new();
+        let renderer = noop_renderer();
         let plain =
             Plain::try_new(Some("text".to_string()), Some("<p>html</p>".to_string())).unwrap();
         let body = InterpolatedBody::Plain(plain);
@@ -77,7 +105,7 @@ mod tests {
 
     #[test]
     fn render_mjml_with_preview_produces_text_and_html() {
-        let renderer = MjmlRenderer::new();
+        let renderer = noop_renderer();
         let source = r"<mjml>
   <mj-head>
     <mj-preview>preview text</mj-preview>
@@ -101,7 +129,7 @@ mod tests {
 
     #[test]
     fn render_mjml_without_preview_produces_html_only() {
-        let renderer = MjmlRenderer::new();
+        let renderer = noop_renderer();
         let source = r"<mjml>
   <mj-body>
     <mj-section>
@@ -122,9 +150,87 @@ mod tests {
 
     #[test]
     fn render_invalid_mjml_returns_render_error() {
-        let renderer = MjmlRenderer::new();
+        let renderer = noop_renderer();
         let body = InterpolatedBody::Mjml("<not mjml".to_string());
         let result = renderer.render(body);
         assert!(matches!(result, Err(RenderError::Mjml { .. })));
+    }
+
+    #[test]
+    fn render_with_local_include_resolves() {
+        use mrml::prelude::parser::local_loader::LocalIncludeLoader;
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize so the starts_with check inside LocalIncludeLoader
+        // works even on macOS where /var is a symlink to /private/var.
+        let root = dir.path().canonicalize().unwrap();
+        let header_path = root.join("header.mjml");
+        std::fs::File::create(&header_path)
+            .unwrap()
+            .write_all(b"<mj-text>Hello include</mj-text>")
+            .unwrap();
+
+        let loader = LocalIncludeLoader::new(root);
+        let renderer = MjmlRenderer::new(Box::new(loader));
+
+        let source = r#"<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-include path="file:///header.mjml" />
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>"#;
+        let body = InterpolatedBody::Mjml(source.to_string());
+        let result = renderer.render(body).unwrap();
+        let html = result.into_plain().html().unwrap().to_string();
+        assert!(
+            html.contains("Hello include"),
+            "expected 'Hello include' in rendered HTML, got: {html}"
+        );
+    }
+
+    #[test]
+    fn render_with_local_include_path_traversal_fails() {
+        use mrml::prelude::parser::local_loader::LocalIncludeLoader;
+
+        let dir = tempfile::tempdir().unwrap();
+        let loader = LocalIncludeLoader::new(dir.path().to_path_buf());
+        let renderer = MjmlRenderer::new(Box::new(loader));
+
+        let source = r#"<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-include path="file:///../etc/passwd" />
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>"#;
+        let body = InterpolatedBody::Mjml(source.to_string());
+        let result = renderer.render(body);
+        assert!(matches!(result, Err(RenderError::Mjml { .. })));
+    }
+
+    #[test]
+    fn render_without_include_loader_errors_on_mj_include() {
+        let renderer = noop_renderer();
+        let source = r#"<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-include path="file:///some.mjml" />
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>"#;
+        let body = InterpolatedBody::Mjml(source.to_string());
+        let result = renderer.render(body);
+        assert!(
+            matches!(result, Err(RenderError::Mjml { .. })),
+            "expected RenderError from noop loader, got Ok"
+        );
     }
 }
