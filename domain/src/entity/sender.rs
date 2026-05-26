@@ -65,6 +65,7 @@ pub struct SenderQuota {
 pub struct SenderConfig {
     pub name: SenderName,
     pub quota: Option<SenderQuota>,
+    pub match_sender_domain: Option<String>,
 }
 
 #[cfg(test)]

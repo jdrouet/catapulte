@@ -127,6 +127,7 @@ impl AppConfig {
             .map(|e| catapulte_domain::entity::sender::SenderConfig {
                 name: e.name.clone(),
                 quota: e.quota.clone(),
+                match_sender_domain: e.match_sender_domain.clone(),
             })
             .collect();
         let routes: Vec<
@@ -140,6 +141,7 @@ impl AppConfig {
                     name: e.name,
                     priority: e.priority,
                     quota: e.quota,
+                    match_sender_domain: e.match_sender_domain,
                     transport: e.transport,
                 },
             )

@@ -3,7 +3,9 @@ use catapulte_domain::port::attachment_store::AttachmentStore;
 use catapulte_domain::port::email_queue::{AckToken, EmailQueue};
 use catapulte_domain::port::email_repository::EmailRepository;
 use catapulte_domain::port::event_publisher::EventPublisher;
-use catapulte_domain::use_case::process_queued_email::ProcessQueuedEmailUseCase;
+use catapulte_domain::use_case::process_queued_email::{
+    ProcessQueuedEmailError, ProcessQueuedEmailUseCase,
+};
 
 const MAX_ATTEMPTS: u32 = 3;
 
@@ -141,7 +143,9 @@ async fn process_one<S: WorkerState>(
             );
             let reason = e.to_string();
             let sender_name = e.sender_name().cloned();
-            let event = if attempt >= MAX_ATTEMPTS {
+            let is_terminal = matches!(&e, ProcessQueuedEmailError::Send(s) if !s.is_transient())
+                || attempt >= MAX_ATTEMPTS;
+            let event = if is_terminal {
                 if let Err(ack_err) = state.email_queue().ack(token).await {
                     tracing::error!(error = %ack_err, "failed to ack permanently failed email");
                     return;
@@ -667,6 +671,109 @@ mod tests {
         assert!(
             set_pos < delete_pos,
             "set_attachments must be called before delete, got ops: {ops:?}"
+        );
+    }
+
+    struct NoMatchingRouteProcessor;
+
+    impl ProcessQueuedEmailUseCase for NoMatchingRouteProcessor {
+        async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+            Err(ProcessQueuedEmailError::Send(
+                catapulte_domain::port::email_sender::SendError::NoMatchingRoute {
+                    sender_domain: "example.com".to_owned(),
+                },
+            ))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct TrackingQueue {
+        acked: Arc<Mutex<u32>>,
+        nacked: Arc<Mutex<u32>>,
+    }
+
+    impl EmailQueue for TrackingQueue {
+        async fn enqueue(&self, _: EmailId, _: &Envelope) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
+            std::future::pending().await
+        }
+
+        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
+            *self.acked.lock().unwrap() += 1;
+            Ok(())
+        }
+
+        async fn nack(&self, _: AckToken, _: Duration) -> Result<(), EmailQueueError> {
+            *self.nacked.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct NoMatchingRouteState {
+        queue: TrackingQueue,
+        publisher: RecordingPublisher,
+    }
+
+    impl WorkerState for NoMatchingRouteState {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &NoMatchingRouteProcessor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &self.queue
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &self.publisher
+        }
+
+        fn attachment_store(&self) -> &impl AttachmentStore {
+            &NoopStore
+        }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            &NoopRepository
+        }
+    }
+
+    #[tokio::test]
+    async fn non_transient_send_error_fails_immediately_without_retry() {
+        let queue = TrackingQueue::default();
+        let publisher = RecordingPublisher::default();
+        let state = NoMatchingRouteState {
+            queue: queue.clone(),
+            publisher: publisher.clone(),
+        };
+
+        let id = EmailId::default();
+        let token = AckToken::new(vec![0u8; 8]);
+
+        // attempt = 1, well below MAX_ATTEMPTS=3, so only the non-transient check drives failure
+        process_one(&state, id, sample_envelope(), 1, token).await;
+
+        assert_eq!(
+            *queue.acked.lock().unwrap(),
+            1,
+            "non-transient error must ack (not nack) even on first attempt"
+        );
+        assert_eq!(
+            *queue.nacked.lock().unwrap(),
+            0,
+            "non-transient error must not nack"
+        );
+
+        let events = publisher.events.lock().unwrap();
+        assert!(
+            events.contains(&"failed"),
+            "expected 'failed' lifecycle event, got: {events:?}"
+        );
+        assert!(
+            !events.contains(&"retrying"),
+            "must not emit 'retrying' for non-transient error"
         );
     }
 }

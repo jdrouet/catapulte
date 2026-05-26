@@ -27,6 +27,7 @@ pub async fn list_senders<S: HttpServerState>(
                 sent_in_range: u.sent_in_range,
                 failed_in_range: u.failed_in_range,
                 quota: quota_dto,
+                match_sender_domain: u.config.match_sender_domain.clone(),
             }
         })
         .collect();
@@ -202,6 +203,7 @@ mod tests {
             config: SenderConfig {
                 name: name.clone(),
                 quota: None,
+                match_sender_domain: None,
             },
             sent_in_range: 42,
             failed_in_range: 3,
@@ -232,6 +234,7 @@ mod tests {
                     count: 1000,
                     range: QuotaRange::Daily,
                 }),
+                match_sender_domain: None,
             },
             sent_in_range: 0,
             failed_in_range: 0,

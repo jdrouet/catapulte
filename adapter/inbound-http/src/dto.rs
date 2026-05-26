@@ -766,6 +766,8 @@ pub struct SenderDto {
     pub sent_in_range: u64,
     pub failed_in_range: u64,
     pub quota: Option<SenderQuotaDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_sender_domain: Option<String>,
 }
 
 #[derive(Serialize)]

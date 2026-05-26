@@ -175,6 +175,7 @@ mod tests {
         SenderConfig {
             name: SenderName::new(name),
             quota: None,
+            match_sender_domain: None,
         }
     }
 
@@ -182,6 +183,7 @@ mod tests {
         SenderConfig {
             name: SenderName::new(name),
             quota: Some(SenderQuota { count: 100, range }),
+            match_sender_domain: None,
         }
     }
 

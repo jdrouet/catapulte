@@ -33,10 +33,15 @@ impl SenderUsage for NoopSenderUsage {
     }
 }
 
+fn normalize_domain(s: &str) -> String {
+    s.trim_end_matches('.').to_ascii_lowercase()
+}
+
 pub struct SenderRoute<T> {
     pub name: SenderName,
     pub priority: u8,
     pub quota: Option<SenderQuota>,
+    pub match_sender_domain: Option<String>,
     pub transport: T,
 }
 
@@ -58,6 +63,11 @@ impl<T, U, C> RoutedEmailSender<T, U, C> {
         if routes.is_empty() {
             return Err(RoutedEmailSenderError::EmptyRoutes);
         }
+        for route in &mut routes {
+            if let Some(d) = &route.match_sender_domain {
+                route.match_sender_domain = Some(normalize_domain(d));
+            }
+        }
         routes.sort_by_key(|r| r.priority);
         Ok(Self {
             routes,
@@ -75,19 +85,51 @@ where
 {
     /// Sends `email` through the highest-priority eligible sender.
     ///
-    /// First pass: senders whose quota is exhausted are skipped. If the usage
-    /// port is unavailable the error is logged and every sender is treated as
-    /// eligible (fail-open). Second pass: if every sender was over-quota in
-    /// the first pass, the quota check is bypassed so delivery still succeeds.
+    /// Candidates are ordered: domain-matched routes first (by priority), then
+    /// catch-all routes (by priority). First pass: senders whose quota is
+    /// exhausted are skipped. If the usage port is unavailable the error is
+    /// logged and every sender is treated as eligible (fail-open). Second pass:
+    /// if every sender was over-quota in the first pass, the quota check is
+    /// bypassed so delivery still succeeds.
     ///
     /// # Errors
     ///
-    /// Returns `SendError::Send` when all attempted senders fail to deliver.
+    /// Returns `SendError::NoMatchingRoute` when no route matches the sender
+    /// domain and there are no catch-all routes. Returns `SendError::Send` when
+    /// all attempted senders fail to deliver.
     async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
+        let sender_domain = email
+            .sender
+            .rsplit_once('@')
+            .map(|(_, domain)| normalize_domain(domain))
+            .unwrap_or_default();
+
+        // Build ordered candidate list: domain-matched first, then catch-alls.
+        // self.routes is already sorted by priority from construction.
+        // match_sender_domain values are pre-normalized in RoutedEmailSender::new.
+        let candidates: Vec<&SenderRoute<T>> = self
+            .routes
+            .iter()
+            .filter(|r| {
+                r.match_sender_domain
+                    .as_ref()
+                    .is_some_and(|d| d == &sender_domain)
+            })
+            .chain(
+                self.routes
+                    .iter()
+                    .filter(|r| r.match_sender_domain.is_none()),
+            )
+            .collect();
+
+        if candidates.is_empty() {
+            return Err(SendError::NoMatchingRoute { sender_domain });
+        }
+
         let now_ms = self.clock.now_ms();
 
         let mut since_ms_to_names: HashMap<i64, Vec<SenderName>> = HashMap::new();
-        for route in &self.routes {
+        for route in &candidates {
             if let Some(quota) = &route.quota {
                 let since_ms = quota.range.since_ms(now_ms);
                 since_ms_to_names
@@ -116,7 +158,7 @@ where
 
         let mut last_err: Option<SendError> = None;
 
-        for route in &self.routes {
+        for route in &candidates {
             let over_quota = route
                 .quota
                 .as_ref()
@@ -139,7 +181,7 @@ where
             return Err(err);
         }
 
-        for route in &self.routes {
+        for route in &candidates {
             match route.transport.deliver(&email).await {
                 Ok(()) => return Ok(route.name.clone()),
                 Err(err) => {
@@ -151,7 +193,7 @@ where
             }
         }
 
-        Err(last_err.unwrap_or_else(|| unreachable!("non-empty routes guarantee an error")))
+        Err(last_err.unwrap_or_else(|| unreachable!("non-empty candidates guarantee an error")))
     }
 }
 
@@ -190,6 +232,7 @@ mod tests {
             name: SenderName::new(name),
             priority,
             quota,
+            match_sender_domain: None,
             transport: FakeTransport::Ok,
         }
     }
@@ -203,6 +246,31 @@ mod tests {
             name: SenderName::new(name),
             priority,
             quota,
+            match_sender_domain: None,
+            transport: FakeTransport::Fail,
+        }
+    }
+
+    fn ok_route_with_domain(name: &str, priority: u8, domain: &str) -> SenderRoute<FakeTransport> {
+        SenderRoute {
+            name: SenderName::new(name),
+            priority,
+            quota: None,
+            match_sender_domain: Some(domain.to_owned()),
+            transport: FakeTransport::Ok,
+        }
+    }
+
+    fn fail_route_with_domain(
+        name: &str,
+        priority: u8,
+        domain: &str,
+    ) -> SenderRoute<FakeTransport> {
+        SenderRoute {
+            name: SenderName::new(name),
+            priority,
+            quota: None,
+            match_sender_domain: Some(domain.to_owned()),
             transport: FakeTransport::Fail,
         }
     }
@@ -286,7 +354,10 @@ mod tests {
         .unwrap();
         let result = sender.send(make_email()).await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().sender_name().as_str(), "second");
+        assert_eq!(
+            result.unwrap_err().sender_name().unwrap().as_str(),
+            "second"
+        );
     }
 
     #[tokio::test]
@@ -393,5 +464,142 @@ mod tests {
         .unwrap();
         let result = sender.send(make_email()).await;
         assert_eq!(result.unwrap().as_str(), "primary");
+    }
+
+    fn make_email_from(sender: &str) -> OutboundEmail {
+        OutboundEmail {
+            sender: sender.to_owned(),
+            subject: None,
+            recipients: vec![],
+            body: RenderedBody::new(
+                Plain::try_new(None, Some("<p>hi</p>".into())).expect("valid body"),
+            ),
+            attachments: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn domain_matched_route_picked_over_catch_all() {
+        let sender = RoutedEmailSender::new(
+            vec![
+                ok_route_with_domain("transactional", 1, "acme.com"),
+                ok_route("catchall", 2, None),
+            ],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+        let result = sender.send(make_email_from("foo@acme.com")).await;
+        assert_eq!(result.unwrap().as_str(), "transactional");
+    }
+
+    #[tokio::test]
+    async fn mismatching_sender_uses_catch_all() {
+        let sender = RoutedEmailSender::new(
+            vec![
+                ok_route_with_domain("transactional", 1, "acme.com"),
+                ok_route("catchall", 2, None),
+            ],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+        let result = sender.send(make_email_from("foo@other.com")).await;
+        assert_eq!(result.unwrap().as_str(), "catchall");
+    }
+
+    #[tokio::test]
+    async fn domain_match_is_case_insensitive() {
+        let sender = RoutedEmailSender::new(
+            vec![
+                ok_route_with_domain("transactional", 1, "Acme.COM"),
+                ok_route("catchall", 2, None),
+            ],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+        let result = sender.send(make_email_from("foo@acme.com")).await;
+        assert_eq!(result.unwrap().as_str(), "transactional");
+    }
+
+    #[tokio::test]
+    async fn no_matching_or_catch_all_returns_no_matching_route() {
+        use crate::port::email_sender::SendError;
+        let sender = RoutedEmailSender::new(
+            vec![ok_route_with_domain("transactional", 1, "acme.com")],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+        let result = sender.send(make_email_from("foo@other.com")).await;
+        assert!(
+            matches!(result, Err(SendError::NoMatchingRoute { .. })),
+            "expected NoMatchingRoute, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn matched_route_failure_falls_back_to_catch_all() {
+        let sender = RoutedEmailSender::new(
+            vec![
+                fail_route_with_domain("transactional", 1, "acme.com"),
+                ok_route("catchall", 2, None),
+            ],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+        let result = sender.send(make_email_from("foo@acme.com")).await;
+        assert_eq!(result.unwrap().as_str(), "catchall");
+    }
+
+    #[tokio::test]
+    async fn multiple_matched_routes_respect_priority() {
+        let sender = RoutedEmailSender::new(
+            vec![
+                ok_route_with_domain("high", 1, "acme.com"),
+                ok_route_with_domain("low", 2, "acme.com"),
+            ],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+        let result = sender.send(make_email_from("foo@acme.com")).await;
+        assert_eq!(result.unwrap().as_str(), "high");
+    }
+
+    #[tokio::test]
+    async fn domain_match_strips_trailing_dot() {
+        let sender = RoutedEmailSender::new(
+            vec![
+                ok_route_with_domain("transactional", 1, "acme.com"),
+                ok_route("catchall", 2, None),
+            ],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+        let result = sender.send(make_email_from("foo@acme.com.")).await;
+        assert_eq!(result.unwrap().as_str(), "transactional");
+    }
+
+    #[test]
+    fn is_transient_send_is_true() {
+        use crate::port::email_sender::SendError;
+        let err = SendError::Send {
+            sender_name: SenderName::new("x"),
+            source: anyhow::anyhow!("oops"),
+        };
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn is_transient_no_matching_route_is_false() {
+        use crate::port::email_sender::SendError;
+        let err = SendError::NoMatchingRoute {
+            sender_domain: "example.com".to_owned(),
+        };
+        assert!(!err.is_transient());
     }
 }

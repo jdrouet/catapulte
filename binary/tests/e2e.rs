@@ -904,3 +904,193 @@ async fn submit_email_with_disallowed_remote_attachment_returns_400() {
 
     drop(attachment_dir);
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn multi_sender_routes_by_sender_domain() {
+    let mailpit = start_mailpit().await;
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_domain_routing.db");
+    let http_port = free_port();
+
+    // transactional: priority 1, only matches transactional.example.com
+    // marketing: priority 2, catch-all (no domain restriction)
+    let smtp = MultiSenderConfig::empty()
+        .with_sender_domain(
+            "transactional",
+            SmtpConfig {
+                host: "127.0.0.1".to_owned(),
+                port: smtp_port,
+                username: None,
+                password: None,
+                tls: SmtpTls::None,
+            },
+            1,
+            None,
+            Some("transactional.example.com".to_owned()),
+        )
+        .with_sender_domain(
+            "marketing",
+            SmtpConfig {
+                host: "127.0.0.1".to_owned(),
+                port: smtp_port,
+                username: None,
+                password: None,
+                tls: SmtpTls::None,
+            },
+            2,
+            None,
+            None,
+        );
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+        },
+        inbound_nats: None,
+        smtp,
+        resolver: base_resolver(),
+        worker: WorkerConfig {},
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
+        attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Submit email from the transactional domain — should be handled by transactional sender.
+    let resp1 = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&serde_json::json!({
+            "sender": "noreply@transactional.example.com",
+            "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+            "body": { "kind": "plain", "text": "transactional domain routing test" },
+            "variables": {}
+        }))
+        .send()
+        .await
+        .expect("POST /emails failed");
+    assert!(
+        resp1.status().is_success(),
+        "POST failed: {}",
+        resp1.status()
+    );
+    let body1: serde_json::Value = resp1.json().await.unwrap();
+    let id1 = body1["id"].as_str().expect("id missing").to_owned();
+
+    // Submit email from a non-matched domain — should fall through to marketing (catch-all).
+    let resp2 = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&serde_json::json!({
+            "sender": "bulk@other-domain.example.com",
+            "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+            "body": { "kind": "plain", "text": "marketing domain routing test" },
+            "variables": {}
+        }))
+        .send()
+        .await
+        .expect("POST /emails failed");
+    assert!(
+        resp2.status().is_success(),
+        "POST failed: {}",
+        resp2.status()
+    );
+    let body2: serde_json::Value = resp2.json().await.unwrap();
+    let id2 = body2["id"].as_str().expect("id missing").to_owned();
+
+    // Wait for both emails to arrive in mailpit.
+    let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
+    for _ in 0..100 {
+        if let Ok(body) = client
+            .get(&messages_url)
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            && body["messages"].as_array().is_some_and(|a| a.len() >= 2)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Wait for both sent events.
+    for id in [&id1, &id2] {
+        let events_url = format!("http://127.0.0.1:{http_port}/emails/{id}/events");
+        let mut found_sent = false;
+        for _ in 0..100 {
+            if let Ok(resp) = client.get(&events_url).send().await
+                && let Ok(body) = resp.json::<serde_json::Value>().await
+            {
+                let events = body["events"].as_array().cloned().unwrap_or_default();
+                if events
+                    .iter()
+                    .any(|e| e["event_type"].as_str() == Some("sent"))
+                {
+                    found_sent = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(found_sent, "no 'sent' event for email {id}");
+    }
+
+    // Check /senders: transactional should have sent_in_range==1, marketing==1.
+    let senders_resp = client
+        .get(format!("http://127.0.0.1:{http_port}/senders"))
+        .send()
+        .await
+        .expect("GET /senders failed");
+    assert_eq!(senders_resp.status(), 200);
+    let senders_body: serde_json::Value = senders_resp.json().await.unwrap();
+    let senders = senders_body["senders"].as_array().expect("senders array");
+
+    let transactional = senders
+        .iter()
+        .find(|s| s["name"].as_str() == Some("transactional"))
+        .expect("transactional sender not found");
+    let marketing = senders
+        .iter()
+        .find(|s| s["name"].as_str() == Some("marketing"))
+        .expect("marketing sender not found");
+
+    assert_eq!(
+        transactional["sent_in_range"].as_u64(),
+        Some(1),
+        "transactional should have sent_in_range == 1"
+    );
+    assert_eq!(
+        marketing["sent_in_range"].as_u64(),
+        Some(1),
+        "marketing should have sent_in_range == 1"
+    );
+}

@@ -9,6 +9,7 @@ pub struct SmtpTransportEntry {
     pub name: SenderName,
     pub priority: u8,
     pub quota: Option<SenderQuota>,
+    pub match_sender_domain: Option<String>,
     pub transport: SmtpTransport,
 }
 
@@ -17,6 +18,7 @@ struct SingleSenderConfig {
     smtp: SmtpConfig,
     priority: u8,
     quota: Option<SenderQuota>,
+    match_sender_domain: Option<String>,
 }
 
 /// Configuration for a collection of SMTP senders.
@@ -48,6 +50,7 @@ impl MultiSenderConfig {
                 smtp,
                 priority: 100,
                 quota: None,
+                match_sender_domain: None,
             }],
         }
     }
@@ -73,6 +76,28 @@ impl MultiSenderConfig {
             smtp,
             priority,
             quota,
+            match_sender_domain: None,
+        });
+        self.senders.sort_by_key(|s| s.priority);
+        self
+    }
+
+    /// Like `with_sender` but also sets `match_sender_domain`.
+    #[must_use]
+    pub fn with_sender_domain(
+        mut self,
+        name: impl Into<String>,
+        smtp: SmtpConfig,
+        priority: u8,
+        quota: Option<SenderQuota>,
+        match_sender_domain: Option<String>,
+    ) -> Self {
+        self.senders.push(SingleSenderConfig {
+            name: SenderName::new(name),
+            smtp,
+            priority,
+            quota,
+            match_sender_domain,
         });
         self.senders.sort_by_key(|s| s.priority);
         self
@@ -107,11 +132,16 @@ impl MultiSenderConfig {
                     &format!("{prefix}_PRIORITY"),
                 )?;
                 let quota = parse_quota(&prefix, &lookup)?;
+                let match_sender_domain = lookup(&format!("{prefix}_MATCH_DOMAIN"))
+                    .ok()
+                    .map(|v| v.trim().to_owned())
+                    .filter(|v| !v.is_empty());
                 Ok(SingleSenderConfig {
                     name: SenderName::new(raw_name),
                     smtp,
                     priority,
                     quota,
+                    match_sender_domain,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -133,6 +163,7 @@ impl MultiSenderConfig {
                     name: cfg.name,
                     priority: cfg.priority,
                     quota: cfg.quota,
+                    match_sender_domain: cfg.match_sender_domain,
                     transport,
                 })
             })
@@ -262,5 +293,40 @@ mod tests {
         let quota = config.senders[0].quota.as_ref().unwrap();
         assert_eq!(quota.count, 500);
         assert_eq!(quota.range, QuotaRange::Daily);
+    }
+
+    #[test]
+    fn match_domain_parsed_correctly() {
+        let mut vars = HashMap::new();
+        vars.insert("CATAPULTE_SENDERS", "transactional");
+        vars.insert("CATAPULTE_SENDER_TRANSACTIONAL_HOST", "smtp.example.com");
+        vars.insert(
+            "CATAPULTE_SENDER_TRANSACTIONAL_MATCH_DOMAIN",
+            "invoices.acme.com",
+        );
+        let config = MultiSenderConfig::from_lookup(make_lookup(vars)).unwrap();
+        assert_eq!(
+            config.senders[0].match_sender_domain.as_deref(),
+            Some("invoices.acme.com")
+        );
+    }
+
+    #[test]
+    fn empty_match_domain_is_treated_as_none() {
+        let mut vars = HashMap::new();
+        vars.insert("CATAPULTE_SENDERS", "primary");
+        vars.insert("CATAPULTE_SENDER_PRIMARY_HOST", "smtp.example.com");
+        vars.insert("CATAPULTE_SENDER_PRIMARY_MATCH_DOMAIN", "  ");
+        let config = MultiSenderConfig::from_lookup(make_lookup(vars)).unwrap();
+        assert!(config.senders[0].match_sender_domain.is_none());
+    }
+
+    #[test]
+    fn absent_match_domain_is_none() {
+        let mut vars = HashMap::new();
+        vars.insert("CATAPULTE_SENDERS", "primary");
+        vars.insert("CATAPULTE_SENDER_PRIMARY_HOST", "smtp.example.com");
+        let config = MultiSenderConfig::from_lookup(make_lookup(vars)).unwrap();
+        assert!(config.senders[0].match_sender_domain.is_none());
     }
 }

@@ -38,7 +38,7 @@ impl ProcessQueuedEmailError {
     #[must_use]
     pub fn sender_name(&self) -> Option<&SenderName> {
         match self {
-            Self::Send(e) => Some(e.sender_name()),
+            Self::Send(e) => e.sender_name(),
             _ => None,
         }
     }
