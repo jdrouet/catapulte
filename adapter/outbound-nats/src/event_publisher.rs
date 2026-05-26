@@ -43,12 +43,14 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
         ),
         LifecycleEvent::Failed {
             id,
+            attempt,
             reason,
             sender_name,
         } => (
             "failed",
             id,
             serde_json::json!({
+                "attempt": attempt,
                 "reason": reason,
                 "sender_name": sender_name.as_ref().map(SenderName::as_str),
             }),

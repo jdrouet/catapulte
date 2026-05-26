@@ -43,12 +43,14 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
         ),
         LifecycleEvent::Failed {
             id,
+            attempt,
             reason,
             sender_name,
         } => (
             "failed",
             id,
             serde_json::json!({
+                "attempt": attempt,
                 "reason": reason,
                 "sender_name": sender_name.as_ref().map(SenderName::as_str),
             }),
@@ -202,5 +204,35 @@ mod tests {
         let id = EmailId::default();
         let result = publisher.publish(&LifecycleEvent::Queued { id }).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn publish_failed_includes_attempt_in_payload() {
+        use catapulte_domain::entity::sender::SenderName;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let publisher = publisher_for(&server).await;
+        let id = EmailId::default();
+        publisher
+            .publish(&LifecycleEvent::Failed {
+                id,
+                attempt: 3,
+                reason: "smtp error".to_owned(),
+                sender_name: Some(SenderName::new("test")),
+            })
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["payload"]["attempt"], 3);
     }
 }

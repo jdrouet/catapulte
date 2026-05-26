@@ -138,6 +138,7 @@ async fn process_one<S: WorkerState>(
                 }
                 LifecycleEvent::Failed {
                     id,
+                    attempt,
                     reason,
                     sender_name,
                 }

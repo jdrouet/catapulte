@@ -457,6 +457,7 @@ mod tests {
         adapter
             .publish(&LifecycleEvent::Failed {
                 id,
+                attempt: 3,
                 reason: "err".into(),
                 sender_name: Some(SenderName::new("test")),
             })
@@ -890,6 +891,7 @@ mod tests {
         adapter
             .publish(&LifecycleEvent::Failed {
                 id: id4,
+                attempt: 3,
                 reason: "err".into(),
                 sender_name: None,
             })

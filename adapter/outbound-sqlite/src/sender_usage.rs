@@ -138,6 +138,7 @@ mod tests {
         adapter
             .publish(&LifecycleEvent::Failed {
                 id: id1,
+                attempt: 3,
                 reason: "err".to_owned(),
                 sender_name: Some(SenderName::new("backup")),
             })

@@ -22,6 +22,7 @@ pub enum LifecycleEvent {
     },
     Failed {
         id: EmailId,
+        attempt: u32,
         reason: String,
         sender_name: Option<SenderName>,
     },

@@ -36,12 +36,13 @@ impl EventPublisher for SqliteAdapter {
             ),
             LifecycleEvent::Failed {
                 id,
+                attempt,
                 reason,
                 sender_name,
             } => (
                 id.as_uuid(),
                 "failed",
-                Some(serde_json::json!({ "reason": reason })),
+                Some(serde_json::json!({ "attempt": attempt, "reason": reason })),
                 sender_name.as_ref().map(|s| s.as_str().to_owned()),
             ),
         };
@@ -108,6 +109,7 @@ mod tests {
         adapter
             .publish(&LifecycleEvent::Failed {
                 id,
+                attempt: 3,
                 reason: "smtp error".to_owned(),
                 sender_name: Some(SenderName::new("test")),
             })
@@ -125,7 +127,9 @@ mod tests {
                 .fetch_one(adapter.pool())
                 .await
                 .unwrap();
-        assert_eq!(payload.unwrap().0["reason"], "smtp error");
+        let p = payload.unwrap().0;
+        assert_eq!(p["reason"], "smtp error");
+        assert_eq!(p["attempt"], 3);
     }
 
     #[tokio::test]
