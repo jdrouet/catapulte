@@ -45,6 +45,8 @@ pub struct SubmitEmailRequest {
     #[serde(default)]
     pub idempotency_key: Option<String>,
     #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default)]
     pub subject: Option<String>,
     pub sender: String,
     pub recipients: Vec<RecipientDto>,
@@ -220,6 +222,7 @@ impl SubmitEmailRequest {
 
         Ok(SubmitEmailInput {
             idempotency_key: self.idempotency_key,
+            correlation_id: self.correlation_id,
             subject: self.subject,
             sender: self.sender,
             recipients,
@@ -235,6 +238,8 @@ impl SubmitEmailRequest {
 pub struct EnvelopeCoreDto {
     #[serde(default)]
     pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
     #[serde(default)]
     pub subject: Option<String>,
     pub sender: String,
@@ -259,6 +264,7 @@ impl EnvelopeCoreDto {
         let body = self.body.try_into()?;
         Ok(SubmitEmailInput {
             idempotency_key: self.idempotency_key,
+            correlation_id: self.correlation_id,
             subject: self.subject,
             sender: self.sender,
             recipients,
@@ -318,6 +324,7 @@ mod tests {
     fn base_request() -> SubmitEmailRequest {
         SubmitEmailRequest {
             idempotency_key: None,
+            correlation_id: None,
             subject: None,
             sender: "a@b.c".into(),
             recipients: vec![RecipientDto {

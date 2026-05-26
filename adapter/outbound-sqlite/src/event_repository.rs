@@ -98,6 +98,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            correlation_id: None,
             subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![],
@@ -139,11 +140,17 @@ mod tests {
         adapter.save(id1, &sample_envelope()).await.unwrap();
         adapter.save(id2, &sample_envelope()).await.unwrap();
         adapter
-            .publish(&LifecycleEvent::Queued { id: id1 })
+            .publish(&LifecycleEvent::Queued {
+                id: id1,
+                correlation_id: None,
+            })
             .await
             .unwrap();
         adapter
-            .publish(&LifecycleEvent::Queued { id: id2 })
+            .publish(&LifecycleEvent::Queued {
+                id: id2,
+                correlation_id: None,
+            })
             .await
             .unwrap();
 
@@ -163,13 +170,17 @@ mod tests {
         let id = EmailId::default();
         let adapter = adapter_with_email(id).await;
         adapter
-            .publish(&LifecycleEvent::Queued { id })
+            .publish(&LifecycleEvent::Queued {
+                id,
+                correlation_id: None,
+            })
             .await
             .unwrap();
         adapter
             .publish(&LifecycleEvent::Sent {
                 id,
                 sender_name: SenderName::new("test"),
+                correlation_id: None,
             })
             .await
             .unwrap();
@@ -191,7 +202,10 @@ mod tests {
         let adapter = adapter_with_email(id).await;
         for _ in 0..5 {
             adapter
-                .publish(&LifecycleEvent::Queued { id })
+                .publish(&LifecycleEvent::Queued {
+                    id,
+                    correlation_id: None,
+                })
                 .await
                 .unwrap();
         }
@@ -226,13 +240,17 @@ mod tests {
         let id = EmailId::default();
         let adapter = adapter_with_email(id).await;
         adapter
-            .publish(&LifecycleEvent::Queued { id })
+            .publish(&LifecycleEvent::Queued {
+                id,
+                correlation_id: None,
+            })
             .await
             .unwrap();
         adapter
             .publish(&LifecycleEvent::Sent {
                 id,
                 sender_name: SenderName::new("test"),
+                correlation_id: None,
             })
             .await
             .unwrap();

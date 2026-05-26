@@ -18,20 +18,38 @@ impl WebhookPublisher {
 
 fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
     let (event_type, email_id, extra) = match event {
-        LifecycleEvent::Queued { id } => ("queued", id, serde_json::json!({})),
-        LifecycleEvent::Sending { id, attempt } => {
-            ("sending", id, serde_json::json!({ "attempt": attempt }))
-        }
-        LifecycleEvent::Sent { id, sender_name } => (
+        LifecycleEvent::Queued { id, correlation_id } => (
+            "queued",
+            id,
+            serde_json::json!({ "correlation_id": correlation_id }),
+        ),
+        LifecycleEvent::Sending {
+            id,
+            attempt,
+            correlation_id,
+        } => (
+            "sending",
+            id,
+            serde_json::json!({ "attempt": attempt, "correlation_id": correlation_id }),
+        ),
+        LifecycleEvent::Sent {
+            id,
+            sender_name,
+            correlation_id,
+        } => (
             "sent",
             id,
-            serde_json::json!({ "sender_name": sender_name.as_str() }),
+            serde_json::json!({
+                "sender_name": sender_name.as_str(),
+                "correlation_id": correlation_id,
+            }),
         ),
         LifecycleEvent::Retrying {
             id,
             attempt,
             reason,
             sender_name,
+            correlation_id,
         } => (
             "retrying",
             id,
@@ -39,6 +57,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
                 "attempt": attempt,
                 "reason": reason,
                 "sender_name": sender_name.as_ref().map(SenderName::as_str),
+                "correlation_id": correlation_id,
             }),
         ),
         LifecycleEvent::Failed {
@@ -46,6 +65,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
             attempt,
             reason,
             sender_name,
+            correlation_id,
         } => (
             "failed",
             id,
@@ -53,6 +73,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
                 "attempt": attempt,
                 "reason": reason,
                 "sender_name": sender_name.as_ref().map(SenderName::as_str),
+                "correlation_id": correlation_id,
             }),
         ),
     };
@@ -161,7 +182,10 @@ mod tests {
         let publisher = publisher_for(&server).await;
         let id = EmailId::default();
         publisher
-            .publish(&LifecycleEvent::Queued { id })
+            .publish(&LifecycleEvent::Queued {
+                id,
+                correlation_id: None,
+            })
             .await
             .unwrap();
 
@@ -186,7 +210,10 @@ mod tests {
         let publisher = publisher_for(&server).await;
         let id = EmailId::default();
         publisher
-            .publish(&LifecycleEvent::Queued { id })
+            .publish(&LifecycleEvent::Queued {
+                id,
+                correlation_id: None,
+            })
             .await
             .unwrap();
     }
@@ -202,12 +229,17 @@ mod tests {
 
         let publisher = publisher_for(&server).await;
         let id = EmailId::default();
-        let result = publisher.publish(&LifecycleEvent::Queued { id }).await;
+        let result = publisher
+            .publish(&LifecycleEvent::Queued {
+                id,
+                correlation_id: None,
+            })
+            .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn publish_failed_includes_attempt_in_payload() {
+    async fn publish_failed_includes_attempt_and_correlation_in_payload() {
         use catapulte_domain::entity::sender::SenderName;
 
         let server = MockServer::start().await;
@@ -226,6 +258,7 @@ mod tests {
                 attempt: 3,
                 reason: "smtp error".to_owned(),
                 sender_name: Some(SenderName::new("test")),
+                correlation_id: Some("corr-xyz".into()),
             })
             .await
             .unwrap();
@@ -234,5 +267,6 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body["payload"]["attempt"], 3);
+        assert_eq!(body["payload"]["correlation_id"], "corr-xyz");
     }
 }

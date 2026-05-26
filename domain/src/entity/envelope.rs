@@ -5,6 +5,7 @@ use crate::entity::email::RecipientKind;
 #[derive(Clone)]
 pub struct Envelope {
     pub idempotency_key: Option<String>,
+    pub correlation_id: Option<String>,
     pub subject: Option<String>,
     pub sender: String,
     pub recipients: Vec<(RecipientKind, String)>,

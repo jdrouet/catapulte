@@ -18,20 +18,38 @@ impl NatsEventPublisher {
 
 fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
     let (event_type, email_id, extra) = match event {
-        LifecycleEvent::Queued { id } => ("queued", id, serde_json::json!({})),
-        LifecycleEvent::Sending { id, attempt } => {
-            ("sending", id, serde_json::json!({ "attempt": attempt }))
-        }
-        LifecycleEvent::Sent { id, sender_name } => (
+        LifecycleEvent::Queued { id, correlation_id } => (
+            "queued",
+            id,
+            serde_json::json!({ "correlation_id": correlation_id }),
+        ),
+        LifecycleEvent::Sending {
+            id,
+            attempt,
+            correlation_id,
+        } => (
+            "sending",
+            id,
+            serde_json::json!({ "attempt": attempt, "correlation_id": correlation_id }),
+        ),
+        LifecycleEvent::Sent {
+            id,
+            sender_name,
+            correlation_id,
+        } => (
             "sent",
             id,
-            serde_json::json!({ "sender_name": sender_name.as_str() }),
+            serde_json::json!({
+                "sender_name": sender_name.as_str(),
+                "correlation_id": correlation_id,
+            }),
         ),
         LifecycleEvent::Retrying {
             id,
             attempt,
             reason,
             sender_name,
+            correlation_id,
         } => (
             "retrying",
             id,
@@ -39,6 +57,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
                 "attempt": attempt,
                 "reason": reason,
                 "sender_name": sender_name.as_ref().map(SenderName::as_str),
+                "correlation_id": correlation_id,
             }),
         ),
         LifecycleEvent::Failed {
@@ -46,6 +65,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
             attempt,
             reason,
             sender_name,
+            correlation_id,
         } => (
             "failed",
             id,
@@ -53,6 +73,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
                 "attempt": attempt,
                 "reason": reason,
                 "sender_name": sender_name.as_ref().map(SenderName::as_str),
+                "correlation_id": correlation_id,
             }),
         ),
     };

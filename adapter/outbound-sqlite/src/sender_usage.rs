@@ -93,6 +93,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            correlation_id: None,
             subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![],
@@ -125,6 +126,7 @@ mod tests {
             .publish(&LifecycleEvent::Sent {
                 id: id1,
                 sender_name: SenderName::new("primary"),
+                correlation_id: None,
             })
             .await
             .unwrap();
@@ -132,6 +134,7 @@ mod tests {
             .publish(&LifecycleEvent::Sent {
                 id: id2,
                 sender_name: SenderName::new("primary"),
+                correlation_id: None,
             })
             .await
             .unwrap();
@@ -141,6 +144,7 @@ mod tests {
                 attempt: 3,
                 reason: "err".to_owned(),
                 sender_name: Some(SenderName::new("backup")),
+                correlation_id: None,
             })
             .await
             .unwrap();
@@ -172,6 +176,7 @@ mod tests {
             .publish(&LifecycleEvent::Sent {
                 id,
                 sender_name: SenderName::new("primary"),
+                correlation_id: None,
             })
             .await
             .unwrap();

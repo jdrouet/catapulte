@@ -36,11 +36,12 @@ impl EmailRepository for SqliteAdapter {
         let recipients_dto = recipients_to_dto(&envelope.recipients);
 
         let result = sqlx::query(
-            "INSERT OR IGNORE INTO emails (id, idempotency_key, subject, sender, recipients, body, variables) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO emails (id, idempotency_key, correlation_id, subject, sender, recipients, body, variables) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id_bytes)
         .bind(envelope.idempotency_key.as_deref())
+        .bind(envelope.correlation_id.as_deref())
         .bind(envelope.subject.as_deref())
         .bind(&envelope.sender)
         .bind(Json(&recipients_dto))
@@ -326,6 +327,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            correlation_id: None,
             subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![],
@@ -456,13 +458,17 @@ mod tests {
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
         adapter
-            .publish(&LifecycleEvent::Queued { id })
+            .publish(&LifecycleEvent::Queued {
+                id,
+                correlation_id: None,
+            })
             .await
             .unwrap();
         adapter
             .publish(&LifecycleEvent::Sent {
                 id,
                 sender_name: SenderName::new("test"),
+                correlation_id: None,
             })
             .await
             .unwrap();
@@ -488,6 +494,7 @@ mod tests {
                 attempt: 3,
                 reason: "err".into(),
                 sender_name: Some(SenderName::new("test")),
+                correlation_id: None,
             })
             .await
             .unwrap();
@@ -514,7 +521,10 @@ mod tests {
         let id2 = EmailId::default();
         adapter.save(id2, &sample_envelope()).await.unwrap();
         adapter
-            .publish(&LifecycleEvent::Queued { id: id2 })
+            .publish(&LifecycleEvent::Queued {
+                id: id2,
+                correlation_id: None,
+            })
             .await
             .unwrap();
 
@@ -525,6 +535,7 @@ mod tests {
             .publish(&LifecycleEvent::Sent {
                 id: id3,
                 sender_name: SenderName::new("test"),
+                correlation_id: None,
             })
             .await
             .unwrap();
@@ -894,6 +905,7 @@ mod tests {
             .publish(&LifecycleEvent::Sent {
                 id: id3,
                 sender_name: catapulte_domain::entity::sender::SenderName::new("test"),
+                correlation_id: None,
             })
             .await
             .unwrap();
@@ -922,6 +934,7 @@ mod tests {
                 attempt: 3,
                 reason: "err".into(),
                 sender_name: None,
+                correlation_id: None,
             })
             .await
             .unwrap();

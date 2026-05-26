@@ -45,8 +45,12 @@ fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<Envelope> {
     let variables: sqlx::types::Json<serde_json::Map<String, serde_json::Value>> =
         row.try_get("variables").context("reading variables")?;
     let (idempotency_key, subject, sender) = parse_scalars(row)?;
+    let correlation_id: Option<String> = row
+        .try_get("correlation_id")
+        .context("reading correlation_id")?;
     Ok(Envelope {
         idempotency_key,
+        correlation_id,
         subject,
         sender,
         recipients: recipients_from_dto(recipients.0),
@@ -121,7 +125,7 @@ impl SqliteAdapter {
             .map_err(|source| EmailQueueError::Storage { source })?;
 
         let maybe_row = sqlx::query(
-            "SELECT id, idempotency_key, subject, sender, recipients, body, variables FROM emails WHERE id = ?",
+            "SELECT id, idempotency_key, correlation_id, subject, sender, recipients, body, variables FROM emails WHERE id = ?",
         )
         .bind(&email_id_bytes)
         .fetch_optional(self.pool())
@@ -213,6 +217,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            correlation_id: None,
             subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![],

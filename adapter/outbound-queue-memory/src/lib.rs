@@ -103,6 +103,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            correlation_id: None,
             subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![(RecipientKind::To, "to@example.com".to_owned())],

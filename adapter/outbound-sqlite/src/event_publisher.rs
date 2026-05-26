@@ -10,17 +10,34 @@ impl EventPublisher for SqliteAdapter {
     /// Returns `EventPublisherError::Publish` when the database insert fails.
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
         let (email_id_uuid, event_type, payload, sender_name) = match event {
-            LifecycleEvent::Queued { id } => (id.as_uuid(), "queued", None, None),
-            LifecycleEvent::Sending { id, attempt } => (
+            LifecycleEvent::Queued { id, correlation_id } => (
                 id.as_uuid(),
-                "sending",
-                Some(serde_json::json!({ "attempt": attempt })),
+                "queued",
+                correlation_id
+                    .as_ref()
+                    .map(|cid| serde_json::json!({ "correlation_id": cid })),
                 None,
             ),
-            LifecycleEvent::Sent { id, sender_name } => (
+            LifecycleEvent::Sending {
+                id,
+                attempt,
+                correlation_id,
+            } => (
+                id.as_uuid(),
+                "sending",
+                Some(serde_json::json!({ "attempt": attempt, "correlation_id": correlation_id })),
+                None,
+            ),
+            LifecycleEvent::Sent {
+                id,
+                sender_name,
+                correlation_id,
+            } => (
                 id.as_uuid(),
                 "sent",
-                None,
+                correlation_id
+                    .as_ref()
+                    .map(|cid| serde_json::json!({ "correlation_id": cid })),
                 Some(sender_name.as_str().to_owned()),
             ),
             LifecycleEvent::Retrying {
@@ -28,10 +45,13 @@ impl EventPublisher for SqliteAdapter {
                 attempt,
                 reason,
                 sender_name,
+                correlation_id,
             } => (
                 id.as_uuid(),
                 "retrying",
-                Some(serde_json::json!({ "attempt": attempt, "reason": reason })),
+                Some(
+                    serde_json::json!({ "attempt": attempt, "reason": reason, "correlation_id": correlation_id }),
+                ),
                 sender_name.as_ref().map(|s| s.as_str().to_owned()),
             ),
             LifecycleEvent::Failed {
@@ -39,10 +59,13 @@ impl EventPublisher for SqliteAdapter {
                 attempt,
                 reason,
                 sender_name,
+                correlation_id,
             } => (
                 id.as_uuid(),
                 "failed",
-                Some(serde_json::json!({ "attempt": attempt, "reason": reason })),
+                Some(
+                    serde_json::json!({ "attempt": attempt, "reason": reason, "correlation_id": correlation_id }),
+                ),
                 sender_name.as_ref().map(|s| s.as_str().to_owned()),
             ),
         };
@@ -87,6 +110,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            correlation_id: None,
             subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![],
@@ -112,6 +136,7 @@ mod tests {
                 attempt: 3,
                 reason: "smtp error".to_owned(),
                 sender_name: Some(SenderName::new("test")),
+                correlation_id: None,
             })
             .await
             .unwrap();
@@ -137,7 +162,10 @@ mod tests {
         let id = EmailId::default();
         let adapter = adapter_with_email(id).await;
         adapter
-            .publish(&LifecycleEvent::Queued { id })
+            .publish(&LifecycleEvent::Queued {
+                id,
+                correlation_id: None,
+            })
             .await
             .unwrap();
 
@@ -156,11 +184,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_with_correlation_id_persists_payload() {
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+        adapter
+            .publish(&LifecycleEvent::Queued {
+                id,
+                correlation_id: Some("corr-abc".to_owned()),
+            })
+            .await
+            .unwrap();
+
+        let payload: Option<sqlx::types::Json<serde_json::Value>> =
+            sqlx::query_scalar("SELECT payload FROM lifecycle_events")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        let p = payload.unwrap().0;
+        assert_eq!(p["correlation_id"], "corr-abc");
+    }
+
+    #[tokio::test]
     async fn publish_sending_includes_attempt_in_payload() {
         let id = EmailId::default();
         let adapter = adapter_with_email(id).await;
         adapter
-            .publish(&LifecycleEvent::Sending { id, attempt: 2 })
+            .publish(&LifecycleEvent::Sending {
+                id,
+                attempt: 2,
+                correlation_id: None,
+            })
             .await
             .unwrap();
 
@@ -182,6 +235,7 @@ mod tests {
                 attempt: 1,
                 reason: "timeout".to_owned(),
                 sender_name: Some(SenderName::new("test")),
+                correlation_id: None,
             })
             .await
             .unwrap();

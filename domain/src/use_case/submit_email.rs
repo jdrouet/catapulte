@@ -30,6 +30,7 @@ pub enum AttachmentInput {
 
 pub struct SubmitEmailInput {
     pub idempotency_key: Option<String>,
+    pub correlation_id: Option<String>,
     pub subject: Option<String>,
     pub sender: String,
     pub recipients: Vec<(crate::entity::email::RecipientKind, String)>,
@@ -114,6 +115,7 @@ where
         // patched in after blobs are written so the worker never sees stale refs.
         let envelope_for_reservation = Envelope {
             idempotency_key: input.idempotency_key.clone(),
+            correlation_id: input.correlation_id.clone(),
             subject: input.subject.clone(),
             sender: input.sender.clone(),
             recipients: input.recipients.clone(),
@@ -130,6 +132,7 @@ where
 
         let SubmitEmailInput {
             idempotency_key,
+            correlation_id,
             subject,
             sender,
             recipients,
@@ -205,6 +208,7 @@ where
 
         let envelope = Envelope {
             idempotency_key,
+            correlation_id,
             subject,
             sender,
             recipients,
@@ -222,7 +226,10 @@ where
         }
         if let Err(e) = self
             .event_publisher
-            .publish(&LifecycleEvent::Queued { id })
+            .publish(&LifecycleEvent::Queued {
+                id,
+                correlation_id: envelope.correlation_id.clone(),
+            })
             .await
         {
             tracing::warn!(error = %e, email_id = %id.as_uuid(), "failed to publish queued event");
@@ -269,6 +276,7 @@ mod tests {
     fn make_input(sender: &str) -> SubmitEmailInput {
         SubmitEmailInput {
             idempotency_key: None,
+            correlation_id: None,
             subject: None,
             sender: sender.into(),
             recipients: vec![(RecipientKind::To, "to@example.com".into())],
@@ -800,7 +808,13 @@ mod tests {
             .unwrap();
         let events = spy.published.lock().unwrap();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0], LifecycleEvent::Queued { id });
+        assert_eq!(
+            events[0],
+            LifecycleEvent::Queued {
+                id,
+                correlation_id: None,
+            }
+        );
     }
 
     #[tokio::test]

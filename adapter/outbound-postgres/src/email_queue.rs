@@ -36,10 +36,14 @@ fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Envelope> {
     let idempotency_key = row
         .try_get("idempotency_key")
         .context("reading idempotency_key")?;
+    let correlation_id: Option<String> = row
+        .try_get("correlation_id")
+        .context("reading correlation_id")?;
     let subject = row.try_get("subject").context("reading subject")?;
     let sender = row.try_get("sender").context("reading sender")?;
     Ok(Envelope {
         idempotency_key,
+        correlation_id,
         subject,
         sender,
         recipients: recipients_from_dto(recipients.0),
@@ -118,7 +122,7 @@ impl PostgresAdapter {
         .map_err(|source| EmailQueueError::Storage { source })?;
 
         let maybe_row = sqlx::query(
-            "SELECT idempotency_key, subject, sender, recipients, body, variables FROM emails WHERE id = $1",
+            "SELECT idempotency_key, correlation_id, subject, sender, recipients, body, variables FROM emails WHERE id = $1",
         )
         .bind(email_id_uuid)
         .fetch_optional(&mut *tx)
@@ -253,6 +257,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            correlation_id: None,
             subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![],

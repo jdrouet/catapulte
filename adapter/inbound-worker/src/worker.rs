@@ -82,9 +82,15 @@ async fn process_one<S: WorkerState>(
     attempt: u32,
     token: AckToken,
 ) {
+    let correlation_id = envelope.correlation_id.clone();
+
     if let Err(e) = state
         .event_publisher()
-        .publish(&LifecycleEvent::Sending { id, attempt })
+        .publish(&LifecycleEvent::Sending {
+            id,
+            attempt,
+            correlation_id: correlation_id.clone(),
+        })
         .await
     {
         tracing::error!(error = %e, "failed to publish sending event");
@@ -116,7 +122,11 @@ async fn process_one<S: WorkerState>(
             }
             if let Err(e) = state
                 .event_publisher()
-                .publish(&LifecycleEvent::Sent { id, sender_name })
+                .publish(&LifecycleEvent::Sent {
+                    id,
+                    sender_name,
+                    correlation_id: correlation_id.clone(),
+                })
                 .await
             {
                 tracing::error!(error = %e, "failed to publish sent event");
@@ -141,6 +151,7 @@ async fn process_one<S: WorkerState>(
                     attempt,
                     reason,
                     sender_name,
+                    correlation_id: correlation_id.clone(),
                 }
             } else {
                 let delay = backoff(attempt);
@@ -153,6 +164,7 @@ async fn process_one<S: WorkerState>(
                     attempt,
                     reason,
                     sender_name,
+                    correlation_id: correlation_id.clone(),
                 }
             };
             if let Err(pub_err) = state.event_publisher().publish(&event).await {
@@ -190,6 +202,7 @@ mod tests {
     fn sample_envelope() -> Envelope {
         Envelope {
             idempotency_key: None,
+            correlation_id: None,
             subject: None,
             sender: "sender@example.com".to_owned(),
             recipients: vec![(RecipientKind::To, "to@example.com".to_owned())],

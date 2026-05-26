@@ -50,6 +50,8 @@ impl From<AttachmentRefDto> for AttachmentRef {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QueuedEmailPayload {
     pub id: uuid::Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
     pub envelope: EnvelopeDto,
 }
 
@@ -155,6 +157,7 @@ impl From<(&EmailId, &Envelope)> for QueuedEmailPayload {
     fn from((id, envelope): (&EmailId, &Envelope)) -> Self {
         Self {
             id: id.as_uuid(),
+            correlation_id: envelope.correlation_id.clone(),
             envelope: EnvelopeDto {
                 idempotency_key: envelope.idempotency_key.clone(),
                 subject: envelope.subject.clone(),
@@ -198,6 +201,7 @@ impl TryFrom<QueuedEmailPayload> for (EmailId, Envelope) {
             .collect();
         let envelope = Envelope {
             idempotency_key: payload.envelope.idempotency_key,
+            correlation_id: payload.correlation_id,
             subject: payload.envelope.subject,
             sender: payload.envelope.sender,
             recipients,
@@ -235,6 +239,7 @@ mod tests {
         let id = EmailId::default();
         let envelope = Envelope {
             idempotency_key: None,
+            correlation_id: None,
             subject: Some("Test subject".into()),
             sender: "sender@example.com".into(),
             recipients: vec![(RecipientKind::To, "to@example.com".into())],
