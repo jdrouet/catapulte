@@ -1582,6 +1582,133 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
 }
 
 #[tokio::test]
+async fn batch_submit_delivers_multiple_emails() {
+    let mailpit = start_mailpit().await;
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_batch.db");
+    let http_port = free_port();
+    let attachment_dir = tempfile::tempdir().unwrap();
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+        },
+        smtp: base_smtp(smtp_port),
+        resolver: base_resolver(),
+        worker: WorkerConfig {},
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
+        attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
+            root: attachment_dir.path().to_path_buf(),
+        }),
+        attachment_fetcher: base_attachment_fetcher(),
+        gc_sweep_interval: Duration::from_secs(3600),
+        gc_grace_period: Duration::from_secs(3600),
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+
+    // Wait for server to be up.
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{http_port}/emails/batch"))
+        .json(&serde_json::json!({
+            "emails": [
+                {
+                    "sender": "sender@example.com",
+                    "recipients": [{ "kind": "to", "address": "alice@example.com" }],
+                    "body": { "kind": "plain", "text": "batch email 1" }
+                },
+                {
+                    "sender": "sender@example.com",
+                    "recipients": [{ "kind": "to", "address": "bob@example.com" }],
+                    "body": { "kind": "plain", "text": "batch email 2" }
+                },
+                {
+                    "sender": "sender@example.com",
+                    "recipients": [{ "kind": "to", "address": "carol@example.com" }],
+                    "body": { "kind": "plain", "text": "batch email 3" }
+                }
+            ]
+        }))
+        .send()
+        .await
+        .expect("POST /emails/batch failed");
+
+    assert!(
+        resp.status().is_success(),
+        "unexpected status: {}",
+        resp.status()
+    );
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let results = body["results"].as_array().expect("results array");
+    assert_eq!(results.len(), 3, "expected 3 results");
+
+    let mut seen_ids = std::collections::HashSet::new();
+    for result in results {
+        assert_eq!(
+            result["status"].as_str(),
+            Some("accepted"),
+            "all results should be accepted"
+        );
+        let id = result["id"].as_str().expect("id field");
+        uuid::Uuid::parse_str(id).expect("id should be a valid UUID");
+        assert!(seen_ids.insert(id.to_owned()), "UUIDs should be distinct");
+    }
+
+    // Poll mailpit until all 3 messages arrive.
+    let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
+    let mut delivered_count: usize = 0;
+    for _ in 0..100 {
+        if let Ok(body) = client
+            .get(&messages_url)
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            && let Some(msgs) = body["messages"].as_array()
+            && msgs.len() >= 3
+        {
+            delivered_count = msgs.len();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        delivered_count, 3,
+        "expected 3 messages delivered to mailpit, got {delivered_count}"
+    );
+
+    drop(attachment_dir);
+}
+
+#[tokio::test]
 async fn submit_email_with_disallowed_remote_attachment_returns_400() {
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("catapulte_e2e_disallowed_att.db");

@@ -9,8 +9,9 @@ use futures_util::TryStreamExt;
 
 use crate::HttpServerState;
 use crate::dto::{
-    DEFAULT_EMAILS_LIMIT, EmailRecordDto, EnvelopeCoreDto, ListEmailsQuery, ListEmailsResponse,
-    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_EMAIL, MAX_EMAILS_LIMIT, MAX_ENVELOPE_BYTES,
+    BatchItemResultDto, BatchSubmitEmailRequest, BatchSubmitEmailResponse, DEFAULT_EMAILS_LIMIT,
+    EmailRecordDto, EnvelopeCoreDto, ListEmailsQuery, ListEmailsResponse, MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENTS_PER_EMAIL, MAX_EMAILS_LIMIT, MAX_EMAILS_PER_BATCH, MAX_ENVELOPE_BYTES,
     MAX_REQUEST_BODY_BYTES, SubmitEmailRequest, SubmitEmailResponse,
 };
 use crate::error::AppError;
@@ -41,6 +42,36 @@ pub async fn submit_email<S: HttpServerState>(
 
     let id = state.submit_email().execute(input).await?;
     Ok(Json(SubmitEmailResponse { id }))
+}
+
+/// # Errors
+///
+/// Returns `AppError::BadRequestRaw` when the batch exceeds the maximum size limit.
+#[tracing::instrument(skip_all, fields(batch_size = request.emails.len()))]
+pub async fn submit_email_batch<S: HttpServerState>(
+    State(state): State<S>,
+    Json(request): Json<BatchSubmitEmailRequest>,
+) -> Result<Json<BatchSubmitEmailResponse>, AppError> {
+    if request.emails.len() > MAX_EMAILS_PER_BATCH {
+        return Err(AppError::BadRequestRaw(format!(
+            "batch exceeds maximum of {MAX_EMAILS_PER_BATCH} emails"
+        )));
+    }
+    let mut results = Vec::with_capacity(request.emails.len());
+    for email_req in request.emails {
+        match email_req.into_submit_input() {
+            Err(validation_err) => results.push(BatchItemResultDto::Rejected {
+                error: validation_err.to_string(),
+            }),
+            Ok(input) => {
+                let id = state.submit_email().execute(input).await?;
+                results.push(BatchItemResultDto::Accepted {
+                    id: id.as_uuid().to_string(),
+                });
+            }
+        }
+    }
+    Ok(Json(BatchSubmitEmailResponse { results }))
 }
 
 async fn handle_json(
@@ -766,6 +797,173 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // -- batch helpers and tests --
+
+    fn post_batch_json(body: impl Into<Body>) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/emails/batch")
+            .header("content-type", "application/json")
+            .body(body.into())
+            .unwrap()
+    }
+
+    fn valid_email_payload(recipient: &str) -> serde_json::Value {
+        serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": recipient}],
+            "body": {"kind": "plain", "text": "hi"}
+        })
+    }
+
+    #[tokio::test]
+    async fn batch_submit_with_three_valid_emails_returns_three_accepted() {
+        let app = make_router();
+        let payload = serde_json::json!({
+            "emails": [
+                valid_email_payload("r1@x.y"),
+                valid_email_payload("r2@x.y"),
+                valid_email_payload("r3@x.y"),
+            ]
+        });
+        let response = app
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 3);
+        for result in results {
+            assert_eq!(result["status"].as_str(), Some("accepted"));
+            let id = result["id"].as_str().expect("id field");
+            uuid::Uuid::parse_str(id).expect("id should be a valid UUID");
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_submit_with_one_invalid_email_returns_mixed_results() {
+        let app = make_router();
+        let payload = serde_json::json!({
+            "emails": [
+                valid_email_payload("r1@x.y"),
+                // middle item has empty recipients — should be rejected
+                {
+                    "sender": "a@b.c",
+                    "recipients": [],
+                    "body": {"kind": "plain", "text": "hi"}
+                },
+                valid_email_payload("r3@x.y"),
+            ]
+        });
+        let response = app
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0]["status"].as_str(), Some("accepted"));
+        assert_eq!(results[2]["status"].as_str(), Some("accepted"));
+        assert_eq!(results[1]["status"].as_str(), Some("rejected"));
+        assert!(
+            results[1]["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "rejected entry should have a non-empty error message"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_submit_over_limit_returns_400() {
+        use crate::dto::MAX_EMAILS_PER_BATCH;
+        let app = make_router();
+        let emails: Vec<_> = (0..=MAX_EMAILS_PER_BATCH)
+            .map(|i| valid_email_payload(&format!("r{i}@x.y")))
+            .collect();
+        let payload = serde_json::json!({ "emails": emails });
+        let response = app
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn batch_submit_empty_array_returns_200_with_empty_results() {
+        let app = make_router();
+        let payload = serde_json::json!({ "emails": [] });
+        let response = app
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().expect("results array");
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn batch_submit_aborts_with_500_on_use_case_failure() {
+        let app = make_failing_router();
+        let payload = serde_json::json!({
+            "emails": [valid_email_payload("r@x.y")]
+        });
+        let response = app
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+        // Infrastructure failure must abort the entire batch and return 500.
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn batch_submit_validation_errors_do_not_abort_the_batch() {
+        let app = make_router();
+        let payload = serde_json::json!({
+            "emails": [
+                valid_email_payload("r1@x.y"),
+                // invalid sender — triggers EnvelopeConversionError
+                {
+                    "sender": "not-an-email",
+                    "recipients": [{"kind": "to", "address": "r2@x.y"}],
+                    "body": {"kind": "plain", "text": "hi"}
+                },
+                valid_email_payload("r3@x.y"),
+            ]
+        });
+        let response = app
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0]["status"].as_str(), Some("accepted"));
+        assert_eq!(results[1]["status"].as_str(), Some("rejected"));
+        assert!(
+            results[1]["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "rejected entry should have a non-empty sender-related error message"
+        );
+        assert_eq!(results[2]["status"].as_str(), Some("accepted"));
     }
 
     // -- multipart helpers and tests --

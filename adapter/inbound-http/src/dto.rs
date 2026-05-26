@@ -11,6 +11,24 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024; // 25 MiB
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024; // 1 MiB
 // Worst case: 10 attachments × 25 MiB = 250 MiB binary, base64-inflated to ~333 MiB, plus ~1 MiB envelope.
 pub const MAX_REQUEST_BODY_BYTES: usize = 352 * 1024 * 1024; // 352 MiB
+pub const MAX_EMAILS_PER_BATCH: usize = 100;
+
+#[derive(Debug, Deserialize)]
+pub struct BatchSubmitEmailRequest {
+    pub emails: Vec<SubmitEmailRequest>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BatchItemResultDto {
+    Accepted { id: String },
+    Rejected { error: String },
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchSubmitEmailResponse {
+    pub results: Vec<BatchItemResultDto>,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct AttachmentDto {

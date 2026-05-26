@@ -34,6 +34,10 @@ pub fn router<S: HttpServerState>(state: S) -> Router {
                 .get(crate::routes::emails::list_emails::<S>),
         )
         .route(
+            "/emails/batch",
+            post(crate::routes::emails::submit_email_batch::<S>),
+        )
+        .route(
             "/emails/{id}/events",
             get(crate::routes::events::list_events_for_email::<S>),
         )
