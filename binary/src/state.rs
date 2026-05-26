@@ -14,6 +14,7 @@ use catapulte_domain::use_case::process_queued_email::{
 };
 use catapulte_domain::use_case::submit_email::{SubmitEmailService, SubmitEmailUseCase};
 use catapulte_inbound_http::HttpServerState;
+use catapulte_inbound_nats::server::InboundNatsState;
 use catapulte_inbound_worker::worker::WorkerState;
 use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
@@ -75,6 +76,12 @@ impl HttpServerState for AppState {
 
     fn list_senders(&self) -> &impl ListSendersUseCase {
         self.list_senders.as_ref()
+    }
+}
+
+impl InboundNatsState for AppState {
+    fn submit_email(&self) -> &impl SubmitEmailUseCase {
+        self.submit_email.as_ref()
     }
 }
 

@@ -57,6 +57,23 @@ pub enum SubmitEmailError {
     },
 }
 
+impl SubmitEmailError {
+    /// Returns true when the caller should retry later; false when the error
+    /// is permanent for the given input and retrying won't help.
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        match self {
+            // Storage / queue issues are infrastructure-level and likely transient.
+            // Attachment store I/O could be either; treat as transient (disk full
+            // recovers; remote storage hiccup recovers).
+            Self::Persist(_) | Self::Enqueue(_) | Self::AttachmentStore { .. } => true,
+            // Remote URL fetch errors are almost always permanent for the given
+            // URL (404, 410, blocked domain, oversize). Don't retry.
+            Self::AttachmentFetch { .. } => false,
+        }
+    }
+}
+
 pub trait SubmitEmailUseCase: Send + Sync + 'static {
     /// # Errors
     ///
@@ -1027,6 +1044,38 @@ mod tests {
         let blobs = captured.lock().unwrap();
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs[0], b"streamed bytes");
+    }
+
+    #[test]
+    fn is_transient_persist_is_true() {
+        let err = SubmitEmailError::Persist(EmailRepositoryError::Storage {
+            source: anyhow::anyhow!("db down"),
+        });
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn is_transient_enqueue_is_true() {
+        let err = SubmitEmailError::Enqueue(EmailQueueError::Storage {
+            source: anyhow::anyhow!("queue down"),
+        });
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn is_transient_attachment_store_is_true() {
+        let err = SubmitEmailError::AttachmentStore {
+            source: anyhow::anyhow!("store I/O error"),
+        };
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn is_transient_attachment_fetch_is_false() {
+        let err = SubmitEmailError::AttachmentFetch {
+            source: anyhow::anyhow!("404 not found"),
+        };
+        assert!(!err.is_transient());
     }
 
     #[tokio::test]

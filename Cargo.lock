@@ -309,6 +309,7 @@ dependencies = [
  "base64",
  "catapulte-domain",
  "catapulte-inbound-http",
+ "catapulte-inbound-nats",
  "catapulte-inbound-worker",
  "catapulte-outbound-attachment-fetcher",
  "catapulte-outbound-attachment-fs",
@@ -369,6 +370,23 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "catapulte-inbound-nats"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "catapulte-domain",
+ "catapulte-inbound-http",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

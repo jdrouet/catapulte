@@ -186,6 +186,7 @@ async fn submit_plain_email_is_delivered_via_mailpit() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -218,6 +219,7 @@ async fn submit_plain_email_with_memory_queue_is_delivered() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -253,6 +255,7 @@ async fn submit_email_sqlite_storage_nats_queue_is_delivered() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -286,6 +289,7 @@ async fn submit_email_postgres_storage_storage_queue_is_delivered() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -319,6 +323,7 @@ async fn submit_email_postgres_storage_memory_queue_is_delivered() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -351,6 +356,7 @@ async fn lifecycle_events_endpoint_returns_queued_and_sent() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -468,6 +474,7 @@ async fn list_endpoints_return_submitted_email() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -615,6 +622,7 @@ async fn submit_email_postgres_storage_nats_queue_is_delivered() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -673,6 +681,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp,
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -809,6 +818,7 @@ async fn submit_mjml_inline_with_variables_renders_and_delivers() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -932,6 +942,7 @@ async fn idempotency_key_deduplicates_submission() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -1074,6 +1085,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp,
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -1216,6 +1228,7 @@ async fn submit_email_with_inline_attachment_is_delivered_with_attachment() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -1349,6 +1362,7 @@ async fn sent_email_blob_is_deleted_after_delivery() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -1486,6 +1500,7 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -1614,6 +1629,7 @@ async fn batch_submit_delivers_multiple_emails() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
         worker: WorkerConfig {},
@@ -1739,6 +1755,7 @@ async fn submit_email_with_disallowed_remote_attachment_returns_400() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
         },
+        inbound_nats: None,
         smtp: base_smtp(1025),
         resolver: base_resolver(),
         worker: WorkerConfig {},

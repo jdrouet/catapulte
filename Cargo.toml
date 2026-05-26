@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "adapter/inbound-http",
+    "adapter/inbound-nats",
     "adapter/inbound-worker",
     "adapter/outbound-interpolator",
     "adapter/outbound-mjml",

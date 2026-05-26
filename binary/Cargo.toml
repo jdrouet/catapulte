@@ -12,6 +12,7 @@ workspace = true
 anyhow = { workspace = true }
 catapulte-domain = { path = "../domain" }
 catapulte-inbound-http = { path = "../adapter/inbound-http" }
+catapulte-inbound-nats = { path = "../adapter/inbound-nats" }
 catapulte-inbound-worker = { path = "../adapter/inbound-worker" }
 catapulte-outbound-interpolator = { path = "../adapter/outbound-interpolator" }
 catapulte-outbound-mjml = { path = "../adapter/outbound-mjml" }
