@@ -213,7 +213,13 @@ where
             attachments: written_refs,
         };
 
-        self.queue.enqueue(id, &envelope).await?;
+        if let Err(enqueue_err) = self.queue.enqueue(id, &envelope).await {
+            for r in &envelope.attachments {
+                let _ = self.attachment_store.delete(&r.blob).await;
+            }
+            let _ = self.repository.delete(id).await;
+            return Err(SubmitEmailError::Enqueue(enqueue_err));
+        }
         if let Err(e) = self
             .event_publisher
             .publish(&LifecycleEvent::Queued { id })
@@ -277,13 +283,21 @@ mod tests {
     #[derive(Clone)]
     struct FakeRepository {
         saved: Arc<Mutex<Vec<(EmailId, String)>>>,
+        deleted: Arc<Mutex<Vec<EmailId>>>,
     }
 
     impl FakeRepository {
         fn new() -> Self {
             Self {
                 saved: Arc::new(Mutex::new(Vec::new())),
+                deleted: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn live_count(&self) -> usize {
+            let saved = self.saved.lock().unwrap();
+            let deleted = self.deleted.lock().unwrap();
+            saved.iter().filter(|(id, _)| !deleted.contains(id)).count()
         }
     }
 
@@ -316,7 +330,8 @@ mod tests {
             Ok(())
         }
 
-        async fn delete(&self, _id: EmailId) -> Result<(), EmailRepositoryError> {
+        async fn delete(&self, id: EmailId) -> Result<(), EmailRepositoryError> {
+            self.deleted.lock().unwrap().push(id);
             Ok(())
         }
 
@@ -522,13 +537,21 @@ mod tests {
     #[derive(Clone)]
     struct FakeAttachmentStore {
         put_count: Arc<Mutex<usize>>,
+        delete_count: Arc<Mutex<usize>>,
     }
 
     impl FakeAttachmentStore {
         fn new() -> Self {
             Self {
                 put_count: Arc::new(Mutex::new(0)),
+                delete_count: Arc::new(Mutex::new(0)),
             }
+        }
+
+        fn outstanding_blobs(&self) -> usize {
+            let puts = *self.put_count.lock().unwrap();
+            let deletes = *self.delete_count.lock().unwrap();
+            puts.saturating_sub(deletes)
         }
     }
 
@@ -568,6 +591,7 @@ mod tests {
             &self,
             _blob: &crate::entity::attachment::BlobRef,
         ) -> Result<(), AttachmentStoreError> {
+            *self.delete_count.lock().unwrap() += 1;
             Ok(())
         }
     }
@@ -679,21 +703,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enqueue_failure_propagates_as_submit_email_error() {
+    async fn enqueue_failure_compensates_and_propagates_error() {
         let repo = FakeRepository::new();
+        let store = FakeAttachmentStore::new();
+        let spy = FakeEventPublisher::new();
+        let mut input = make_input("sender@example.com");
+        input.attachments.push(AttachmentInput::Inline {
+            filename: "attach.txt".into(),
+            content_type: "text/plain".into(),
+            bytes: bytes::Bytes::from_static(b"data"),
+        });
         let service = SubmitEmailService::new(
             repo.clone(),
             FailingQueue,
-            FakeEventPublisher::new(),
-            FakeAttachmentStore::new(),
+            spy.clone(),
+            store.clone(),
             FakeFetcher,
         );
-        let err = service
-            .execute(make_input("sender@example.com"))
-            .await
-            .unwrap_err();
+        let err = service.execute(input).await.unwrap_err();
         assert!(matches!(err, SubmitEmailError::Enqueue(_)));
-        assert_eq!(repo.saved.lock().unwrap().len(), 1);
+        // Row must have been deleted as compensation.
+        assert_eq!(
+            repo.live_count(),
+            0,
+            "row must be deleted after enqueue failure"
+        );
+        // All blobs must have been deleted as compensation.
+        assert_eq!(
+            store.outstanding_blobs(),
+            0,
+            "blobs must be deleted after enqueue failure"
+        );
+        // No Queued event must have been published.
+        assert!(
+            spy.published.lock().unwrap().is_empty(),
+            "no event must be published when enqueue fails"
+        );
     }
 
     #[tokio::test]

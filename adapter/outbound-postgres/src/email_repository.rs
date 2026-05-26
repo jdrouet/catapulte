@@ -224,11 +224,23 @@ impl EmailRepository for PostgresAdapter {
     }
 
     async fn list_all_attachment_blobs(&self) -> Result<Vec<BlobRef>, EmailRepositoryError> {
-        let rows: Vec<serde_json::Value> = sqlx::query_scalar("SELECT body FROM emails")
-            .fetch_all(self.pool())
-            .await
-            .context("listing email bodies for attachment blobs")
-            .map_err(|source| EmailRepositoryError::Storage { source })?;
+        let rows: Vec<serde_json::Value> = sqlx::query_scalar(
+            "WITH email_status AS (\
+                SELECT e.body, COALESCE(\
+                    (SELECT event_type FROM lifecycle_events le \
+                     WHERE le.email_id = e.id \
+                     ORDER BY le.created_at DESC, le.id DESC LIMIT 1),\
+                    'queued'\
+                ) AS latest_event_type \
+                FROM emails e\
+            ) \
+            SELECT body FROM email_status \
+            WHERE latest_event_type NOT IN ('sent', 'failed')",
+        )
+        .fetch_all(self.pool())
+        .await
+        .context("listing email bodies for attachment blobs")
+        .map_err(|source| EmailRepositoryError::Storage { source })?;
 
         let mut blobs = Vec::new();
         for body_value in rows {
@@ -790,18 +802,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_all_attachment_blobs_returns_blobs_from_all_emails() {
+    async fn list_all_attachment_blobs_excludes_terminal_emails() {
         let (adapter, _container) = fresh_adapter().await;
 
         // No emails yet.
         let blobs = adapter.list_all_attachment_blobs().await.unwrap();
         assert!(blobs.is_empty(), "expected no blobs for empty db");
 
-        // Save one email with no attachments.
+        // Email 1: queued, no attachments.
         let id1 = EmailId::default();
         adapter.save(id1, &sample_envelope()).await.unwrap();
 
-        // Save one email with two attachments.
+        // Email 2: queued, two attachments.
         let id2 = EmailId::default();
         adapter.save(id2, &sample_envelope()).await.unwrap();
         adapter
@@ -831,9 +843,63 @@ mod tests {
             .await
             .unwrap();
 
+        // Email 3: marked Sent — its blob must NOT appear in GC liveness.
+        let id3 = EmailId::default();
+        adapter.save(id3, &sample_envelope()).await.unwrap();
+        adapter
+            .set_attachments(
+                id3,
+                &[AttachmentRef {
+                    filename: "sent.pdf".into(),
+                    content_type: "application/pdf".into(),
+                    size_bytes: 3,
+                    blob: BlobRef {
+                        backend: "fs".into(),
+                        key: "key-sent".into(),
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id: id3,
+                sender_name: SenderName::new("test"),
+            })
+            .await
+            .unwrap();
+
+        // Email 4: marked Failed — its blob must NOT appear in GC liveness.
+        let id4 = EmailId::default();
+        adapter.save(id4, &sample_envelope()).await.unwrap();
+        adapter
+            .set_attachments(
+                id4,
+                &[AttachmentRef {
+                    filename: "failed.pdf".into(),
+                    content_type: "application/pdf".into(),
+                    size_bytes: 4,
+                    blob: BlobRef {
+                        backend: "fs".into(),
+                        key: "key-failed".into(),
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id: id4,
+                reason: "err".into(),
+                sender_name: None,
+            })
+            .await
+            .unwrap();
+
+        // Only the two blobs from the queued email (id2) must be returned.
         let mut blobs = adapter.list_all_attachment_blobs().await.unwrap();
         blobs.sort_by(|a, b| a.key.cmp(&b.key));
-        assert_eq!(blobs.len(), 2);
+        assert_eq!(blobs.len(), 2, "sent and failed emails must be excluded");
         assert_eq!(blobs[0].key, "key-a");
         assert_eq!(blobs[1].key, "key-b");
     }
