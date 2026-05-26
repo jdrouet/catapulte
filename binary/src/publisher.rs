@@ -69,6 +69,20 @@ impl PublisherAdapterConfig {
         }
     }
 
+    #[must_use]
+    pub fn with_nats_events(url: String, subject: String) -> Self {
+        Self {
+            webhook: WebhookConfig {
+                url: None,
+                timeout_ms: 5_000,
+            },
+            nats_events: NatsEventConfig {
+                url: Some(url),
+                subject,
+            },
+        }
+    }
+
     /// # Errors
     ///
     /// Returns an error if any sub-config fails to load from env.

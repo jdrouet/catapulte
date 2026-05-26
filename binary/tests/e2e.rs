@@ -1741,6 +1741,159 @@ async fn batch_submit_delivers_multiple_emails() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correlation_id() {
+    use futures_util::StreamExt as _;
+
+    let nats = start_nats().await;
+    let mailpit = start_mailpit().await;
+
+    let nats_port = nats.get_host_port_ipv4(4222).await.unwrap();
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+
+    let nats_url = format!("nats://127.0.0.1:{nats_port}");
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_inbound_nats.db");
+    let http_port = free_port();
+
+    // Subscribe to lifecycle events BEFORE the app starts so no events are missed.
+    // NatsEventPublisher uses core NATS publish, so a simple subscribe works.
+    let lifecycle_client = async_nats::connect(&nats_url)
+        .await
+        .expect("failed to connect lifecycle NATS client");
+    let mut lifecycle_sub = lifecycle_client
+        .subscribe("catapulte.lifecycle")
+        .await
+        .expect("failed to subscribe to lifecycle subject");
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+        },
+        inbound_nats: Some(catapulte_inbound_nats::server::InboundNatsConfig {
+            url: nats_url.clone(),
+            stream: "CATAPULTE_E2E_IN".to_owned(),
+            subject: "catapulte.submissions".to_owned(),
+            consumer: "e2e-inbound".to_owned(),
+            ack_wait_secs: 5,
+            max_deliver: 3,
+            backoff_secs: vec![1, 2, 3],
+        }),
+        smtp: base_smtp(smtp_port),
+        resolver: base_resolver(),
+        worker: WorkerConfig {},
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::with_nats_events(
+            nats_url.clone(),
+            "catapulte.lifecycle".to_owned(),
+        ),
+        attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        gc_sweep_interval: Duration::from_secs(3600),
+        gc_grace_period: Duration::from_secs(3600),
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    // Wait for the HTTP server to be ready.
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Publish a submission to the inbound NATS subject via JetStream.
+    let publisher_client = async_nats::connect(&nats_url)
+        .await
+        .expect("failed to connect publisher NATS client");
+    let js = async_nats::jetstream::new(publisher_client);
+
+    // The inbound NATS server creates the stream on startup; publish directly to the subject.
+    let payload = serde_json::json!({
+        "correlation_id": "corr-e2e-test",
+        "sender": "sender@example.com",
+        "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+        "body": { "kind": "plain", "text": "Hello from inbound NATS e2e!" },
+        "variables": {}
+    });
+    js.publish(
+        "catapulte.submissions",
+        serde_json::to_vec(&payload).unwrap().into(),
+    )
+    .await
+    .expect("failed to publish submission to NATS")
+    .await
+    .expect("failed to get ack from NATS");
+
+    // Poll mailpit until the email is delivered.
+    let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
+    let mut delivered = false;
+    for _ in 0..200 {
+        if let Ok(body) = client
+            .get(&messages_url)
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            && body["messages"].as_array().is_some_and(|a| !a.is_empty())
+        {
+            delivered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        delivered,
+        "email was not delivered to mailpit within timeout"
+    );
+
+    // Collect lifecycle events and look for a "sent" event with the expected correlation_id.
+    let mut found_sent = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, lifecycle_sub.next()).await {
+            Ok(Some(msg)) => {
+                if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&msg.payload) {
+                    if body["event_type"].as_str() == Some("sent")
+                        && body["payload"]["correlation_id"].as_str() == Some("corr-e2e-test")
+                    {
+                        found_sent = true;
+                        break;
+                    }
+                }
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    assert!(
+        found_sent,
+        "no 'sent' lifecycle event with correlation_id 'corr-e2e-test' received within timeout"
+    );
+}
+
+#[tokio::test]
 async fn submit_email_with_disallowed_remote_attachment_returns_400() {
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("catapulte_e2e_disallowed_att.db");

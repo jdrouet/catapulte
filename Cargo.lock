@@ -306,6 +306,7 @@ name = "catapulte"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-nats",
  "base64",
  "catapulte-domain",
  "catapulte-inbound-http",
@@ -322,6 +323,7 @@ dependencies = [
  "catapulte-outbound-smtp",
  "catapulte-outbound-sqlite",
  "catapulte-outbound-webhook",
+ "futures-util",
  "reqwest 0.12.28",
  "serde_json",
  "tempfile",
