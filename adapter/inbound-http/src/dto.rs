@@ -207,6 +207,10 @@ fn attachment_dto_to_input(a: AttachmentDto) -> Result<AttachmentInput, Envelope
 }
 
 impl SubmitEmailRequest {
+    /// # Errors
+    ///
+    /// Returns an error when the request contains invalid fields (bad sender,
+    /// recipients, body, or attachments).
     pub fn into_submit_input(self) -> Result<SubmitEmailInput, EnvelopeConversionError> {
         validate_sender(&self.sender)?;
         let recipients = validate_recipients(self.recipients)?;
@@ -514,7 +518,7 @@ mod tests {
     fn oversize_attachment_returns_error() {
         use super::MAX_ATTACHMENT_BYTES;
         use base64::Engine;
-        let big = vec![0u8; (MAX_ATTACHMENT_BYTES + 1) as usize];
+        let big = vec![0u8; usize::try_from(MAX_ATTACHMENT_BYTES + 1).unwrap()];
         let encoded = base64::engine::general_purpose::STANDARD.encode(&big);
         let req = SubmitEmailRequest {
             attachments: vec![AttachmentDto {

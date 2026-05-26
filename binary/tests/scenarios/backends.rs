@@ -110,8 +110,8 @@ fn sqlite_config(smtp_port: u16, http_port: u16, db_tag: &str) -> (AppConfig, te
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: std::time::Duration::from_secs(3600),
-        gc_grace_period: std::time::Duration::from_secs(3600),
+        gc_sweep_interval: std::time::Duration::from_hours(1),
+        gc_grace_period: std::time::Duration::from_hours(1),
     };
     (config, db_dir)
 }
@@ -147,8 +147,8 @@ pub async fn sqlite_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: std::time::Duration::from_secs(3600),
-        gc_grace_period: std::time::Duration::from_secs(3600),
+        gc_sweep_interval: std::time::Duration::from_hours(1),
+        gc_grace_period: std::time::Duration::from_hours(1),
     };
     BackendBundle {
         config,
@@ -185,8 +185,8 @@ pub async fn sqlite_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: std::time::Duration::from_secs(3600),
-        gc_grace_period: std::time::Duration::from_secs(3600),
+        gc_sweep_interval: std::time::Duration::from_hours(1),
+        gc_grace_period: std::time::Duration::from_hours(1),
     };
     BackendBundle {
         config,
@@ -217,8 +217,8 @@ pub async fn postgres_storage(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: std::time::Duration::from_secs(3600),
-        gc_grace_period: std::time::Duration::from_secs(3600),
+        gc_sweep_interval: std::time::Duration::from_hours(1),
+        gc_grace_period: std::time::Duration::from_hours(1),
     };
     BackendBundle {
         config,
@@ -249,8 +249,8 @@ pub async fn postgres_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: std::time::Duration::from_secs(3600),
-        gc_grace_period: std::time::Duration::from_secs(3600),
+        gc_sweep_interval: std::time::Duration::from_hours(1),
+        gc_grace_period: std::time::Duration::from_hours(1),
     };
     BackendBundle {
         config,
@@ -286,8 +286,8 @@ pub async fn postgres_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: std::time::Duration::from_secs(3600),
-        gc_grace_period: std::time::Duration::from_secs(3600),
+        gc_sweep_interval: std::time::Duration::from_hours(1),
+        gc_grace_period: std::time::Duration::from_hours(1),
     };
     BackendBundle {
         config,

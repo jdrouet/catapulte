@@ -43,7 +43,7 @@ impl Worker {
         loop {
             let result = tokio::select! {
                 biased;
-                _ = cancel.cancelled() => break,
+                () = cancel.cancelled() => break,
                 result = state.email_queue().dequeue() => result,
             };
 
@@ -65,8 +65,8 @@ impl Worker {
                     tracing::error!(error = %e, "failed to dequeue");
                     tokio::select! {
                         biased;
-                        _ = cancel.cancelled() => break,
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                        () = cancel.cancelled() => break,
+                        () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
                     }
                 }
             }
@@ -310,7 +310,7 @@ mod tests {
         }
     }
 
-    /// Repository that records set_attachments calls in a shared operation log.
+    /// Repository that records `set_attachments` calls in a shared operation log.
     #[derive(Clone)]
     struct LoggingRepository {
         log: OperationLog,

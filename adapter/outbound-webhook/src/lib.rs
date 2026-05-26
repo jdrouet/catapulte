@@ -164,7 +164,7 @@ mod tests {
 
     use super::WebhookPublisher;
 
-    async fn publisher_for(server: &MockServer) -> WebhookPublisher {
+    fn publisher_for(server: &MockServer) -> WebhookPublisher {
         let url = url::Url::parse(&server.uri()).unwrap();
         WebhookPublisher::new(reqwest::Client::new(), url)
     }
@@ -179,7 +179,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let publisher = publisher_for(&server).await;
+        let publisher = publisher_for(&server);
         let id = EmailId::default();
         publisher
             .publish(&LifecycleEvent::Queued {
@@ -207,7 +207,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let publisher = publisher_for(&server).await;
+        let publisher = publisher_for(&server);
         let id = EmailId::default();
         publisher
             .publish(&LifecycleEvent::Queued {
@@ -227,7 +227,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let publisher = publisher_for(&server).await;
+        let publisher = publisher_for(&server);
         let id = EmailId::default();
         let result = publisher
             .publish(&LifecycleEvent::Queued {
@@ -250,7 +250,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let publisher = publisher_for(&server).await;
+        let publisher = publisher_for(&server);
         let id = EmailId::default();
         publisher
             .publish(&LifecycleEvent::Failed {

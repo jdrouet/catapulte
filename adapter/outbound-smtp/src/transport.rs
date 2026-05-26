@@ -78,8 +78,8 @@ fn apply_recipients(
     Ok(builder)
 }
 
-fn build_body_part(body: &RenderedBody) -> anyhow::Result<MultiPart> {
-    let part = match (body.text(), body.html()) {
+fn build_body_part(body: &RenderedBody) -> MultiPart {
+    match (body.text(), body.html()) {
         (Some(text), Some(html)) => MultiPart::alternative()
             .singlepart(
                 SinglePart::builder()
@@ -104,8 +104,7 @@ fn build_body_part(body: &RenderedBody) -> anyhow::Result<MultiPart> {
         (None, None) => {
             unreachable!("Plain invariant: at least one of text or html must be provided")
         }
-    };
-    Ok(part)
+    }
 }
 
 fn finalize_message(
@@ -150,7 +149,7 @@ fn finalize_message(
         };
         msg.context("building email message")
     } else {
-        let body_part = build_body_part(body)?;
+        let body_part = build_body_part(body);
         let mut mixed = MultiPart::mixed().multipart(body_part);
         for att in attachments {
             let content_type = ContentType::parse(&att.content_type).with_context(|| {

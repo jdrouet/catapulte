@@ -182,7 +182,7 @@ mod tests {
         let gc = AttachmentGc::new(
             storage,
             fs_store.clone(),
-            std::time::Duration::from_secs(3600),
+            std::time::Duration::from_hours(1),
             std::time::Duration::ZERO,
         );
         gc.sweep_once(&cancel).await.expect("sweep_once");

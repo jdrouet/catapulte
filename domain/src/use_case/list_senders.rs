@@ -120,10 +120,12 @@ mod tests {
 
     use super::{ListSendersError, ListSendersService, ListSendersUseCase};
 
+    type CallLog = Arc<Mutex<Vec<(Vec<SenderName>, i64)>>>;
+
     struct FakeSenderUsage {
         data: HashMap<String, SenderStats>,
         call_count: Arc<Mutex<usize>>,
-        calls: Arc<Mutex<Vec<(Vec<SenderName>, i64)>>>,
+        calls: CallLog,
         fail: bool,
     }
 

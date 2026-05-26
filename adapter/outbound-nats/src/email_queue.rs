@@ -146,7 +146,7 @@ mod nak_tests {
 
     #[test]
     fn one_hour_delay_formats_correctly() {
-        let s = nak_payload(Duration::from_secs(3600));
+        let s = nak_payload(Duration::from_hours(1));
         assert_eq!(s, format!("-NAK {{\"delay\":{}}}", 3_600_000_000_000i64));
     }
 

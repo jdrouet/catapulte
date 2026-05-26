@@ -101,6 +101,7 @@ impl AppConfig {
     /// # Errors
     ///
     /// Returns an error when an adapter fails to build.
+    #[allow(clippy::too_many_lines)]
     pub async fn build(self) -> anyhow::Result<Application> {
         let storage = self
             .storage
@@ -208,7 +209,7 @@ impl AppConfig {
         let server = self.http.build();
         let worker = self.worker.build();
 
-        let gc_fs_store: Option<FsAttachmentStore> = attachment_store.as_fs().map(Clone::clone);
+        let gc_fs_store: Option<FsAttachmentStore> = attachment_store.as_fs().cloned();
         let gc = gc_fs_store.map(|fs_store| {
             gc::AttachmentGc::new(
                 storage.clone(),
@@ -226,9 +227,9 @@ impl AppConfig {
         Ok(Application {
             state,
             server,
+            inbound_nats_server,
             worker,
             gc,
-            inbound_nats_server,
         })
     }
 }

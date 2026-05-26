@@ -7,6 +7,7 @@ pub struct TestContext {
 }
 
 impl TestContext {
+    #[allow(clippy::unused_self)]
     pub fn simple_payload(&self, recipient: &str, text: &str) -> serde_json::Value {
         serde_json::json!({
             "sender": "sender@example.com",
@@ -37,14 +38,11 @@ impl TestContext {
                 .get(format!("{}/api/v1/messages", self.mailpit_api_base))
                 .send()
                 .await
+                && let Ok(body) = resp.json::<serde_json::Value>().await
+                && let Some(msgs) = body["messages"].as_array()
+                && msgs.len() >= expected
             {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    if let Some(msgs) = body["messages"].as_array() {
-                        if msgs.len() >= expected {
-                            return msgs.clone();
-                        }
-                    }
-                }
+                return msgs.clone();
             }
             if tokio::time::Instant::now() >= deadline {
                 return vec![];
@@ -76,17 +74,14 @@ impl TestContext {
         let url = format!("{}/emails/{email_id}/events", self.http_base);
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            if let Ok(resp) = self.client.get(&url).send().await {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    if let Some(events) = body["events"].as_array() {
-                        if let Some(ev) = events
-                            .iter()
-                            .find(|e| e["event_type"].as_str() == Some(event_type))
-                        {
-                            return Some(ev.clone());
-                        }
-                    }
-                }
+            if let Ok(resp) = self.client.get(&url).send().await
+                && let Ok(body) = resp.json::<serde_json::Value>().await
+                && let Some(events) = body["events"].as_array()
+                && let Some(ev) = events
+                    .iter()
+                    .find(|e| e["event_type"].as_str() == Some(event_type))
+            {
+                return Some(ev.clone());
             }
             if tokio::time::Instant::now() >= deadline {
                 return None;

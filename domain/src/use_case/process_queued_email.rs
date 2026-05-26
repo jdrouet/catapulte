@@ -175,6 +175,17 @@ mod tests {
 
     use super::{ProcessQueuedEmailError, ProcessQueuedEmailService};
 
+    type CapturingService = (
+        ProcessQueuedEmailService<
+            FakeResolver,
+            FakeInterpolator,
+            FakeRenderer,
+            CapturingSender,
+            FakeAttachmentStore,
+        >,
+        Arc<Mutex<Option<OutboundEmail>>>,
+    );
+
     struct FakeAttachmentStore;
 
     #[allow(async_fn_in_trait)]
@@ -518,16 +529,7 @@ mod tests {
         assert!(matches!(err, ProcessQueuedEmailError::Render(_)));
     }
 
-    fn capturing_service() -> (
-        ProcessQueuedEmailService<
-            FakeResolver,
-            FakeInterpolator,
-            FakeRenderer,
-            CapturingSender,
-            FakeAttachmentStore,
-        >,
-        Arc<Mutex<Option<OutboundEmail>>>,
-    ) {
+    fn capturing_service() -> CapturingService {
         let (sender, spy) = CapturingSender::new();
         let service = ProcessQueuedEmailService::new(
             FakeResolver {

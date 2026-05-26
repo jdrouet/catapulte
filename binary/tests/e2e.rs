@@ -80,6 +80,7 @@ fn base_attachment_fetcher()
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn multi_sender_primary_delivers_email_before_backup() {
     let mailpit = start_mailpit().await;
     let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
@@ -131,8 +132,8 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: Duration::from_secs(3600),
-        gc_grace_period: Duration::from_secs(3600),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -243,6 +244,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn multi_sender_falls_back_to_backup_when_primary_fails() {
     let mailpit = start_mailpit().await;
     let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
@@ -294,8 +296,8 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: Duration::from_secs(3600),
-        gc_grace_period: Duration::from_secs(3600),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -406,6 +408,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn sent_email_blob_is_deleted_after_delivery() {
     use base64::Engine as _;
 
@@ -436,8 +439,8 @@ async fn sent_email_blob_is_deleted_after_delivery() {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: Duration::from_secs(3600),
-        gc_grace_period: Duration::from_secs(3600),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -503,11 +506,11 @@ async fn sent_email_blob_is_deleted_after_delivery() {
     for _ in 0..50 {
         let count = std::fs::read_dir(&attachment_path)
             .expect("read attachment dir")
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| {
                 let name = e.file_name();
                 let n = name.to_string_lossy();
-                !n.starts_with('.') && e.file_type().map(|ft| ft.is_file()).unwrap_or(false)
+                !n.starts_with('.') && e.file_type().is_ok_and(|ft| ft.is_file())
             })
             .count();
         if count == 0 {
@@ -580,8 +583,8 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
                 fetch_timeout: Duration::from_secs(30),
             },
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: Duration::from_secs(3600),
-        gc_grace_period: Duration::from_secs(3600),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -729,8 +732,8 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: Duration::from_secs(3600),
-        gc_grace_period: Duration::from_secs(3600),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -809,13 +812,12 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
         }
         match tokio::time::timeout(remaining, lifecycle_sub.next()).await {
             Ok(Some(msg)) => {
-                if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&msg.payload) {
-                    if body["event_type"].as_str() == Some("sent")
-                        && body["payload"]["correlation_id"].as_str() == Some("corr-e2e-test")
-                    {
-                        found_sent = true;
-                        break;
-                    }
+                if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&msg.payload)
+                    && body["event_type"].as_str() == Some("sent")
+                    && body["payload"]["correlation_id"].as_str() == Some("corr-e2e-test")
+                {
+                    found_sent = true;
+                    break;
                 }
             }
             Ok(None) | Err(_) => break,
@@ -853,8 +855,8 @@ async fn submit_email_with_disallowed_remote_attachment_returns_400() {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
-        gc_sweep_interval: Duration::from_secs(3600),
-        gc_grace_period: Duration::from_secs(3600),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
     };
 
     let app = config.build().await.expect("failed to build app");

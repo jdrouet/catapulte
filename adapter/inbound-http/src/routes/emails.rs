@@ -678,7 +678,7 @@ mod tests {
         use crate::dto::MAX_ATTACHMENT_BYTES;
         use base64::Engine;
         let app = make_router();
-        let big = vec![0u8; (MAX_ATTACHMENT_BYTES + 1) as usize];
+        let big = vec![0u8; usize::try_from(MAX_ATTACHMENT_BYTES + 1).unwrap()];
         let encoded = base64::engine::general_purpose::STANDARD.encode(&big);
         let payload = serde_json::json!({
             "sender": "a@b.c",

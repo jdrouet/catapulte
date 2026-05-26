@@ -80,6 +80,7 @@ impl SqliteAdapter {
     async fn try_dequeue(
         &self,
     ) -> Result<Option<(EmailId, Envelope, u32, AckToken)>, EmailQueueError> {
+        use sqlx::Row;
         let now = now_ms();
         let processing_timeout_ms: i64 = 300_000;
         let claim_until = now + processing_timeout_ms;
@@ -102,12 +103,7 @@ impl SqliteAdapter {
         .context("claiming next queue entry")
         .map_err(|source| EmailQueueError::Storage { source })?;
 
-        let row = match maybe {
-            None => return Ok(None),
-            Some(row) => row,
-        };
-
-        use sqlx::Row;
+        let Some(row) = maybe else { return Ok(None) };
         let entry_id_bytes: Vec<u8> = row
             .try_get("id")
             .context("reading entry id")

@@ -63,11 +63,11 @@ pub async fn run_scenario<S, SFut, B, BFut>(
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     let mut ready = false;
     while std::time::Instant::now() < deadline {
-        if let Ok(resp) = client.get(format!("{http_base}/health/ready")).send().await {
-            if resp.status().is_success() {
-                ready = true;
-                break;
-            }
+        if let Ok(resp) = client.get(format!("{http_base}/health/ready")).send().await
+            && resp.status().is_success()
+        {
+            ready = true;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -88,10 +88,10 @@ pub async fn run_scenario<S, SFut, B, BFut>(
     match tokio::time::timeout(Duration::from_secs(15), app_task).await {
         Ok(Ok(Ok(()))) => {}
         Ok(Ok(Err(e))) => {
-            tracing::warn!("{scenario_name}__{backend_name}: app exited with error: {e}")
+            tracing::warn!("{scenario_name}__{backend_name}: app exited with error: {e}");
         }
         Ok(Err(join_err)) => {
-            tracing::warn!("{scenario_name}__{backend_name}: app task panicked: {join_err}")
+            tracing::warn!("{scenario_name}__{backend_name}: app task panicked: {join_err}");
         }
         Err(_) => {
             tracing::warn!(

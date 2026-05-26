@@ -213,14 +213,14 @@ where
             }
         }
 
-        if !written_refs.is_empty() {
-            if let Err(e) = self.repository.set_attachments(id, &written_refs).await {
-                for r in &written_refs {
-                    let _ = self.attachment_store.delete(&r.blob).await;
-                }
-                let _ = self.repository.delete(id).await;
-                return Err(SubmitEmailError::Persist(e));
+        if !written_refs.is_empty()
+            && let Err(e) = self.repository.set_attachments(id, &written_refs).await
+        {
+            for r in &written_refs {
+                let _ = self.attachment_store.delete(&r.blob).await;
             }
+            let _ = self.repository.delete(id).await;
+            return Err(SubmitEmailError::Persist(e));
         }
 
         let envelope = Envelope {
