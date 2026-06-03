@@ -35,3 +35,9 @@ fmt:
 # Run clippy with the workspace lint config.
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
+
+# Run smoke tests on all docker-compose configurations
+test-compose:
+    ./scripts/smoke-test.sh compose/local-dev.yml
+    ./scripts/smoke-test.sh compose/sqlite.yml
+    ./scripts/smoke-test.sh compose/postgres-nats.yml

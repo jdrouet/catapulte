@@ -1,0 +1,11 @@
+# Override applied only by scripts/smoke-test.sh.
+#
+# It drops the published host ports so the smoke suite can run alongside other
+# stacks (or run all three configs back to back) without colliding on fixed
+# ports. The test client reaches catapulte and mailpit over the compose network
+# instead of via localhost.
+services:
+  catapulte:
+    ports: !reset []
+  mailpit:
+    ports: !reset []
