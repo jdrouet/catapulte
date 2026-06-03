@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use catapulte_domain::entity::attachment::BlobRef;
 use catapulte_domain::port::email_repository::EmailRepository;
-use catapulte_outbound_attachment_fs::store::FsAttachmentStore;
 use tokio_util::sync::CancellationToken;
 
+use crate::attachment_store::AttachmentStoreAdapter;
 use crate::storage::StorageAdapter;
 
 pub struct AttachmentGc {
     repository: StorageAdapter,
-    store: FsAttachmentStore,
+    store: AttachmentStoreAdapter,
     sweep_interval: Duration,
     grace_period: Duration,
 }
@@ -19,7 +19,7 @@ impl AttachmentGc {
     #[must_use]
     pub fn new(
         repository: StorageAdapter,
-        store: FsAttachmentStore,
+        store: AttachmentStoreAdapter,
         sweep_interval: Duration,
         grace_period: Duration,
     ) -> Self {
@@ -54,10 +54,11 @@ impl AttachmentGc {
             return Ok(());
         }
 
+        let backend = self.store.backend_name();
         let live_blobs = self.repository.list_all_attachment_blobs().await?;
         let live: HashSet<String> = live_blobs
             .into_iter()
-            .filter(|b| b.backend == "fs")
+            .filter(|b| b.backend == backend)
             .map(|b| b.key)
             .collect();
 
@@ -68,7 +69,7 @@ impl AttachmentGc {
             }
             if !live.contains(&key) {
                 let blob = BlobRef {
-                    backend: "fs".into(),
+                    backend: backend.to_owned(),
                     key,
                 };
                 if let Err(e) = catapulte_domain::port::attachment_store::AttachmentStore::delete(
@@ -102,6 +103,7 @@ mod tests {
     use catapulte_outbound_attachment_fs::store::FsAttachmentStore;
 
     use super::AttachmentGc;
+    use crate::attachment_store::AttachmentStoreAdapter;
     use crate::storage::StorageAdapter;
 
     async fn fresh_sqlite() -> (StorageAdapter, tempfile::TempDir) {
@@ -181,7 +183,7 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let gc = AttachmentGc::new(
             storage,
-            fs_store.clone(),
+            AttachmentStoreAdapter::Fs(fs_store.clone()),
             std::time::Duration::from_hours(1),
             std::time::Duration::ZERO,
         );

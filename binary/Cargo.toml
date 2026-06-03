@@ -25,6 +25,7 @@ catapulte-outbound-postgres = { path = "../adapter/outbound-postgres" }
 catapulte-outbound-sqlite = { path = "../adapter/outbound-sqlite" }
 catapulte-outbound-attachment-fetcher = { path = "../adapter/outbound-attachment-fetcher" }
 catapulte-outbound-attachment-fs = { path = "../adapter/outbound-attachment-fs" }
+catapulte-outbound-attachment-s3 = { path = "../adapter/outbound-attachment-s3" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }

@@ -8,7 +8,6 @@ use catapulte_inbound_http::{InboundHttpConfig, InboundHttpServer};
 use catapulte_inbound_nats::server::{InboundNatsConfig, InboundNatsServer};
 use catapulte_inbound_worker::worker::{Worker, WorkerConfig};
 use catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcher;
-use catapulte_outbound_attachment_fs::store::FsAttachmentStore;
 use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
@@ -211,15 +210,12 @@ impl AppConfig {
         let server = self.http.build();
         let worker = self.worker.build();
 
-        let gc_fs_store: Option<FsAttachmentStore> = attachment_store.as_fs().cloned();
-        let gc = gc_fs_store.map(|fs_store| {
-            gc::AttachmentGc::new(
-                storage.clone(),
-                fs_store,
-                self.gc_sweep_interval,
-                self.gc_grace_period,
-            )
-        });
+        let gc = gc::AttachmentGc::new(
+            storage.clone(),
+            attachment_store.clone(),
+            self.gc_sweep_interval,
+            self.gc_grace_period,
+        );
 
         let inbound_nats_server = match self.inbound_nats {
             Some(cfg) => Some(cfg.build().await.context("building inbound NATS server")?),
@@ -241,7 +237,7 @@ pub struct Application {
     server: InboundHttpServer,
     inbound_nats_server: Option<InboundNatsServer>,
     worker: Worker,
-    gc: Option<gc::AttachmentGc>,
+    gc: gc::AttachmentGc,
 }
 
 impl Application {
@@ -284,13 +280,11 @@ impl Application {
         });
 
         // GC
-        if let Some(gc) = self.gc {
-            let gc_cancel = cancel.clone();
-            tasks.spawn(async move {
-                gc.run(gc_cancel).await;
-                Ok(())
-            });
-        }
+        let gc_cancel = cancel.clone();
+        tasks.spawn(async move {
+            self.gc.run(gc_cancel).await;
+            Ok(())
+        });
 
         // Inbound NATS (optional)
         if let Some(inbound) = self.inbound_nats_server {
