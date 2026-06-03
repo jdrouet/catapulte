@@ -1,0 +1,29 @@
+services:
+  catapulte:
+    build:
+      context: ..
+    ports:
+      - "3000:3000"
+    environment:
+      - "CATAPULTE_HTTP_ADDRESS=0.0.0.0:3000"
+      - "CATAPULTE_STORAGE_BACKEND=sqlite"
+      - "CATAPULTE_SQLITE_URL=sqlite:///data/catapulte.db"
+      - "CATAPULTE_QUEUE_BACKEND=storage"
+      - "CATAPULTE_SENDERS=mailpit"
+      - "CATAPULTE_SENDER_MAILPIT_HOST=mailpit"
+      - "CATAPULTE_SENDER_MAILPIT_PORT=1025"
+      - "CATAPULTE_SENDER_MAILPIT_TLS=none"
+      - "CATAPULTE_ATTACHMENT_FS_ROOT=/data/attachments"
+    volumes:
+      - catapulte_data:/data
+    depends_on:
+      - mailpit
+
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "8025:8025" # Web UI
+      - "1025:1025" # SMTP
+
+volumes:
+  catapulte_data:

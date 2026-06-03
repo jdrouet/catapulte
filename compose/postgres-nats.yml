@@ -1,0 +1,58 @@
+services:
+  catapulte:
+    build:
+      context: ..
+    ports:
+      - "3000:3000"
+    environment:
+      - "CATAPULTE_HTTP_ADDRESS=0.0.0.0:3000"
+      - "CATAPULTE_STORAGE_BACKEND=postgres"
+      - "CATAPULTE_POSTGRES_URL=postgres://catapulte:catapulte@postgres:5432/catapulte"
+      - "CATAPULTE_QUEUE_BACKEND=nats"
+      - "CATAPULTE_QUEUE_URL=nats://nats:4222"
+      - "CATAPULTE_NATS_EVENTS_URL=nats://nats:4222"
+      - "CATAPULTE_SENDERS=mailpit"
+      - "CATAPULTE_SENDER_MAILPIT_HOST=mailpit"
+      - "CATAPULTE_SENDER_MAILPIT_PORT=1025"
+      - "CATAPULTE_SENDER_MAILPIT_TLS=none"
+      - "CATAPULTE_ATTACHMENT_FS_ROOT=/data/attachments"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+      mailpit:
+        condition: service_started
+    volumes:
+      - catapulte_data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - "POSTGRES_USER=catapulte"
+      - "POSTGRES_PASSWORD=catapulte"
+      - "POSTGRES_DB=catapulte"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catapulte"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js"]
+    volumes:
+      - nats_data:/data
+
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "8025:8025" # Web UI
+      - "1025:1025" # SMTP
+
+volumes:
+  catapulte_data:
+  postgres_data:
+  nats_data:
