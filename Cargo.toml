@@ -9,6 +9,7 @@ members = [
     "adapter/outbound-queue-memory",
     "adapter/outbound-attachment-fetcher",
     "adapter/outbound-attachment-fs",
+    "adapter/outbound-attachment-s3",
     "adapter/outbound-resolver",
     "adapter/outbound-smtp",
     "adapter/outbound-nats",
