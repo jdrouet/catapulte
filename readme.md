@@ -42,6 +42,8 @@ The easiest way to run Catapulte is using Docker Compose. Several examples are p
   Starts Catapulte with a persistent SQLite database.
 - **Postgres & NATS**: `docker-compose -f compose/postgres-nats.yml up`
   A more robust setup using Postgres for storage and NATS for the email queue and events.
+- **MinIO (S3 attachments)**: `docker-compose -f compose/minio.yml up`
+  Runs Catapulte with a local [MinIO](https://min.io) instance as the S3-compatible attachment backend.
 
 
 ### Verifying the Setup
@@ -158,10 +160,20 @@ For each `{NAME}` in the list:
 ### Attachments
 
 #### Attachment Store
+
+Catapulte supports storing attachments on the local filesystem (`fs`, default) or in any S3-compatible object store such as MinIO or Cloudflare R2 (`s3`). The garbage collector sweeps both backends, removing orphaned objects older than the configured grace period.
+
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CATAPULTE_ATTACHMENT_BACKEND` | Currently only `fs` is supported | `fs` |
-| `CATAPULTE_ATTACHMENT_FS_ROOT` | Directory for attachment storage | - |
+| `CATAPULTE_ATTACHMENT_BACKEND` | Attachment backend: `fs` or `s3` | `fs` |
+| `CATAPULTE_ATTACHMENT_FS_ROOT` | Directory for attachment storage (when backend is `fs`) | - |
+| `CATAPULTE_ATTACHMENT_S3_ENDPOINT` | **(Required)** S3-compatible endpoint URL (e.g. `http://localhost:9000` for MinIO) | - |
+| `CATAPULTE_ATTACHMENT_S3_REGION` | AWS region or region hint for the endpoint | `us-east-1` |
+| `CATAPULTE_ATTACHMENT_S3_BUCKET` | **(Required)** Bucket name | - |
+| `CATAPULTE_ATTACHMENT_S3_ACCESS_KEY_ID` | **(Required)** Access key ID | - |
+| `CATAPULTE_ATTACHMENT_S3_SECRET_ACCESS_KEY` | **(Required)** Secret access key | - |
+| `CATAPULTE_ATTACHMENT_S3_PATH_STYLE` | Use path-style addressing (keep `true` for MinIO and most self-hosted gateways) | `true` |
+| `CATAPULTE_ATTACHMENT_S3_PREFIX` | Object key prefix / folder within the bucket | - |
 
 #### Attachment Fetcher
 | Variable | Description | Default |
