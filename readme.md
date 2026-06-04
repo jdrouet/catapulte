@@ -44,6 +44,8 @@ The easiest way to run Catapulte is using Docker Compose. Several examples are p
   A more robust setup using Postgres for storage and NATS for the email queue and events.
 - **MinIO (S3 attachments)**: `docker-compose -f compose/minio.yml up`
   Runs Catapulte with a local [MinIO](https://min.io) instance as the S3-compatible attachment backend.
+- **Redis (attachments)**: `docker-compose -f compose/redis.yml up`
+  Runs Catapulte with a Redis instance as the attachment backend.
 
 
 ### Verifying the Setup
@@ -161,11 +163,11 @@ For each `{NAME}` in the list:
 
 #### Attachment Store
 
-Catapulte supports storing attachments on the local filesystem (`fs`, default) or in any S3-compatible object store such as MinIO or Cloudflare R2 (`s3`). The garbage collector sweeps both backends, removing orphaned objects older than the configured grace period.
+Catapulte supports storing attachments on the local filesystem (`fs`, default), in any S3-compatible object store such as MinIO or Cloudflare R2 (`s3`), or in Redis (`redis`). The garbage collector sweeps all backends, removing orphaned objects older than the configured grace period.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CATAPULTE_ATTACHMENT_BACKEND` | Attachment backend: `fs` or `s3` | `fs` |
+| `CATAPULTE_ATTACHMENT_BACKEND` | Attachment backend: `fs`, `s3`, or `redis` | `fs` |
 | `CATAPULTE_ATTACHMENT_FS_ROOT` | Directory for attachment storage (when backend is `fs`) | - |
 | `CATAPULTE_ATTACHMENT_S3_ENDPOINT` | **(Required)** S3-compatible endpoint URL (e.g. `http://localhost:9000` for MinIO) | - |
 | `CATAPULTE_ATTACHMENT_S3_REGION` | AWS region or region hint for the endpoint | `us-east-1` |
@@ -174,6 +176,8 @@ Catapulte supports storing attachments on the local filesystem (`fs`, default) o
 | `CATAPULTE_ATTACHMENT_S3_SECRET_ACCESS_KEY` | **(Required)** Secret access key | - |
 | `CATAPULTE_ATTACHMENT_S3_PATH_STYLE` | Use path-style addressing (keep `true` for MinIO and most self-hosted gateways) | `true` |
 | `CATAPULTE_ATTACHMENT_S3_PREFIX` | Object key prefix / folder within the bucket | - |
+| `CATAPULTE_ATTACHMENT_REDIS_URL` | **(Required)** Redis connection URL (e.g. `redis://localhost:6379`, or `rediss://` for TLS) | - |
+| `CATAPULTE_ATTACHMENT_REDIS_PREFIX` | Key prefix / namespace for stored blobs | - |
 
 #### Attachment Fetcher
 | Variable | Description | Default |

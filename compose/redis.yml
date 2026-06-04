@@ -1,0 +1,38 @@
+services:
+  catapulte:
+    build:
+      context: ..
+    ports:
+      - "3000:3000"
+    environment:
+      - "CATAPULTE_HTTP_ADDRESS=0.0.0.0:3000"
+      - "CATAPULTE_STORAGE_BACKEND=sqlite"
+      - "CATAPULTE_SQLITE_URL=:memory:"
+      - "CATAPULTE_QUEUE_BACKEND=storage"
+      - "CATAPULTE_SENDERS=mailpit"
+      - "CATAPULTE_SENDER_MAILPIT_HOST=mailpit"
+      - "CATAPULTE_SENDER_MAILPIT_PORT=1025"
+      - "CATAPULTE_SENDER_MAILPIT_TLS=none"
+      - "CATAPULTE_ATTACHMENT_BACKEND=redis"
+      - "CATAPULTE_ATTACHMENT_REDIS_URL=redis://redis:6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "8025:8025" # Web UI
+      - "1025:1025" # SMTP
