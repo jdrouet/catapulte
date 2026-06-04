@@ -10,6 +10,7 @@ members = [
     "adapter/outbound-attachment-fetcher",
     "adapter/outbound-attachment-fs",
     "adapter/outbound-attachment-s3",
+    "adapter/outbound-attachment-redis",
     "adapter/outbound-resolver",
     "adapter/outbound-smtp",
     "adapter/outbound-nats",
