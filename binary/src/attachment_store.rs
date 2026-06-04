@@ -3,12 +3,16 @@ use catapulte_domain::port::attachment_store::{
     AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
 };
 use catapulte_outbound_attachment_fs::store::{FsAttachmentStore, FsAttachmentStoreConfig};
+use catapulte_outbound_attachment_redis::store::{
+    RedisAttachmentStore, RedisAttachmentStoreConfig,
+};
 use catapulte_outbound_attachment_s3::store::{S3AttachmentStore, S3AttachmentStoreConfig};
 
 #[derive(Clone)]
 pub enum AttachmentStoreAdapter {
     Fs(FsAttachmentStore),
     S3(S3AttachmentStore),
+    Redis(RedisAttachmentStore),
 }
 
 impl AttachmentStore for AttachmentStoreAdapter {
@@ -16,6 +20,7 @@ impl AttachmentStore for AttachmentStoreAdapter {
         match self {
             Self::Fs(s) => s.put(reader).await,
             Self::S3(s) => s.put(reader).await,
+            Self::Redis(s) => s.put(reader).await,
         }
     }
 
@@ -23,6 +28,7 @@ impl AttachmentStore for AttachmentStoreAdapter {
         match self {
             Self::Fs(s) => s.get(blob).await,
             Self::S3(s) => s.get(blob).await,
+            Self::Redis(s) => s.get(blob).await,
         }
     }
 
@@ -30,6 +36,7 @@ impl AttachmentStore for AttachmentStoreAdapter {
         match self {
             Self::Fs(s) => s.delete(blob).await,
             Self::S3(s) => s.delete(blob).await,
+            Self::Redis(s) => s.delete(blob).await,
         }
     }
 }
@@ -37,6 +44,7 @@ impl AttachmentStore for AttachmentStoreAdapter {
 pub enum AttachmentStoreBackendConfig {
     Fs(FsAttachmentStoreConfig),
     S3(S3AttachmentStoreConfig),
+    Redis(RedisAttachmentStoreConfig),
 }
 
 impl AttachmentStoreBackendConfig {
@@ -53,6 +61,9 @@ impl AttachmentStoreBackendConfig {
             "s3" => Ok(Self::S3(S3AttachmentStoreConfig::from_env(
                 "CATAPULTE_ATTACHMENT_S3",
             )?)),
+            "redis" => Ok(Self::Redis(RedisAttachmentStoreConfig::from_env(
+                "CATAPULTE_ATTACHMENT_REDIS",
+            )?)),
             other => anyhow::bail!(
                 "unknown attachment backend {other:?} in env var CATAPULTE_ATTACHMENT_BACKEND"
             ),
@@ -66,6 +77,7 @@ impl AttachmentStoreBackendConfig {
         match self {
             Self::Fs(cfg) => Ok(AttachmentStoreAdapter::Fs(cfg.build().await?)),
             Self::S3(cfg) => Ok(AttachmentStoreAdapter::S3(cfg.build().await?)),
+            Self::Redis(cfg) => Ok(AttachmentStoreAdapter::Redis(cfg.build().await?)),
         }
     }
 }
@@ -77,6 +89,7 @@ impl AttachmentStoreAdapter {
         match self {
             Self::Fs(_) => "fs",
             Self::S3(_) => "s3",
+            Self::Redis(_) => "redis",
         }
     }
 
@@ -92,6 +105,7 @@ impl AttachmentStoreAdapter {
         match self {
             Self::Fs(s) => s.list_keys_older_than(age).await,
             Self::S3(s) => s.list_keys_older_than(age).await,
+            Self::Redis(s) => s.list_keys_older_than(age).await,
         }
     }
 }
