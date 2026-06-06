@@ -56,6 +56,15 @@ impl EmailQueue for QueueAdapter {
     }
 }
 
+impl catapulte_domain::port::health::HealthCheck for QueueAdapter {
+    async fn check(&self) -> Result<(), catapulte_domain::port::health::HealthCheckError> {
+        match self {
+            Self::Sqlite(_) | Self::Postgres(_) | Self::Memory(_) => Ok(()),
+            Self::Nats(a) => catapulte_domain::port::health::HealthCheck::check(a).await,
+        }
+    }
+}
+
 pub enum QueueBackendConfig {
     Storage,
     Memory,

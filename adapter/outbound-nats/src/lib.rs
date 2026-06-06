@@ -1,6 +1,7 @@
 pub mod dto;
 pub mod email_queue;
 pub mod event_publisher;
+mod health;
 
 use anyhow::Context;
 use async_nats::jetstream;

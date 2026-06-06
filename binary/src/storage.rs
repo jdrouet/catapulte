@@ -88,6 +88,15 @@ impl EventRepository for StorageAdapter {
     }
 }
 
+impl catapulte_domain::port::health::HealthCheck for StorageAdapter {
+    async fn check(&self) -> Result<(), catapulte_domain::port::health::HealthCheckError> {
+        match self {
+            Self::Sqlite(a) => catapulte_domain::port::health::HealthCheck::check(a).await,
+            Self::Postgres(a) => catapulte_domain::port::health::HealthCheck::check(a).await,
+        }
+    }
+}
+
 impl catapulte_domain::port::sender_usage::SenderUsage for StorageAdapter {
     async fn get_stats(
         &self,

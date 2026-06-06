@@ -194,10 +194,26 @@ mod tests {
         }
     }
 
+    struct NoopReadiness;
+
+    impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase for NoopReadiness {
+        async fn check_readiness(&self) -> catapulte_domain::use_case::check_readiness::Readiness {
+            catapulte_domain::use_case::check_readiness::Readiness::Ready
+        }
+    }
+
     #[derive(Clone)]
     struct TestState {
         submit: Arc<FakeSubmit>,
         list_events: Arc<FakeListEvents>,
+    }
+
+    impl crate::ReadinessState for TestState {
+        fn check_readiness(
+            &self,
+        ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase {
+            &NoopReadiness
+        }
     }
 
     impl HttpServerState for TestState {
@@ -221,6 +237,14 @@ mod tests {
     #[derive(Clone)]
     struct FailingRepoState {
         submit: Arc<FakeSubmit>,
+    }
+
+    impl crate::ReadinessState for FailingRepoState {
+        fn check_readiness(
+            &self,
+        ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase {
+            &NoopReadiness
+        }
     }
 
     impl HttpServerState for FailingRepoState {
@@ -279,6 +303,7 @@ mod tests {
                 list_events,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         let response = app
             .oneshot(get_events(&email_id.as_uuid().to_string(), ""))
@@ -301,6 +326,7 @@ mod tests {
                 list_events,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         let response = app.oneshot(get_events("not-a-uuid", "")).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -316,6 +342,7 @@ mod tests {
                 list_events,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_events(&valid_email_id(), "?limit=500"))
             .await
@@ -334,6 +361,7 @@ mod tests {
                 list_events,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_events(&valid_email_id(), ""))
             .await
@@ -352,6 +380,7 @@ mod tests {
                 list_events,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_events(&valid_email_id(), "?event_type=sent"))
             .await
@@ -367,6 +396,7 @@ mod tests {
                 submit: Arc::new(FakeSubmit),
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         let response = app
             .oneshot(get_events(&valid_email_id(), ""))
@@ -385,6 +415,7 @@ mod tests {
                 list_events,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_all_events("")).await.unwrap();
         let params = captured.lock().unwrap();
@@ -402,6 +433,7 @@ mod tests {
                 list_events,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_all_events(&format!("?email_id={uuid}")))
             .await
@@ -419,6 +451,7 @@ mod tests {
                 list_events,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         let response = app
             .oneshot(get_all_events("?email_id=not-a-uuid"))
@@ -437,6 +470,7 @@ mod tests {
                 list_events,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_all_events("")).await.unwrap();
         let params = captured.lock().unwrap();
@@ -453,6 +487,7 @@ mod tests {
                 list_events,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_all_events("?limit=999")).await.unwrap();
         let params = captured.lock().unwrap();

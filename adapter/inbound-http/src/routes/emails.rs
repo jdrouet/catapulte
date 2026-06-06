@@ -258,6 +258,14 @@ mod tests {
         }
     }
 
+    struct NoopReadiness;
+
+    impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase for NoopReadiness {
+        async fn check_readiness(&self) -> catapulte_domain::use_case::check_readiness::Readiness {
+            catapulte_domain::use_case::check_readiness::Readiness::Ready
+        }
+    }
+
     #[derive(Clone)]
     struct FakeSubmit;
 
@@ -331,6 +339,14 @@ mod tests {
         list_emails: Arc<FakeListEmails>,
     }
 
+    impl crate::ReadinessState for TestState {
+        fn check_readiness(
+            &self,
+        ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase {
+            &NoopReadiness
+        }
+    }
+
     impl HttpServerState for TestState {
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
@@ -355,6 +371,14 @@ mod tests {
         list_emails: Arc<FakeListEmails>,
     }
 
+    impl crate::ReadinessState for FailingTestState {
+        fn check_readiness(
+            &self,
+        ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase {
+            &NoopReadiness
+        }
+    }
+
     impl HttpServerState for FailingTestState {
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
@@ -376,6 +400,14 @@ mod tests {
     #[derive(Clone)]
     struct FailingEmailRepoState {
         submit: Arc<FakeSubmit>,
+    }
+
+    impl crate::ReadinessState for FailingEmailRepoState {
+        fn check_readiness(
+            &self,
+        ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase {
+            &NoopReadiness
+        }
     }
 
     impl HttpServerState for FailingEmailRepoState {
@@ -403,6 +435,7 @@ mod tests {
                 list_emails: Arc::new(FakeListEmails::new()),
             },
             None,
+            std::time::Duration::from_secs(30),
         )
     }
 
@@ -413,6 +446,7 @@ mod tests {
                 list_emails: Arc::new(FakeListEmails::new()),
             },
             None,
+            std::time::Duration::from_secs(30),
         )
     }
 
@@ -518,6 +552,7 @@ mod tests {
                 list_emails,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         let response = app.oneshot(get_emails("")).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -544,6 +579,7 @@ mod tests {
                 list_emails,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_emails("?status=sent")).await.unwrap();
         let params = captured.lock().unwrap();
@@ -560,6 +596,7 @@ mod tests {
                 list_emails,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_emails("?recipient=alice")).await.unwrap();
         let params = captured.lock().unwrap();
@@ -576,6 +613,7 @@ mod tests {
                 list_emails,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_emails("?limit=500")).await.unwrap();
         let params = captured.lock().unwrap();
@@ -592,6 +630,7 @@ mod tests {
                 list_emails,
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         app.oneshot(get_emails("")).await.unwrap();
         let params = captured.lock().unwrap();
@@ -605,6 +644,7 @@ mod tests {
                 submit: Arc::new(FakeSubmit),
             },
             None,
+            std::time::Duration::from_secs(30),
         );
         let response = app.oneshot(get_emails("")).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -1068,6 +1108,14 @@ mod tests {
         list_emails: Arc<FakeListEmails>,
     }
 
+    impl crate::ReadinessState for CapturingTestState {
+        fn check_readiness(
+            &self,
+        ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase {
+            &NoopReadiness
+        }
+    }
+
     impl HttpServerState for CapturingTestState {
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
@@ -1112,6 +1160,7 @@ mod tests {
                 list_emails: Arc::new(FakeListEmails::new()),
             },
             None,
+            std::time::Duration::from_secs(30),
         );
 
         let response = app.oneshot(post_multipart(boundary, body)).await.unwrap();

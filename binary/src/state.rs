@@ -39,6 +39,10 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
 pub(crate) type ListSendersServiceImpl = ListSendersService<StorageAdapter, SystemClock>;
 pub(crate) type ListEmailsServiceImpl = ListEmailsService<StorageAdapter>;
 pub(crate) type ListEventsServiceImpl = ListEventsService<StorageAdapter>;
+pub(crate) type CheckReadinessServiceImpl =
+    catapulte_domain::use_case::check_readiness::CheckReadinessService<
+        crate::health::ReadinessProbe,
+    >;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -55,10 +59,19 @@ pub(crate) struct AppState {
     pub(crate) list_senders: Arc<ListSendersServiceImpl>,
     pub(crate) list_emails: Arc<ListEmailsServiceImpl>,
     pub(crate) list_events: Arc<ListEventsServiceImpl>,
+    pub(crate) check_readiness: Arc<CheckReadinessServiceImpl>,
     pub(crate) queue: QueueAdapter,
     pub(crate) publisher: PublisherAdapter,
     pub(crate) attachment_store: AttachmentStoreAdapter,
     pub(crate) storage: StorageAdapter,
+}
+
+impl catapulte_inbound_http::ReadinessState for AppState {
+    fn check_readiness(
+        &self,
+    ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase {
+        self.check_readiness.as_ref()
+    }
 }
 
 impl HttpServerState for AppState {

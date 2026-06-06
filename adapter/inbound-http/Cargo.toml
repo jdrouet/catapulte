@@ -21,7 +21,7 @@ serde_json = { workspace = true }
 thiserror = { version = "2.0" }
 tokio = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true, features = ["io"] }
-tower-http = { workspace = true }
+tower-http = { workspace = true, features = ["timeout"] }
 tracing = { workspace = true }
 url = { version = "2.5" }
 uuid = { workspace = true }

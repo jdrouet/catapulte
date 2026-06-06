@@ -16,6 +16,7 @@ use catapulte_outbound_smtp::multi_sender::MultiSenderConfig;
 pub mod attachment_fetcher;
 pub mod attachment_store;
 pub mod gc;
+mod health;
 pub mod publisher;
 pub mod queue;
 mod state;
@@ -196,12 +197,19 @@ impl AppConfig {
             attachment_store.clone(),
         ));
 
+        let check_readiness = Arc::new(
+            catapulte_domain::use_case::check_readiness::CheckReadinessService::new(
+                crate::health::ReadinessProbe::new(storage.clone(), queue.clone()),
+            ),
+        );
+
         let state = AppState {
             submit_email,
             process_queued_email,
             list_senders,
             list_emails,
             list_events,
+            check_readiness,
             queue,
             publisher,
             attachment_store: attachment_store.clone(),

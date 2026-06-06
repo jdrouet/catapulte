@@ -58,6 +58,8 @@ just test-compose
 
 This script will bring up each configuration, submit a test email, verify it reached Mailpit, and then shut down the services.
 
+**Readiness scope.** `/health/ready` probes the **storage** backend and the **queue** backend (a live connection check when the queue is NATS; storage-backed and in-memory queues are covered by the storage probe). It deliberately does **not** probe the SMTP senders or the attachment store: SMTP outages are absorbed by the retry pipeline rather than making intake unready, and attachment-store outages only affect attachment-bearing submissions, not all traffic. `/health/live` is a process-liveness check that always returns `200`. The NATS probe verifies the client connection is up; it does not re-validate that the JetStream stream/consumer still exists, so a stream deleted after startup is not currently reflected in readiness.
+
 ## Configuration
 
 All configuration is done via environment variables.
@@ -76,6 +78,8 @@ All configuration is done via environment variables.
 | `CATAPULTE_STORAGE_BACKEND` | Storage engine: `sqlite` or `postgres` | `sqlite` |
 | `CATAPULTE_SQLITE_URL` | SQLite connection string (e.g. `sqlite://catapulte.db`) | - |
 | `CATAPULTE_POSTGRES_URL` | Postgres connection string (e.g. `postgres://user:pass@host/db`) | - |
+| `CATAPULTE_POSTGRES_MAX_CONNECTIONS` | Maximum size of the Postgres connection pool | `10` |
+| `CATAPULTE_POSTGRES_ACQUIRE_TIMEOUT_SECS` | Seconds to wait for a free pooled connection before erroring | `30` |
 
 ### Inbound Transports
 
@@ -84,6 +88,7 @@ All configuration is done via environment variables.
 |----------|-------------|---------|
 | `CATAPULTE_HTTP_ADDRESS` | Bind address for the HTTP server | - |
 | `CATAPULTE_HTTP_API_KEY` | Static bearer token required on all HTTP routes except health checks; unset = no auth | - |
+| `CATAPULTE_HTTP_REQUEST_TIMEOUT_SECS` | Request deadline for read/list and health endpoints; the email submit routes are exempt so large attachment uploads over slow links are not truncated | 30 |
 
 **Authentication:** set `CATAPULTE_HTTP_API_KEY` to a secret value and include `Authorization: Bearer <key>` on every request. The health endpoints (`/health/live`, `/health/ready`) are always public regardless of this setting. When the variable is unset the API is unauthenticated — suitable only when running behind a trusted network boundary.
 

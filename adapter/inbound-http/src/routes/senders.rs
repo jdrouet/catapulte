@@ -131,9 +131,25 @@ mod tests {
         }
     }
 
+    struct NoopReadiness;
+
+    impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase for NoopReadiness {
+        async fn check_readiness(&self) -> catapulte_domain::use_case::check_readiness::Readiness {
+            catapulte_domain::use_case::check_readiness::Readiness::Ready
+        }
+    }
+
     #[derive(Clone)]
     struct TestState {
         list_senders: Arc<FakeListSenders>,
+    }
+
+    impl crate::ReadinessState for TestState {
+        fn check_readiness(
+            &self,
+        ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase {
+            &NoopReadiness
+        }
     }
 
     impl HttpServerState for TestState {
@@ -156,6 +172,14 @@ mod tests {
 
     #[derive(Clone)]
     struct FailingState;
+
+    impl crate::ReadinessState for FailingState {
+        fn check_readiness(
+            &self,
+        ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase {
+            &NoopReadiness
+        }
+    }
 
     impl HttpServerState for FailingState {
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
@@ -188,7 +212,7 @@ mod tests {
         let state = TestState {
             list_senders: Arc::new(FakeListSenders::empty()),
         };
-        let app = router(state, None);
+        let app = router(state, None, std::time::Duration::from_secs(30));
         let response = app.oneshot(get_senders()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -211,7 +235,7 @@ mod tests {
         let state = TestState {
             list_senders: Arc::new(FakeListSenders::with_usage(usage)),
         };
-        let app = router(state, None);
+        let app = router(state, None, std::time::Duration::from_secs(30));
         let response = app.oneshot(get_senders()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -242,7 +266,7 @@ mod tests {
         let state = TestState {
             list_senders: Arc::new(FakeListSenders::with_usage(usage)),
         };
-        let app = router(state, None);
+        let app = router(state, None, std::time::Duration::from_secs(30));
         let response = app.oneshot(get_senders()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -255,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_senders_returns_500_when_repository_fails() {
-        let app = router(FailingState, None);
+        let app = router(FailingState, None, std::time::Duration::from_secs(30));
         let response = app.oneshot(get_senders()).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }

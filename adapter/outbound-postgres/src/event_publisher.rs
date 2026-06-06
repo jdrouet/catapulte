@@ -138,7 +138,9 @@ mod tests {
         let port = pg.get_host_port_ipv4(5432u16).await.unwrap();
         wait_for_tcp(port, std::time::Duration::from_secs(15)).await;
         let url = format!("postgres://catapulte:catapulte@127.0.0.1:{port}/catapulte");
-        let adapter = PostgresAdapter::connect(&url).await.unwrap();
+        let adapter = PostgresAdapter::connect(&url, 10, std::time::Duration::from_secs(30))
+            .await
+            .unwrap();
         adapter.migrate().await.unwrap();
         std::mem::forget(pg);
         adapter

@@ -19,10 +19,19 @@ use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 
+/// Provides the readiness check that the `/health/ready` route dispatches into.
+///
+/// Implemented by the application state type in the composition root.
+pub trait ReadinessState: Clone + Send + Sync + 'static {
+    fn check_readiness(
+        &self,
+    ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase;
+}
+
 /// Provides the use-case instances that HTTP route handlers dispatch into.
 ///
 /// Implemented by the application state type in the composition root.
-pub trait HttpServerState: Clone + Send + Sync + 'static {
+pub trait HttpServerState: ReadinessState {
     fn submit_email(&self) -> &impl SubmitEmailUseCase;
     fn list_emails(&self) -> &impl ListEmailsUseCase;
     fn list_events(&self) -> &impl ListEventsUseCase;
@@ -77,28 +86,45 @@ async fn require_api_key(
 /// When `api_key` is `Some`, all routes except `/health/live` and
 /// `/health/ready` are gated behind `Authorization: Bearer <key>`.
 /// When `api_key` is `None`, no authentication is applied.
-pub fn router<S: HttpServerState>(state: S, api_key: Option<String>) -> Router {
+pub fn router<S: HttpServerState>(
+    state: S,
+    api_key: Option<String>,
+    request_timeout: std::time::Duration,
+) -> Router {
+    // Bounds slow/hung requests. Deliberately NOT applied to the submit routes
+    // below: those stream multipart attachment bodies (up to several hundred MiB)
+    // and a whole-request deadline would truncate legitimate large uploads over
+    // slow links. Submit is instead bounded by the body-size limit and the
+    // per-attachment fetch timeouts. Reads and the health probes are bounded here.
+    let timeout_layer = tower_http::timeout::TimeoutLayer::with_status_code(
+        axum::http::StatusCode::REQUEST_TIMEOUT,
+        request_timeout,
+    );
+
     let health_routes = Router::new()
         .route("/health/live", get(crate::routes::health::live))
-        .route("/health/ready", get(crate::routes::health::ready));
+        .route("/health/ready", get(crate::routes::health::ready::<S>))
+        .layer(timeout_layer)
+        .with_state(state.clone());
 
-    let protected_routes = Router::new()
-        .route(
-            "/emails",
-            post(crate::routes::emails::submit_email::<S>)
-                .get(crate::routes::emails::list_emails::<S>),
-        )
-        .route(
-            "/emails/batch",
-            post(crate::routes::emails::submit_email_batch::<S>),
-        )
+    let read_routes = Router::new()
+        .route("/emails", get(crate::routes::emails::list_emails::<S>))
         .route(
             "/emails/{id}/events",
             get(crate::routes::events::list_events_for_email::<S>),
         )
         .route("/events", get(crate::routes::events::list_events::<S>))
         .route("/senders", get(crate::routes::senders::list_senders::<S>))
-        .with_state(state);
+        .layer(timeout_layer);
+
+    let submit_routes = Router::new()
+        .route("/emails", post(crate::routes::emails::submit_email::<S>))
+        .route(
+            "/emails/batch",
+            post(crate::routes::emails::submit_email_batch::<S>),
+        );
+
+    let protected_routes = read_routes.merge(submit_routes).with_state(state);
 
     let protected_routes = match api_key {
         Some(key) => {
@@ -117,6 +143,7 @@ pub fn router<S: HttpServerState>(state: S, api_key: Option<String>) -> Router {
 pub struct InboundHttpConfig {
     pub address: SocketAddr,
     pub api_key: Option<String>,
+    pub request_timeout: std::time::Duration,
 }
 
 impl InboundHttpConfig {
@@ -134,7 +161,20 @@ impl InboundHttpConfig {
             .ok()
             .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty());
-        Ok(Self { address, api_key })
+        let timeout_key = format!("{prefix}_REQUEST_TIMEOUT_SECS");
+        let request_timeout_secs: u64 = match std::env::var(&timeout_key) {
+            Err(std::env::VarError::NotPresent) => 30,
+            Err(e) => return Err(anyhow::Error::new(e).context(format!("reading {timeout_key}"))),
+            Ok(v) => v
+                .parse()
+                .with_context(|| format!("invalid {timeout_key}: {v:?}"))?,
+        };
+        let request_timeout = std::time::Duration::from_secs(request_timeout_secs);
+        Ok(Self {
+            address,
+            api_key,
+            request_timeout,
+        })
     }
 
     #[must_use]
@@ -142,6 +182,7 @@ impl InboundHttpConfig {
         InboundHttpServer {
             address: self.address,
             api_key: self.api_key,
+            request_timeout: self.request_timeout,
         }
     }
 }
@@ -149,6 +190,7 @@ impl InboundHttpConfig {
 pub struct InboundHttpServer {
     address: SocketAddr,
     api_key: Option<String>,
+    request_timeout: std::time::Duration,
 }
 
 impl InboundHttpServer {
@@ -169,7 +211,7 @@ impl InboundHttpServer {
             .await
             .context("binding http listener")?;
         tracing::info!(address = %self.address, "http server listening");
-        axum::serve(listener, router(state, self.api_key))
+        axum::serve(listener, router(state, self.api_key, self.request_timeout))
             .with_graceful_shutdown(async move { cancel.cancelled().await })
             .await
             .context("http server stopped")?;
@@ -183,16 +225,36 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
+    use catapulte_domain::use_case::check_readiness::Readiness;
     use tower::ServiceExt;
 
-    use crate::routes::health::{live, ready};
+    use crate::routes::health::live;
+
+    #[derive(Clone)]
+    struct M;
+
+    impl crate::ReadinessState for M {
+        fn check_readiness(
+            &self,
+        ) -> &impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase {
+            self
+        }
+    }
+
+    impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase for M {
+        async fn check_readiness(&self) -> Readiness {
+            Readiness::Ready
+        }
+    }
 
     /// A lightweight router that only includes the health routes with auth applied,
     /// used to test auth in isolation without needing a full `HttpServerState`.
     fn auth_test_router(api_key: Option<String>) -> Router {
+        let mock = M;
         let health_routes = Router::new()
             .route("/health/live", get(live))
-            .route("/health/ready", get(ready));
+            .route("/health/ready", get(crate::routes::health::ready::<M>))
+            .with_state(mock);
 
         // Dummy protected route that always returns 200.
         let protected = Router::new().route("/protected", get(|| async { StatusCode::OK }));
