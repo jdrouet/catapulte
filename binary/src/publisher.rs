@@ -2,6 +2,7 @@ use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
 use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
 use catapulte_outbound_nats::event_publisher::{NatsEventConfig, NatsEventPublisher};
 use catapulte_outbound_webhook::{WebhookConfig, WebhookPublisher};
+use tracing::Instrument as _;
 
 use crate::storage::StorageAdapter;
 
@@ -16,9 +17,24 @@ pub(crate) enum PublisherAdapter {
 impl EventPublisher for PublisherAdapter {
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
         match self {
-            Self::Storage(s) => s.publish(event).await,
+            Self::Storage(s) => {
+                let span =
+                    tracing::info_span!("publisher.storage", outcome = tracing::field::Empty);
+                let result = s.publish(event).instrument(span.clone()).await;
+                span.record("outcome", if result.is_ok() { "ok" } else { "error" });
+                result
+            }
             Self::StorageWebhook(s, w) => {
-                let (sr, wr) = tokio::join!(s.publish(event), w.publish(event));
+                let storage_span =
+                    tracing::info_span!("publisher.storage", outcome = tracing::field::Empty);
+                let webhook_span =
+                    tracing::info_span!("publisher.webhook", outcome = tracing::field::Empty);
+                let (sr, wr) = tokio::join!(
+                    s.publish(event).instrument(storage_span.clone()),
+                    w.publish(event).instrument(webhook_span.clone()),
+                );
+                storage_span.record("outcome", if sr.is_ok() { "ok" } else { "error" });
+                webhook_span.record("outcome", if wr.is_ok() { "ok" } else { "error" });
                 sr?;
                 if let Err(e) = wr {
                     tracing::warn!(error = %e, "webhook event delivery failed");
@@ -26,7 +42,16 @@ impl EventPublisher for PublisherAdapter {
                 Ok(())
             }
             Self::StorageNats(s, n) => {
-                let (sr, nr) = tokio::join!(s.publish(event), n.publish(event));
+                let storage_span =
+                    tracing::info_span!("publisher.storage", outcome = tracing::field::Empty);
+                let nats_span =
+                    tracing::info_span!("publisher.nats", outcome = tracing::field::Empty);
+                let (sr, nr) = tokio::join!(
+                    s.publish(event).instrument(storage_span.clone()),
+                    n.publish(event).instrument(nats_span.clone()),
+                );
+                storage_span.record("outcome", if sr.is_ok() { "ok" } else { "error" });
+                nats_span.record("outcome", if nr.is_ok() { "ok" } else { "error" });
                 sr?;
                 if let Err(e) = nr {
                     tracing::warn!(error = %e, "NATS event delivery failed");
@@ -34,8 +59,20 @@ impl EventPublisher for PublisherAdapter {
                 Ok(())
             }
             Self::StorageBoth(s, w, n) => {
-                let (sr, wr, nr) =
-                    tokio::join!(s.publish(event), w.publish(event), n.publish(event));
+                let storage_span =
+                    tracing::info_span!("publisher.storage", outcome = tracing::field::Empty);
+                let webhook_span =
+                    tracing::info_span!("publisher.webhook", outcome = tracing::field::Empty);
+                let nats_span =
+                    tracing::info_span!("publisher.nats", outcome = tracing::field::Empty);
+                let (sr, wr, nr) = tokio::join!(
+                    s.publish(event).instrument(storage_span.clone()),
+                    w.publish(event).instrument(webhook_span.clone()),
+                    n.publish(event).instrument(nats_span.clone()),
+                );
+                storage_span.record("outcome", if sr.is_ok() { "ok" } else { "error" });
+                webhook_span.record("outcome", if wr.is_ok() { "ok" } else { "error" });
+                nats_span.record("outcome", if nr.is_ok() { "ok" } else { "error" });
                 sr?;
                 if let Err(e) = wr {
                     tracing::warn!(error = %e, "webhook event delivery failed");

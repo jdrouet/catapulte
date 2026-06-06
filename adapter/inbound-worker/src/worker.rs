@@ -77,6 +77,7 @@ impl Worker {
     }
 }
 
+#[tracing::instrument(skip_all, name = "worker.process", fields(email_id = %id.as_uuid(), attempt, correlation_id = tracing::field::Empty))]
 async fn process_one<S: WorkerState>(
     state: &S,
     id: catapulte_domain::entity::email::EmailId,
@@ -85,6 +86,9 @@ async fn process_one<S: WorkerState>(
     token: AckToken,
 ) {
     let correlation_id = envelope.correlation_id.clone();
+    if let Some(ref cid) = correlation_id {
+        tracing::Span::current().record("correlation_id", cid.as_str());
+    }
 
     if let Err(e) = state
         .event_publisher()

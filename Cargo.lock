@@ -494,6 +494,7 @@ dependencies = [
  "reqwest 0.12.28",
  "tokio",
  "tokio-util",
+ "tracing",
  "url",
  "wiremock",
 ]
@@ -557,6 +558,7 @@ dependencies = [
  "mrml",
  "tempfile",
  "tokio",
+ "tracing",
  "url",
 ]
 
@@ -609,6 +611,7 @@ dependencies = [
  "reqwest 0.12.28",
  "tempfile",
  "tokio",
+ "tracing",
  "url",
 ]
 
@@ -659,6 +662,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
+ "tokio",
  "tonic",
  "tracing",
  "tracing-opentelemetry",

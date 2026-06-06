@@ -16,6 +16,7 @@ pub enum AttachmentStoreAdapter {
 }
 
 impl AttachmentStore for AttachmentStoreAdapter {
+    #[tracing::instrument(skip_all, name = "attachment.put", fields(backend = self.backend_name()))]
     async fn put(&self, reader: AttachmentReader) -> Result<PutResult, AttachmentStoreError> {
         match self {
             Self::Fs(s) => s.put(reader).await,
@@ -24,6 +25,7 @@ impl AttachmentStore for AttachmentStoreAdapter {
         }
     }
 
+    #[tracing::instrument(skip_all, name = "attachment.get", fields(backend = self.backend_name()))]
     async fn get(&self, blob: &BlobRef) -> Result<AttachmentReader, AttachmentStoreError> {
         match self {
             Self::Fs(s) => s.get(blob).await,

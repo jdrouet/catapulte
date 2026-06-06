@@ -97,6 +97,7 @@ where
     /// Returns `SendError::NoMatchingRoute` when no route matches the sender
     /// domain and there are no catch-all routes. Returns `SendError::Send` when
     /// all attempted senders fail to deliver.
+    #[allow(clippy::too_many_lines)]
     async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
         let sender_domain = email
             .sender
@@ -166,9 +167,26 @@ where
             if over_quota {
                 continue;
             }
-            match route.transport.deliver(&email).await {
-                Ok(()) => return Ok(route.name.clone()),
+            let deliver_span = tracing::info_span!(
+                "smtp.deliver",
+                sender = route.name.as_str(),
+                outcome = tracing::field::Empty,
+            );
+            let result = {
+                use tracing::Instrument as _;
+                route
+                    .transport
+                    .deliver(&email)
+                    .instrument(deliver_span.clone())
+                    .await
+            };
+            match result {
+                Ok(()) => {
+                    deliver_span.record("outcome", "ok");
+                    return Ok(route.name.clone());
+                }
                 Err(err) => {
+                    deliver_span.record("outcome", "error");
                     last_err = Some(SendError::Send {
                         sender_name: route.name.clone(),
                         source: err,
@@ -182,9 +200,26 @@ where
         }
 
         for route in &candidates {
-            match route.transport.deliver(&email).await {
-                Ok(()) => return Ok(route.name.clone()),
+            let deliver_span = tracing::info_span!(
+                "smtp.deliver",
+                sender = route.name.as_str(),
+                outcome = tracing::field::Empty,
+            );
+            let result = {
+                use tracing::Instrument as _;
+                route
+                    .transport
+                    .deliver(&email)
+                    .instrument(deliver_span.clone())
+                    .await
+            };
+            match result {
+                Ok(()) => {
+                    deliver_span.record("outcome", "ok");
+                    return Ok(route.name.clone());
+                }
                 Err(err) => {
+                    deliver_span.record("outcome", "error");
                     last_err = Some(SendError::Send {
                         sender_name: route.name.clone(),
                         source: err,

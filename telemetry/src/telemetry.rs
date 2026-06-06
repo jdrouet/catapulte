@@ -94,7 +94,7 @@ pub fn init(config: TelemetryConfig) -> anyhow::Result<Telemetry> {
     })
 }
 
-fn build_exporter(
+pub(crate) fn build_exporter(
     protocol: &OtlpProtocol,
     endpoint: &str,
     headers: &[(String, String)],
@@ -134,5 +134,52 @@ fn build_exporter(
             }
             builder.build().context("building HTTP OTLP span exporter")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_exporter;
+    use crate::config::OtlpProtocol;
+
+    #[tokio::test]
+    async fn build_exporter_grpc_with_header_returns_ok() {
+        let result = build_exporter(
+            &OtlpProtocol::Grpc,
+            "http://localhost:4317",
+            &[("Authorization".to_owned(), "Bearer tok".to_owned())],
+        );
+        assert!(result.is_ok(), "grpc exporter build failed: {result:?}");
+    }
+
+    #[test]
+    fn build_exporter_http_protobuf_with_header_returns_ok() {
+        let result = build_exporter(
+            &OtlpProtocol::HttpProtobuf,
+            "http://localhost:4318",
+            &[("X-Custom".to_owned(), "val".to_owned())],
+        );
+        assert!(
+            result.is_ok(),
+            "http/protobuf exporter build failed: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_exporter_grpc_no_headers_returns_ok() {
+        let result = build_exporter(&OtlpProtocol::Grpc, "http://localhost:4317", &[]);
+        assert!(
+            result.is_ok(),
+            "grpc exporter (no headers) build failed: {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_exporter_http_protobuf_no_headers_returns_ok() {
+        let result = build_exporter(&OtlpProtocol::HttpProtobuf, "http://localhost:4318", &[]);
+        assert!(
+            result.is_ok(),
+            "http/protobuf exporter (no headers) build failed: {result:?}"
+        );
     }
 }

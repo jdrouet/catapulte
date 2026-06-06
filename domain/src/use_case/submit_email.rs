@@ -125,8 +125,12 @@ where
     /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
     /// Returns `SubmitEmailError::AttachmentStore` when blob upload fails.
     #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(skip_all, name = "submit_email", fields(email_id = tracing::field::Empty, correlation_id = tracing::field::Empty))]
     pub async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
         let id = EmailId::default();
+        if let Some(ref cid) = input.correlation_id {
+            tracing::Span::current().record("correlation_id", cid.as_str());
+        }
 
         // Reserve the row with an empty attachment list first; the final list is
         // patched in after blobs are written so the worker never sees stale refs.
@@ -143,8 +147,15 @@ where
 
         let result = self.repository.save(id, &envelope_for_reservation).await?;
         match result {
-            SaveResult::Duplicate(existing_id) => return Ok(existing_id),
-            SaveResult::Created(_) => {}
+            SaveResult::Duplicate(existing_id) => {
+                // Record the persisted id, not the freshly generated one that is
+                // discarded on an idempotent resubmit.
+                tracing::Span::current().record("email_id", existing_id.as_uuid().to_string());
+                return Ok(existing_id);
+            }
+            SaveResult::Created(_) => {
+                tracing::Span::current().record("email_id", id.as_uuid().to_string());
+            }
         }
 
         let SubmitEmailInput {

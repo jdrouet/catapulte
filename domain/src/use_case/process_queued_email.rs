@@ -79,7 +79,11 @@ where
     /// # Errors
     ///
     /// Returns a `ProcessQueuedEmailError` if the body fails to resolve, interpolate, render, or send.
+    #[tracing::instrument(skip_all, name = "process_queued_email", fields(correlation_id = tracing::field::Empty))]
     pub async fn execute(&self, envelope: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+        if let Some(ref cid) = envelope.correlation_id {
+            tracing::Span::current().record("correlation_id", cid.as_str());
+        }
         let Envelope {
             sender,
             subject,

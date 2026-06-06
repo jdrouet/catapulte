@@ -131,6 +131,7 @@ impl HttpAttachmentFetcher {
 }
 
 impl AttachmentFetcher for HttpAttachmentFetcher {
+    #[tracing::instrument(skip_all, name = "attachment.fetch")]
     async fn fetch(&self, url: &url::Url) -> Result<AttachmentReader, AttachmentFetchError> {
         // 1. Validate scheme.
         let scheme = url.scheme();

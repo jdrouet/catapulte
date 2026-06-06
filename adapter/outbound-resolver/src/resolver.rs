@@ -77,6 +77,7 @@ impl TemplateResolverAdapter {
 }
 
 impl TemplateResolver for TemplateResolverAdapter {
+    #[tracing::instrument(skip_all, name = "template.resolve")]
     async fn resolve(&self, body: BodySource) -> Result<ResolvedBody, ResolveError> {
         match body {
             BodySource::Plain(plain) => Ok(ResolvedBody::Plain(plain)),

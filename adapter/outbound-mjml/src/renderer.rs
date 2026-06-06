@@ -23,6 +23,7 @@ impl TemplateRenderer for MjmlRenderer {
     /// # Errors
     ///
     /// Returns a `RenderError` when the mjml source fails to parse or render.
+    #[tracing::instrument(skip_all, name = "template.render")]
     async fn render(&self, body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
         match body {
             InterpolatedBody::Plain(plain) => Ok(RenderedBody::new(plain)),

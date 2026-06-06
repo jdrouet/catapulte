@@ -18,7 +18,19 @@ pub(crate) enum QueueAdapter {
     Nats(NatsAdapter),
 }
 
+impl QueueAdapter {
+    fn backend_name(&self) -> &'static str {
+        match self {
+            Self::Sqlite(_) => "sqlite",
+            Self::Postgres(_) => "postgres",
+            Self::Memory(_) => "memory",
+            Self::Nats(_) => "nats",
+        }
+    }
+}
+
 impl EmailQueue for QueueAdapter {
+    #[tracing::instrument(skip_all, name = "queue.enqueue", fields(backend = self.backend_name()))]
     async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
         match self {
             Self::Sqlite(a) => a.enqueue(id, envelope).await,

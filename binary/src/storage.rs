@@ -20,6 +20,7 @@ pub enum StorageAdapter {
 }
 
 impl EmailRepository for StorageAdapter {
+    #[tracing::instrument(skip_all, name = "repository.save", fields(backend = self.backend_name()))]
     async fn save(
         &self,
         id: EmailId,
@@ -115,6 +116,15 @@ impl catapulte_domain::port::sender_usage::SenderUsage for StorageAdapter {
                 catapulte_domain::port::sender_usage::SenderUsage::get_stats(a, names, since_ms)
                     .await
             }
+        }
+    }
+}
+
+impl StorageAdapter {
+    fn backend_name(&self) -> &'static str {
+        match self {
+            Self::Sqlite(_) => "sqlite",
+            Self::Postgres(_) => "postgres",
         }
     }
 }

@@ -12,6 +12,7 @@ workspace = true
 anyhow = { workspace = true }
 catapulte-domain = { path = "../../domain" }
 reqwest = { workspace = true }
+tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
