@@ -83,6 +83,9 @@ All configuration is done via environment variables.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CATAPULTE_HTTP_ADDRESS` | Bind address for the HTTP server | - |
+| `CATAPULTE_HTTP_API_KEY` | Static bearer token required on all HTTP routes except health checks; unset = no auth | - |
+
+**Authentication:** set `CATAPULTE_HTTP_API_KEY` to a secret value and include `Authorization: Bearer <key>` on every request. The health endpoints (`/health/live`, `/health/ready`) are always public regardless of this setting. When the variable is unset the API is unauthenticated — suitable only when running behind a trusted network boundary.
 
 #### NATS
 

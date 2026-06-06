@@ -188,7 +188,7 @@ mod tests {
         let state = TestState {
             list_senders: Arc::new(FakeListSenders::empty()),
         };
-        let app = router(state);
+        let app = router(state, None);
         let response = app.oneshot(get_senders()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -211,7 +211,7 @@ mod tests {
         let state = TestState {
             list_senders: Arc::new(FakeListSenders::with_usage(usage)),
         };
-        let app = router(state);
+        let app = router(state, None);
         let response = app.oneshot(get_senders()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -242,7 +242,7 @@ mod tests {
         let state = TestState {
             list_senders: Arc::new(FakeListSenders::with_usage(usage)),
         };
-        let app = router(state);
+        let app = router(state, None);
         let response = app.oneshot(get_senders()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -255,7 +255,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_senders_returns_500_when_repository_fails() {
-        let app = router(FailingState);
+        let app = router(FailingState, None);
         let response = app.oneshot(get_senders()).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }

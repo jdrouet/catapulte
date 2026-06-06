@@ -273,10 +273,13 @@ mod tests {
             created_at_ms: 1000,
         };
         let list_events = Arc::new(FakeListEvents::with_records(vec![record]));
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_events,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+        );
         let response = app
             .oneshot(get_events(&email_id.as_uuid().to_string(), ""))
             .await
@@ -292,10 +295,13 @@ mod tests {
     #[tokio::test]
     async fn list_events_with_invalid_uuid_returns_400() {
         let list_events = Arc::new(FakeListEvents::new());
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_events,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+        );
         let response = app.oneshot(get_events("not-a-uuid", "")).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
@@ -304,10 +310,13 @@ mod tests {
     async fn list_events_caps_limit_at_max() {
         let list_events = Arc::new(FakeListEvents::new());
         let captured = list_events.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_events,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+        );
         app.oneshot(get_events(&valid_email_id(), "?limit=500"))
             .await
             .unwrap();
@@ -319,10 +328,13 @@ mod tests {
     async fn list_events_applies_default_limit() {
         let list_events = Arc::new(FakeListEvents::new());
         let captured = list_events.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_events,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+        );
         app.oneshot(get_events(&valid_email_id(), ""))
             .await
             .unwrap();
@@ -334,10 +346,13 @@ mod tests {
     async fn list_events_forwards_event_type_filter() {
         let list_events = Arc::new(FakeListEvents::new());
         let captured = list_events.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_events,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+        );
         app.oneshot(get_events(&valid_email_id(), "?event_type=sent"))
             .await
             .unwrap();
@@ -347,9 +362,12 @@ mod tests {
 
     #[tokio::test]
     async fn list_events_500_when_repository_errors() {
-        let app = router(FailingRepoState {
-            submit: Arc::new(FakeSubmit),
-        });
+        let app = router(
+            FailingRepoState {
+                submit: Arc::new(FakeSubmit),
+            },
+            None,
+        );
         let response = app
             .oneshot(get_events(&valid_email_id(), ""))
             .await
@@ -361,10 +379,13 @@ mod tests {
     async fn list_events_without_email_id_passes_none_to_repo() {
         let list_events = Arc::new(FakeListEvents::new());
         let captured = list_events.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_events,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+        );
         app.oneshot(get_all_events("")).await.unwrap();
         let params = captured.lock().unwrap();
         assert!(params.as_ref().unwrap().email_id.is_none());
@@ -375,10 +396,13 @@ mod tests {
         let uuid = uuid::Uuid::now_v7();
         let list_events = Arc::new(FakeListEvents::new());
         let captured = list_events.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_events,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+        );
         app.oneshot(get_all_events(&format!("?email_id={uuid}")))
             .await
             .unwrap();
@@ -389,10 +413,13 @@ mod tests {
     #[tokio::test]
     async fn list_events_with_invalid_email_id_query_returns_400() {
         let list_events = Arc::new(FakeListEvents::new());
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_events,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+        );
         let response = app
             .oneshot(get_all_events("?email_id=not-a-uuid"))
             .await
@@ -404,10 +431,13 @@ mod tests {
     async fn list_events_global_applies_default_limit() {
         let list_events = Arc::new(FakeListEvents::new());
         let captured = list_events.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_events,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+        );
         app.oneshot(get_all_events("")).await.unwrap();
         let params = captured.lock().unwrap();
         assert_eq!(params.as_ref().unwrap().limit, DEFAULT_EVENTS_LIMIT);
@@ -417,10 +447,13 @@ mod tests {
     async fn list_events_global_caps_limit_at_max() {
         let list_events = Arc::new(FakeListEvents::new());
         let captured = list_events.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_events,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+        );
         app.oneshot(get_all_events("?limit=999")).await.unwrap();
         let params = captured.lock().unwrap();
         assert_eq!(params.as_ref().unwrap().limit, MAX_EVENTS_LIMIT);

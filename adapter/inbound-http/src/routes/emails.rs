@@ -397,17 +397,23 @@ mod tests {
     }
 
     fn make_router() -> axum::Router {
-        router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_emails: Arc::new(FakeListEmails::new()),
-        })
+        router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_emails: Arc::new(FakeListEmails::new()),
+            },
+            None,
+        )
     }
 
     fn make_failing_router() -> axum::Router {
-        router(FailingTestState {
-            submit: Arc::new(FailingSubmit),
-            list_emails: Arc::new(FakeListEmails::new()),
-        })
+        router(
+            FailingTestState {
+                submit: Arc::new(FailingSubmit),
+                list_emails: Arc::new(FakeListEmails::new()),
+            },
+            None,
+        )
     }
 
     fn post_json(body: impl Into<Body>) -> Request<Body> {
@@ -506,10 +512,13 @@ mod tests {
     #[tokio::test]
     async fn list_emails_returns_200_with_emails_array() {
         let list_emails = Arc::new(FakeListEmails::with_records(vec![sample_email_record()]));
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_emails,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_emails,
+            },
+            None,
+        );
         let response = app.oneshot(get_emails("")).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -529,10 +538,13 @@ mod tests {
     async fn list_emails_status_filter_forwarded() {
         let list_emails = Arc::new(FakeListEmails::new());
         let captured = list_emails.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_emails,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_emails,
+            },
+            None,
+        );
         app.oneshot(get_emails("?status=sent")).await.unwrap();
         let params = captured.lock().unwrap();
         assert_eq!(params.as_ref().unwrap().status, Some(EmailStatus::Sent));
@@ -542,10 +554,13 @@ mod tests {
     async fn list_emails_recipient_filter_forwarded() {
         let list_emails = Arc::new(FakeListEmails::new());
         let captured = list_emails.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_emails,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_emails,
+            },
+            None,
+        );
         app.oneshot(get_emails("?recipient=alice")).await.unwrap();
         let params = captured.lock().unwrap();
         assert_eq!(params.as_ref().unwrap().recipient.as_deref(), Some("alice"));
@@ -555,10 +570,13 @@ mod tests {
     async fn list_emails_caps_limit_at_max() {
         let list_emails = Arc::new(FakeListEmails::new());
         let captured = list_emails.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_emails,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_emails,
+            },
+            None,
+        );
         app.oneshot(get_emails("?limit=500")).await.unwrap();
         let params = captured.lock().unwrap();
         assert_eq!(params.as_ref().unwrap().limit, MAX_EMAILS_LIMIT);
@@ -568,10 +586,13 @@ mod tests {
     async fn list_emails_applies_default_limit() {
         let list_emails = Arc::new(FakeListEmails::new());
         let captured = list_emails.captured_params.clone();
-        let app = router(TestState {
-            submit: Arc::new(FakeSubmit),
-            list_emails,
-        });
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_emails,
+            },
+            None,
+        );
         app.oneshot(get_emails("")).await.unwrap();
         let params = captured.lock().unwrap();
         assert_eq!(params.as_ref().unwrap().limit, DEFAULT_EMAILS_LIMIT);
@@ -579,9 +600,12 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_500_when_repository_errors() {
-        let app = router(FailingEmailRepoState {
-            submit: Arc::new(FakeSubmit),
-        });
+        let app = router(
+            FailingEmailRepoState {
+                submit: Arc::new(FakeSubmit),
+            },
+            None,
+        );
         let response = app.oneshot(get_emails("")).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -1082,10 +1106,13 @@ mod tests {
 
         let submit = Arc::new(CapturingSubmit::new());
         let captured = submit.captured_bytes.clone();
-        let app = router(CapturingTestState {
-            submit,
-            list_emails: Arc::new(FakeListEmails::new()),
-        });
+        let app = router(
+            CapturingTestState {
+                submit,
+                list_emails: Arc::new(FakeListEmails::new()),
+            },
+            None,
+        );
 
         let response = app.oneshot(post_multipart(boundary, body)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);

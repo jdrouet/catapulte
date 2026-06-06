@@ -115,6 +115,7 @@ fn sqlite_config(smtp_port: u16, http_port: u16, db_tag: &str) -> (AppConfig, te
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+            api_key: None,
         },
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
@@ -152,6 +153,7 @@ pub async fn sqlite_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+            api_key: None,
         },
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
@@ -188,6 +190,7 @@ pub async fn sqlite_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+            api_key: None,
         },
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
@@ -224,6 +227,7 @@ pub async fn postgres_storage(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+            api_key: None,
         },
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
@@ -257,6 +261,7 @@ pub async fn postgres_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+            api_key: None,
         },
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
@@ -293,6 +298,7 @@ pub async fn postgres_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+            api_key: None,
         },
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
