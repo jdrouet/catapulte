@@ -20,6 +20,12 @@ services:
       - "CATAPULTE_ATTACHMENT_S3_ACCESS_KEY_ID=catapulte"
       - "CATAPULTE_ATTACHMENT_S3_SECRET_ACCESS_KEY=catapulte"
       - "CATAPULTE_ATTACHMENT_S3_PATH_STYLE=true"
+    healthcheck:
+      test: ["CMD", "catapulte", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       minio-init:
         condition: service_completed_successfully

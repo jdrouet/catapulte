@@ -14,6 +14,12 @@ services:
       - "CATAPULTE_SENDER_MAILPIT_PORT=1025"
       - "CATAPULTE_SENDER_MAILPIT_TLS=none"
       - "CATAPULTE_ATTACHMENT_FS_ROOT=/data/attachments"
+    healthcheck:
+      test: ["CMD", "catapulte", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     volumes:
       - catapulte_data:/data
     depends_on:

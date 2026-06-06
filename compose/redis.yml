@@ -15,6 +15,12 @@ services:
       - "CATAPULTE_SENDER_MAILPIT_TLS=none"
       - "CATAPULTE_ATTACHMENT_BACKEND=redis"
       - "CATAPULTE_ATTACHMENT_REDIS_URL=redis://redis:6379"
+    healthcheck:
+      test: ["CMD", "catapulte", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       redis:
         condition: service_healthy

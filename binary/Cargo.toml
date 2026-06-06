@@ -27,6 +27,7 @@ catapulte-outbound-attachment-fetcher = { path = "../adapter/outbound-attachment
 catapulte-outbound-attachment-fs = { path = "../adapter/outbound-attachment-fs" }
 catapulte-outbound-attachment-s3 = { path = "../adapter/outbound-attachment-s3" }
 catapulte-outbound-attachment-redis = { path = "../adapter/outbound-attachment-redis" }
+reqwest = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }

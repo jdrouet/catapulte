@@ -58,6 +58,8 @@ just test-compose
 
 This script will bring up each configuration, submit a test email, verify it reached Mailpit, and then shut down the services.
 
+The container image and all compose files define a healthcheck that runs `catapulte healthcheck`. The subcommand probes `/health/ready` over HTTP and exits non-zero when a downstream dependency is unavailable. Operators deploying to Kubernetes can use an exec probe `["catapulte", "healthcheck"]` or a standard `httpGet` probe on `/health/ready`.
+
 **Readiness scope.** `/health/ready` probes the **storage** backend and the **queue** backend (a live connection check when the queue is NATS; storage-backed and in-memory queues are covered by the storage probe). It deliberately does **not** probe the SMTP senders or the attachment store: SMTP outages are absorbed by the retry pipeline rather than making intake unready, and attachment-store outages only affect attachment-bearing submissions, not all traffic. `/health/live` is a process-liveness check that always returns `200`. The NATS probe verifies the client connection is up; it does not re-validate that the JetStream stream/consumer still exists, so a stream deleted after startup is not currently reflected in readiness.
 
 ## Configuration

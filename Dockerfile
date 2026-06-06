@@ -27,5 +27,7 @@ ENV CATAPULTE_SQLITE_URL=:memory:
 
 EXPOSE 3000
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD ["/usr/local/bin/catapulte", "healthcheck"]
+
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/catapulte"]
