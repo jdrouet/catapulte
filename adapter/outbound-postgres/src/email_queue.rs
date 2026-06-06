@@ -65,6 +65,25 @@ fn deserialize_trace_context(raw: Option<String>) -> TraceCarrier {
 }
 
 impl PostgresAdapter {
+    /// Returns the count of queue entries that are eligible to be claimed now
+    /// (i.e. `claimed_until IS NULL OR claimed_until < now_ms`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn pending(&self) -> anyhow::Result<u64> {
+        use anyhow::Context as _;
+        let now = now_ms();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM email_queue WHERE claimed_until IS NULL OR claimed_until < $1",
+        )
+        .bind(now)
+        .fetch_one(self.pool())
+        .await
+        .context("counting pending email_queue entries")?;
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn try_dequeue(&self) -> Result<Option<DequeuedEmail>, EmailQueueError> {
         let now = now_ms();

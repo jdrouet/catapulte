@@ -197,21 +197,40 @@ Catapulte supports storing attachments on the local filesystem (`fs`, default), 
 | `CATAPULTE_ATTACHMENT_FETCHER_MAX_BYTES` | Max size per attachment | `25MiB` |
 | `CATAPULTE_ATTACHMENT_FETCHER_FETCH_TIMEOUT_MS` | Fetch timeout | `30000` |
 
-### Observability (OTLP Tracing)
-
-Catapulte exports traces over OTLP only. Prometheus metrics are obtained by running an [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) with the spanmetrics connector — the application does not expose a Prometheus scrape endpoint directly.
+### Observability (OTLP Tracing and Metrics)
 
 All variables accept a `CATAPULTE_OTEL_` prefix that takes precedence over the standard `OTEL_*` equivalents when both are set.
+
+#### Traces
 
 | Variable | `OTEL_*` fallback | Description | Default |
 |----------|-------------------|-------------|---------|
 | `CATAPULTE_OTEL_TRACES_EXPORTER` | `OTEL_TRACES_EXPORTER` | Traces backend: `otlp` to enable export, `none` to disable | `none` |
 | `CATAPULTE_OTEL_EXPORTER_OTLP_PROTOCOL` | `OTEL_EXPORTER_OTLP_PROTOCOL` | Wire protocol: `grpc` or `http/protobuf` | `grpc` |
-| `CATAPULTE_OTEL_EXPORTER_OTLP_ENDPOINT` | `OTEL_EXPORTER_OTLP_ENDPOINT` | **(Required when enabled)** Collector endpoint URL (e.g. `http://collector:4317`) | - |
+| `CATAPULTE_OTEL_EXPORTER_OTLP_ENDPOINT` | `OTEL_EXPORTER_OTLP_ENDPOINT` | **(Required when traces enabled)** Collector endpoint URL (e.g. `http://collector:4317`) | - |
 | `CATAPULTE_OTEL_EXPORTER_OTLP_HEADERS` | `OTEL_EXPORTER_OTLP_HEADERS` | Additional headers sent with each export request, `k=v,k=v` format | - |
 | `CATAPULTE_OTEL_SERVICE_NAME` | `OTEL_SERVICE_NAME` | `service.name` resource attribute | `catapulte` |
 
 The `service.version` resource attribute is always set to the binary's compiled-in crate version.
+
+#### Metrics
+
+Catapulte emits gauges over OTLP. RED metrics (request rate, error rate, duration) are collector-derived from traces; the application only pushes application-level gauges directly.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CATAPULTE_OTEL_METRICS_EXPORTER` | Metrics backend: `otlp` to enable export, `none` to disable | `none` |
+| `CATAPULTE_OTEL_METRIC_EXPORT_INTERVAL_SECS` | How often the sampler pushes gauges to the collector (seconds). The standard `OTEL_METRIC_EXPORT_INTERVAL` is intentionally not aliased — it uses milliseconds which creates a unit mismatch | `60` |
+
+When metrics are enabled the endpoint, protocol, and headers are reused from the traces configuration (`CATAPULTE_OTEL_EXPORTER_OTLP_*`). No separate metrics endpoint variable is needed.
+
+Emitted gauges:
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `catapulte.queue.pending` | `backend` (sqlite, postgres, memory, nats) | Number of email queue entries eligible to be claimed |
+| `catapulte.sender.sent_in_range` | `sender` | Emails sent by this sender within its quota window |
+| `catapulte.sender.quota_limit` | `sender` | Configured quota count for the sender (omitted when no quota is set) |
 
 ## Out of scope (for now)
 

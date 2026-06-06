@@ -11,6 +11,8 @@ pub enum OtlpProtocol {
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
     pub traces_enabled: bool,
+    pub metrics_enabled: bool,
+    pub metric_export_interval: std::time::Duration,
     pub protocol: OtlpProtocol,
     pub endpoint: Option<String>,
     pub headers: Vec<(String, String)>,
@@ -76,6 +78,31 @@ impl TelemetryConfig {
             );
         }
 
+        let metrics_exporter = lookup(
+            &format!("{prefix}_METRICS_EXPORTER"),
+            "OTEL_METRICS_EXPORTER",
+        );
+        let metrics_enabled = match metrics_exporter.as_deref() {
+            None | Some("none") => false,
+            Some("otlp") => true,
+            Some(other) => {
+                anyhow::bail!(
+                    "unsupported metrics exporter {other:?}; accepted values: otlp, none"
+                );
+            }
+        };
+
+        let interval_key = format!("{prefix}_METRIC_EXPORT_INTERVAL_SECS");
+        let metric_export_interval = match env.get(&interval_key) {
+            None => std::time::Duration::from_mins(1),
+            Some(v) => {
+                let secs = v
+                    .parse::<u64>()
+                    .with_context(|| format!("invalid {interval_key}: {v:?}"))?;
+                std::time::Duration::from_secs(secs)
+            }
+        };
+
         let headers_raw = lookup(
             &format!("{prefix}_EXPORTER_OTLP_HEADERS"),
             "OTEL_EXPORTER_OTLP_HEADERS",
@@ -88,6 +115,8 @@ impl TelemetryConfig {
 
         Ok(Self {
             traces_enabled,
+            metrics_enabled,
+            metric_export_interval,
             protocol,
             endpoint,
             headers,
@@ -341,5 +370,55 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(c.service_name, "from-catapulte");
+    }
+
+    #[test]
+    fn metrics_disabled_by_default() {
+        let c = cfg(&[]).unwrap();
+        assert!(!c.metrics_enabled);
+    }
+
+    #[test]
+    fn metrics_none_disables() {
+        let c = cfg(&[(&format!("{P}_METRICS_EXPORTER"), "none")]).unwrap();
+        assert!(!c.metrics_enabled);
+    }
+
+    #[test]
+    fn metrics_otlp_enables() {
+        let c = cfg(&[(&format!("{P}_METRICS_EXPORTER"), "otlp")]).unwrap();
+        assert!(c.metrics_enabled);
+    }
+
+    #[test]
+    fn metrics_otel_fallback_enables() {
+        let c = TelemetryConfig::from_map(&env(&[("OTEL_METRICS_EXPORTER", "otlp")]), P, "1.0.0")
+            .unwrap();
+        assert!(c.metrics_enabled);
+    }
+
+    #[test]
+    fn metrics_unknown_exporter_errors() {
+        let err = cfg(&[(&format!("{P}_METRICS_EXPORTER"), "prometheus")]).unwrap_err();
+        assert!(err.to_string().contains("prometheus"));
+    }
+
+    #[test]
+    fn metric_export_interval_default_is_60s() {
+        let c = cfg(&[]).unwrap();
+        assert_eq!(c.metric_export_interval, std::time::Duration::from_mins(1));
+    }
+
+    #[test]
+    fn metric_export_interval_parses_secs() {
+        let c = cfg(&[(&format!("{P}_METRIC_EXPORT_INTERVAL_SECS"), "30")]).unwrap();
+        assert_eq!(c.metric_export_interval, std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn metric_export_interval_invalid_errors() {
+        let err =
+            cfg(&[(&format!("{P}_METRIC_EXPORT_INTERVAL_SECS"), "not-a-number")]).unwrap_err();
+        assert!(err.to_string().contains("METRIC_EXPORT_INTERVAL"));
     }
 }

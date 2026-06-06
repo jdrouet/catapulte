@@ -19,6 +19,7 @@ pub struct MemoryQueue {
     rx: RxGuard,
     pending: InFlight,
     next_token: Arc<AtomicU64>,
+    ready_count: Arc<AtomicU64>,
 }
 
 impl MemoryQueue {
@@ -30,7 +31,14 @@ impl MemoryQueue {
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_token: Arc::new(AtomicU64::new(0)),
+            ready_count: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Returns the number of items waiting in the channel to be dequeued.
+    #[must_use]
+    pub fn pending(&self) -> u64 {
+        self.ready_count.load(Ordering::Relaxed)
     }
 }
 
@@ -48,7 +56,9 @@ impl EmailQueue for MemoryQueue {
             .send((id, envelope.clone(), 1, trace))
             .map_err(|_| EmailQueueError::Storage {
                 source: anyhow::anyhow!("memory queue channel closed"),
-            })
+            })?;
+        self.ready_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
@@ -61,6 +71,7 @@ impl EmailQueue for MemoryQueue {
                 .ok_or_else(|| EmailQueueError::Storage {
                     source: anyhow::anyhow!("memory queue channel closed"),
                 })?;
+        self.ready_count.fetch_sub(1, Ordering::Relaxed);
 
         let token_id = self.next_token.fetch_add(1, Ordering::Relaxed);
         let token = AckToken::new(token_id.to_le_bytes().to_vec());
@@ -94,9 +105,12 @@ impl EmailQueue for MemoryQueue {
         let entry = self.pending.lock().unwrap().remove(&token_id);
         if let Some((id, envelope, attempt, trace)) = entry {
             let tx = self.tx.clone();
+            let ready_count = Arc::clone(&self.ready_count);
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
-                let _ = tx.send((id, envelope, attempt + 1, trace));
+                if tx.send((id, envelope, attempt + 1, trace)).is_ok() {
+                    ready_count.fetch_add(1, Ordering::Relaxed);
+                }
             });
         }
         Ok(())
@@ -180,5 +194,27 @@ mod tests {
         let dequeued2 = queue.dequeue().await.unwrap();
         assert_eq!(dequeued2.id, id);
         assert_eq!(dequeued2.attempt, 2);
+    }
+
+    #[tokio::test]
+    async fn pending_reflects_channel_depth() {
+        let queue = MemoryQueue::new();
+        assert_eq!(queue.pending(), 0);
+
+        queue
+            .enqueue(EmailId::default(), &sample_envelope())
+            .await
+            .unwrap();
+        queue
+            .enqueue(EmailId::default(), &sample_envelope())
+            .await
+            .unwrap();
+        assert_eq!(queue.pending(), 2);
+
+        let dequeued = queue.dequeue().await.unwrap();
+        assert_eq!(queue.pending(), 1);
+
+        queue.ack(dequeued.token).await.unwrap();
+        assert_eq!(queue.pending(), 1);
     }
 }

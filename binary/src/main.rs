@@ -10,11 +10,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let telemetry_cfg = TelemetryConfig::from_env("CATAPULTE_OTEL", env!("CARGO_PKG_VERSION"))?;
-    let telemetry = catapulte_telemetry::telemetry::init(telemetry_cfg)?;
+    let telemetry = catapulte_telemetry::telemetry::init(&telemetry_cfg)?;
 
     init_tracing(&telemetry);
 
-    let app = AppConfig::from_env()?.build().await?;
+    let app = AppConfig::from_env()?.build().await?.with_metrics(
+        telemetry.metrics_enabled(),
+        telemetry.metric_export_interval(),
+    );
     app.run().await?;
 
     // Run the synchronous provider shutdown on a blocking thread so the timeout

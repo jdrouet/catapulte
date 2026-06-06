@@ -19,12 +19,40 @@ pub(crate) enum QueueAdapter {
 }
 
 impl QueueAdapter {
-    fn backend_name(&self) -> &'static str {
+    pub(crate) fn backend_name(&self) -> &'static str {
         match self {
             Self::Sqlite(_) => "sqlite",
             Self::Postgres(_) => "postgres",
             Self::Memory(_) => "memory",
             Self::Nats(_) => "nats",
+        }
+    }
+
+    /// Returns the number of pending queue entries, or `None` on error.
+    pub(crate) async fn pending(&self) -> Option<u64> {
+        match self {
+            Self::Sqlite(a) => match a.pending().await {
+                Ok(n) => Some(n),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read pending queue count");
+                    None
+                }
+            },
+            Self::Postgres(a) => match a.pending().await {
+                Ok(n) => Some(n),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read pending queue count");
+                    None
+                }
+            },
+            Self::Memory(q) => Some(q.pending()),
+            Self::Nats(a) => match a.pending().await {
+                Ok(n) => Some(n),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read pending queue count");
+                    None
+                }
+            },
         }
     }
 }

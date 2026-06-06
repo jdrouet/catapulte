@@ -17,6 +17,7 @@ pub mod attachment_fetcher;
 pub mod attachment_store;
 pub mod gc;
 mod health;
+mod metrics;
 pub mod publisher;
 pub mod queue;
 mod state;
@@ -236,6 +237,8 @@ impl AppConfig {
             inbound_nats_server,
             worker,
             gc,
+            metrics_enabled: false,
+            metric_export_interval: Duration::from_mins(1),
         })
     }
 }
@@ -246,9 +249,19 @@ pub struct Application {
     inbound_nats_server: Option<InboundNatsServer>,
     worker: Worker,
     gc: gc::AttachmentGc,
+    metrics_enabled: bool,
+    metric_export_interval: Duration,
 }
 
 impl Application {
+    /// Configures whether the metrics sampler should run and at what interval.
+    #[must_use]
+    pub fn with_metrics(mut self, enabled: bool, interval: Duration) -> Self {
+        self.metrics_enabled = enabled;
+        self.metric_export_interval = interval;
+        self
+    }
+
     /// # Errors
     ///
     /// Returns an error when the HTTP server fails to bind or exits unexpectedly.
@@ -300,6 +313,26 @@ impl Application {
             let inb_state = state.clone();
             tasks.spawn(async move {
                 inbound.run(inb_state, inb_cancel).await;
+                Ok(())
+            });
+        }
+
+        // Metrics sampler (optional)
+        if self.metrics_enabled {
+            let sampler_queue = state.queue.clone();
+            let sampler_senders = std::sync::Arc::clone(&state.list_senders);
+            let sampler_backend = state.queue.backend_name();
+            let sampler_interval = self.metric_export_interval;
+            let sampler_cancel = cancel.clone();
+            tasks.spawn(async move {
+                metrics::run_sampler(
+                    sampler_queue,
+                    sampler_senders,
+                    sampler_backend,
+                    sampler_interval,
+                    sampler_cancel,
+                )
+                .await;
                 Ok(())
             });
         }

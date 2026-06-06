@@ -78,6 +78,22 @@ impl NatsAdapter {
         })
     }
 
+    /// Returns the number of messages pending in the NATS consumer
+    /// (i.e. messages not yet delivered).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the consumer info request fails.
+    pub async fn pending(&self) -> anyhow::Result<u64> {
+        use anyhow::Context as _;
+        let mut consumer = self.inner.consumer.clone();
+        let info = consumer
+            .info()
+            .await
+            .context("fetching NATS consumer info")?;
+        Ok(info.num_pending)
+    }
+
     pub(crate) fn client(&self) -> &async_nats::Client {
         &self.inner.client
     }

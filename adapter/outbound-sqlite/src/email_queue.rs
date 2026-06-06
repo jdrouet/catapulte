@@ -88,6 +88,25 @@ fn deserialize_trace_context(raw: Option<String>) -> TraceCarrier {
 }
 
 impl SqliteAdapter {
+    /// Returns the count of queue entries that are eligible to be claimed now
+    /// (i.e. `claimed_until IS NULL OR claimed_until < now_ms`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    pub async fn pending(&self) -> anyhow::Result<u64> {
+        use anyhow::Context as _;
+        let now = now_ms();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM email_queue WHERE claimed_until IS NULL OR claimed_until < ?",
+        )
+        .bind(now)
+        .fetch_one(self.pool())
+        .await
+        .context("counting pending email_queue entries")?;
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
+
     async fn try_dequeue(&self) -> Result<Option<DequeuedEmail>, EmailQueueError> {
         use sqlx::Row;
         let now = now_ms();
@@ -366,6 +385,23 @@ mod tests {
 
         // Item is still claimed; try_dequeue should return None immediately
         assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_counts_unclaimed_entries() {
+        let adapter = fresh_adapter().await;
+        assert_eq!(adapter.pending().await.unwrap(), 0);
+
+        let id1 = EmailId::default();
+        let id2 = EmailId::default();
+        save_and_enqueue(&adapter, id1).await;
+        save_and_enqueue(&adapter, id2).await;
+
+        assert_eq!(adapter.pending().await.unwrap(), 2);
+
+        // Claiming one entry reduces the pending count.
+        let _dequeued = adapter.dequeue().await.unwrap();
+        assert_eq!(adapter.pending().await.unwrap(), 1);
     }
 
     #[tokio::test]
