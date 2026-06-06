@@ -13,7 +13,6 @@ anyhow = { workspace = true }
 catapulte-domain = { path = "../../domain" }
 redis = { version = "1.2.2", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "connection-manager"] }
 tokio = { workspace = true, features = ["io-util"] }
-tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

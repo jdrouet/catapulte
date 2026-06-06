@@ -15,7 +15,6 @@ catapulte-domain = { path = "../../domain" }
 catapulte-inbound-http = { path = "../inbound-http" }
 futures-util = { version = "0.3" }
 serde_json = { workspace = true }
-thiserror = { version = "2.0" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }

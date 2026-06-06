@@ -8,11 +8,12 @@ publish = false
 [lints]
 workspace = true
 
+[package.metadata.cargo-machete]
+ignored = ["rust-s3"]
+
 [dependencies]
 anyhow = { workspace = true }
 catapulte-domain = { path = "../../domain" }
-thiserror = { version = "2.0" }
-tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true, features = ["io"] }
 futures-util = { version = "0.3" }
 tracing = { workspace = true }

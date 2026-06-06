@@ -466,7 +466,6 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
@@ -492,10 +491,8 @@ dependencies = [
  "catapulte-domain",
  "futures-util",
  "reqwest 0.12.28",
- "thiserror",
  "tokio",
  "tokio-util",
- "tracing",
  "url",
  "wiremock",
 ]
@@ -507,9 +504,7 @@ dependencies = [
  "anyhow",
  "catapulte-domain",
  "tempfile",
- "thiserror",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -523,7 +518,6 @@ dependencies = [
  "serial_test",
  "testcontainers",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -536,7 +530,6 @@ dependencies = [
  "futures-util",
  "rust-s3",
  "tempfile",
- "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
@@ -572,7 +565,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
- "bytes",
  "catapulte-domain",
  "futures-util",
  "serde",
@@ -580,7 +572,6 @@ dependencies = [
  "serial_test",
  "testcontainers",
  "tokio",
- "tracing",
  "uuid",
 ]
 

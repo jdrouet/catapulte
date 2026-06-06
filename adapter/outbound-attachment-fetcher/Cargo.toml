@@ -13,10 +13,8 @@ anyhow = { workspace = true }
 catapulte-domain = { path = "../../domain" }
 futures-util = { version = "0.3" }
 reqwest = { workspace = true, default-features = false, features = ["rustls-tls", "stream"] }
-thiserror = { version = "2.0" }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true, features = ["io"] }
-tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
