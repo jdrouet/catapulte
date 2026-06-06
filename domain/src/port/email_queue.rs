@@ -23,6 +23,47 @@ impl AckToken {
     }
 }
 
+/// Opaque W3C trace-context carrier. The domain holds it as plain string pairs
+/// so the domain crate stays free of any OpenTelemetry dependency. Adapters
+/// populate it on enqueue and extract it on dequeue.
+#[derive(Debug, Clone, Default)]
+pub struct TraceCarrier(Vec<(String, String)>);
+
+impl TraceCarrier {
+    #[must_use]
+    pub fn new(pairs: Vec<(String, String)>) -> Self {
+        Self(pairs)
+    }
+
+    #[must_use]
+    pub fn into_pairs(self) -> Vec<(String, String)> {
+        self.0
+    }
+
+    #[must_use]
+    pub fn as_pairs(&self) -> &[(String, String)] {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Value returned by [`EmailQueue::dequeue`].
+pub struct DequeuedEmail {
+    pub id: EmailId,
+    pub envelope: Envelope,
+    /// 1-based delivery attempt count.
+    pub attempt: u32,
+    /// Must be passed back to [`EmailQueue::ack`] or [`EmailQueue::nack`].
+    pub token: AckToken,
+    /// W3C trace-context headers captured at enqueue time. Empty when the
+    /// backend does not support propagation or the row predates propagation.
+    pub trace: TraceCarrier,
+}
+
 #[derive(Debug, Error)]
 pub enum EmailQueueError {
     #[error("email queue error")]
@@ -44,17 +85,15 @@ pub trait EmailQueue: Send + Sync + 'static {
 
     /// Dequeues the next available email.
     ///
-    /// Returns `(EmailId, Envelope, attempt, token)` where `attempt` is
-    /// 1-based and `token` must be passed to `ack` or `nack`.
+    /// Blocks until an item is available. Returns a [`DequeuedEmail`] whose
+    /// `token` must be passed to `ack` or `nack`.
     ///
     /// # Errors
     ///
     /// Returns `EmailQueueError::Storage` when the dequeue operation fails.
     fn dequeue(
         &self,
-    ) -> impl std::future::Future<
-        Output = Result<(EmailId, Envelope, u32, AckToken), EmailQueueError>,
-    > + Send;
+    ) -> impl std::future::Future<Output = Result<DequeuedEmail, EmailQueueError>> + Send;
 
     /// Acknowledges successful processing or permanent failure -- removes the
     /// item from the queue.

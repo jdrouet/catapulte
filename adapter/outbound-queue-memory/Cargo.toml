@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 catapulte-domain = { path = "../../domain" }
+catapulte-telemetry = { path = "../../telemetry" }
 tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]

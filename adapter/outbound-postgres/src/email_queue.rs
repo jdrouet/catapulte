@@ -4,7 +4,9 @@ use anyhow::Context;
 use catapulte_domain::entity::body::BodySource;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
-use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
+use catapulte_domain::port::email_queue::{
+    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, TraceCarrier,
+};
 
 use crate::PostgresAdapter;
 use crate::dto::{EnvelopeBodyDtoDeser, RecipientDto, recipients_from_dto};
@@ -53,10 +55,18 @@ fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Envelope> {
     })
 }
 
+fn deserialize_trace_context(raw: Option<String>) -> TraceCarrier {
+    let Some(json) = raw else {
+        return TraceCarrier::default();
+    };
+    serde_json::from_str::<Vec<(String, String)>>(&json)
+        .map(TraceCarrier::new)
+        .unwrap_or_default()
+}
+
 impl PostgresAdapter {
-    async fn try_dequeue(
-        &self,
-    ) -> Result<Option<(EmailId, Envelope, u32, AckToken)>, EmailQueueError> {
+    #[allow(clippy::too_many_lines)]
+    async fn try_dequeue(&self) -> Result<Option<DequeuedEmail>, EmailQueueError> {
         let now = now_ms();
 
         let mut tx = self
@@ -67,7 +77,7 @@ impl PostgresAdapter {
             .map_err(|source| EmailQueueError::Storage { source })?;
 
         let maybe = sqlx::query(
-            "SELECT id, email_id, attempt_count FROM email_queue \
+            "SELECT id, email_id, attempt_count, trace_context FROM email_queue \
              WHERE claimed_until IS NULL OR claimed_until < $1 \
              ORDER BY enqueued_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED",
         )
@@ -77,8 +87,12 @@ impl PostgresAdapter {
         .context("finding next queue entry")
         .map_err(|source| EmailQueueError::Storage { source })?;
 
-        let (entry_id, email_id_uuid, current_attempt): (uuid::Uuid, uuid::Uuid, u32) = match maybe
-        {
+        let (entry_id, email_id_uuid, current_attempt, trace_raw): (
+            uuid::Uuid,
+            uuid::Uuid,
+            u32,
+            Option<String>,
+        ) = match maybe {
             None => {
                 tx.rollback()
                     .await
@@ -103,7 +117,11 @@ impl PostgresAdapter {
                 let attempt_u32 = u32::try_from(attempt)
                     .context("attempt_count out of range")
                     .map_err(|source| EmailQueueError::Storage { source })?;
-                (entry_id, email_id, attempt_u32)
+                let trace_raw: Option<String> = row
+                    .try_get("trace_context")
+                    .context("reading trace_context")
+                    .map_err(|source| EmailQueueError::Storage { source })?;
+                (entry_id, email_id, attempt_u32, trace_raw)
             }
         };
 
@@ -152,12 +170,14 @@ impl PostgresAdapter {
                 let envelope =
                     parse_envelope(&row).map_err(|source| EmailQueueError::Storage { source })?;
                 let token = AckToken::new(entry_id.as_bytes().to_vec());
-                Ok(Some((
-                    EmailId::from(email_id_uuid),
+                let trace = deserialize_trace_context(trace_raw);
+                Ok(Some(DequeuedEmail {
+                    id: EmailId::from(email_id_uuid),
                     envelope,
-                    new_attempt,
+                    attempt: new_attempt,
                     token,
-                )))
+                    trace,
+                }))
             }
         }
     }
@@ -167,9 +187,20 @@ impl EmailQueue for PostgresAdapter {
     async fn enqueue(&self, id: EmailId, _envelope: &Envelope) -> Result<(), EmailQueueError> {
         let entry_id = uuid::Uuid::now_v7();
         let email_id = id.as_uuid();
-        sqlx::query("INSERT INTO email_queue (id, email_id) VALUES ($1, $2)")
+        let pairs = catapulte_telemetry::propagation::inject_current();
+        let trace_context = if pairs.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&pairs)
+                    .context("serializing trace context")
+                    .map_err(|source| EmailQueueError::Storage { source })?,
+            )
+        };
+        sqlx::query("INSERT INTO email_queue (id, email_id, trace_context) VALUES ($1, $2, $3)")
             .bind(entry_id)
             .bind(email_id)
+            .bind(trace_context)
             .execute(self.pool())
             .await
             .context("inserting into email_queue")
@@ -177,7 +208,7 @@ impl EmailQueue for PostgresAdapter {
         Ok(())
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
+    async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
         loop {
             if let Some(item) = self.try_dequeue().await? {
                 return Ok(item);
@@ -298,8 +329,8 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (returned_id, _, _, _token) = adapter.dequeue().await.unwrap();
-        assert_eq!(returned_id, id);
+        let dequeued = adapter.dequeue().await.unwrap();
+        assert_eq!(dequeued.id, id);
     }
 
     #[tokio::test]
@@ -308,10 +339,10 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (returned_id, _, _, token) = adapter.dequeue().await.unwrap();
-        assert_eq!(returned_id, id);
+        let dequeued = adapter.dequeue().await.unwrap();
+        assert_eq!(dequeued.id, id);
 
-        adapter.ack(token).await.unwrap();
+        adapter.ack(dequeued.token).await.unwrap();
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM email_queue")
             .fetch_one(adapter.pool())
@@ -381,14 +412,34 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (_returned_id, _, _, token) = adapter.dequeue().await.unwrap();
+        let dequeued = adapter.dequeue().await.unwrap();
 
         adapter
-            .nack(token, std::time::Duration::from_secs(10))
+            .nack(dequeued.token, std::time::Duration::from_secs(10))
             .await
             .unwrap();
 
         // Item is still claimed; try_dequeue should return None immediately
         assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn null_trace_context_decodes_to_empty_carrier() {
+        let (adapter, _container) = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        // Insert a queue row with NULL trace_context to simulate a pre-migration row.
+        sqlx::query("INSERT INTO email_queue (id, email_id, trace_context) VALUES ($1, $2, NULL)")
+            .bind(uuid::Uuid::now_v7())
+            .bind(id.as_uuid())
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        let dequeued = adapter.dequeue().await.unwrap();
+        assert!(
+            dequeued.trace.is_empty(),
+            "NULL trace_context must decode to an empty carrier"
+        );
     }
 }

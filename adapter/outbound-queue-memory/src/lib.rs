@@ -5,14 +5,18 @@ use std::time::Duration;
 
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
-use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
+use catapulte_domain::port::email_queue::{
+    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, TraceCarrier,
+};
 
-type InFlight = Arc<Mutex<HashMap<u64, (EmailId, Envelope, u32)>>>;
+type QueueItem = (EmailId, Envelope, u32, TraceCarrier);
+type InFlight = Arc<Mutex<HashMap<u64, QueueItem>>>;
+type RxGuard = Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<QueueItem>>>;
 
 #[derive(Clone)]
 pub struct MemoryQueue {
-    tx: tokio::sync::mpsc::UnboundedSender<(EmailId, Envelope, u32)>,
-    rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<(EmailId, Envelope, u32)>>>,
+    tx: tokio::sync::mpsc::UnboundedSender<QueueItem>,
+    rx: RxGuard,
     pending: InFlight,
     next_token: Arc<AtomicU64>,
 }
@@ -38,15 +42,17 @@ impl Default for MemoryQueue {
 
 impl EmailQueue for MemoryQueue {
     async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
+        let pairs = catapulte_telemetry::propagation::inject_current();
+        let trace = TraceCarrier::new(pairs);
         self.tx
-            .send((id, envelope.clone(), 1))
+            .send((id, envelope.clone(), 1, trace))
             .map_err(|_| EmailQueueError::Storage {
                 source: anyhow::anyhow!("memory queue channel closed"),
             })
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
-        let (id, envelope, attempt) =
+    async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
+        let (id, envelope, attempt, trace) =
             self.rx
                 .lock()
                 .await
@@ -61,8 +67,14 @@ impl EmailQueue for MemoryQueue {
         self.pending
             .lock()
             .unwrap()
-            .insert(token_id, (id, envelope.clone(), attempt));
-        Ok((id, envelope, attempt, token))
+            .insert(token_id, (id, envelope.clone(), attempt, trace.clone()));
+        Ok(DequeuedEmail {
+            id,
+            envelope,
+            attempt,
+            token,
+            trace,
+        })
     }
 
     async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
@@ -80,11 +92,11 @@ impl EmailQueue for MemoryQueue {
         })?;
         let token_id = u64::from_le_bytes(bytes);
         let entry = self.pending.lock().unwrap().remove(&token_id);
-        if let Some((id, envelope, attempt)) = entry {
+        if let Some((id, envelope, attempt, trace)) = entry {
             let tx = self.tx.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
-                let _ = tx.send((id, envelope, attempt + 1));
+                let _ = tx.send((id, envelope, attempt + 1, trace));
             });
         }
         Ok(())
@@ -118,8 +130,8 @@ mod tests {
         let queue = MemoryQueue::new();
         let id = EmailId::default();
         queue.enqueue(id, &sample_envelope()).await.unwrap();
-        let (returned_id, _, _, _token) = queue.dequeue().await.unwrap();
-        assert_eq!(returned_id, id);
+        let dequeued = queue.dequeue().await.unwrap();
+        assert_eq!(dequeued.id, id);
     }
 
     #[tokio::test]
@@ -129,10 +141,10 @@ mod tests {
         let id2 = EmailId::default();
         queue.enqueue(id1, &sample_envelope()).await.unwrap();
         queue.enqueue(id2, &sample_envelope()).await.unwrap();
-        let (r1, _, _, _) = queue.dequeue().await.unwrap();
-        let (r2, _, _, _) = queue.dequeue().await.unwrap();
-        assert_eq!(r1, id1);
-        assert_eq!(r2, id2);
+        let r1 = queue.dequeue().await.unwrap();
+        let r2 = queue.dequeue().await.unwrap();
+        assert_eq!(r1.id, id1);
+        assert_eq!(r2.id, id2);
     }
 
     #[tokio::test]
@@ -140,9 +152,9 @@ mod tests {
         let queue = MemoryQueue::new();
         let id = EmailId::default();
         queue.enqueue(id, &sample_envelope()).await.unwrap();
-        let (_, _, _, token) = queue.dequeue().await.unwrap();
+        let dequeued = queue.dequeue().await.unwrap();
 
-        queue.ack(token).await.unwrap();
+        queue.ack(dequeued.token).await.unwrap();
 
         assert!(queue.pending.lock().unwrap().is_empty());
     }
@@ -152,12 +164,12 @@ mod tests {
         let queue = MemoryQueue::new();
         let id = EmailId::default();
         queue.enqueue(id, &sample_envelope()).await.unwrap();
-        let (returned_id, _, attempt, token) = queue.dequeue().await.unwrap();
-        assert_eq!(returned_id, id);
-        assert_eq!(attempt, 1);
+        let dequeued = queue.dequeue().await.unwrap();
+        assert_eq!(dequeued.id, id);
+        assert_eq!(dequeued.attempt, 1);
 
         queue
-            .nack(token, std::time::Duration::from_millis(100))
+            .nack(dequeued.token, std::time::Duration::from_millis(100))
             .await
             .unwrap();
 
@@ -165,8 +177,8 @@ mod tests {
         // sends the item back to the channel.
         tokio::time::advance(std::time::Duration::from_millis(200)).await;
 
-        let (returned_id2, _, attempt2, _token2) = queue.dequeue().await.unwrap();
-        assert_eq!(returned_id2, id);
-        assert_eq!(attempt2, 2);
+        let dequeued2 = queue.dequeue().await.unwrap();
+        assert_eq!(dequeued2.id, id);
+        assert_eq!(dequeued2.attempt, 2);
     }
 }

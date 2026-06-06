@@ -57,6 +57,10 @@ impl Telemetry {
 /// Panics if `config.traces_enabled` is `true` but `config.endpoint` is
 /// `None`. This is an invariant enforced by [`TelemetryConfig::from_env`].
 pub fn init(config: TelemetryConfig) -> anyhow::Result<Telemetry> {
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
+
     if !config.traces_enabled {
         return Ok(Telemetry { provider: None });
     }

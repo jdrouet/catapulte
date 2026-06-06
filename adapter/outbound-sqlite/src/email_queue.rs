@@ -3,7 +3,9 @@ use std::time::Duration;
 use anyhow::Context;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
-use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
+use catapulte_domain::port::email_queue::{
+    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, TraceCarrier,
+};
 
 use crate::SqliteAdapter;
 use crate::dto::{EnvelopeBodyDtoDeser, RecipientDto, recipients_from_dto};
@@ -76,10 +78,17 @@ fn now_ms() -> i64 {
     .unwrap_or(i64::MAX)
 }
 
+fn deserialize_trace_context(raw: Option<String>) -> TraceCarrier {
+    let Some(json) = raw else {
+        return TraceCarrier::default();
+    };
+    serde_json::from_str::<Vec<(String, String)>>(&json)
+        .map(TraceCarrier::new)
+        .unwrap_or_default()
+}
+
 impl SqliteAdapter {
-    async fn try_dequeue(
-        &self,
-    ) -> Result<Option<(EmailId, Envelope, u32, AckToken)>, EmailQueueError> {
+    async fn try_dequeue(&self) -> Result<Option<DequeuedEmail>, EmailQueueError> {
         use sqlx::Row;
         let now = now_ms();
         let processing_timeout_ms: i64 = 300_000;
@@ -94,7 +103,7 @@ impl SqliteAdapter {
                  ORDER BY enqueued_at ASC \
                  LIMIT 1 \
              ) \
-             RETURNING id, email_id, attempt_count",
+             RETURNING id, email_id, attempt_count, trace_context",
         )
         .bind(claim_until)
         .bind(now)
@@ -119,6 +128,11 @@ impl SqliteAdapter {
         let new_attempt = u32::try_from(attempt)
             .context("attempt_count out of range")
             .map_err(|source| EmailQueueError::Storage { source })?;
+        let trace_raw: Option<String> = row
+            .try_get("trace_context")
+            .context("reading trace_context")
+            .map_err(|source| EmailQueueError::Storage { source })?;
+        let trace = deserialize_trace_context(trace_raw);
 
         let maybe_row = sqlx::query(
             "SELECT id, idempotency_key, correlation_id, subject, sender, recipients, body, variables FROM emails WHERE id = ?",
@@ -136,8 +150,14 @@ impl SqliteAdapter {
                 Ok(None)
             }
             Some(row) => parse_row(&row)
-                .map(|(id, env)| {
-                    Some((id, env, new_attempt, AckToken::new(entry_id_bytes.clone())))
+                .map(|(id, envelope)| {
+                    Some(DequeuedEmail {
+                        id,
+                        envelope,
+                        attempt: new_attempt,
+                        token: AckToken::new(entry_id_bytes.clone()),
+                        trace,
+                    })
                 })
                 .map_err(|source| EmailQueueError::Storage { source }),
         }
@@ -148,9 +168,20 @@ impl EmailQueue for SqliteAdapter {
     async fn enqueue(&self, id: EmailId, _envelope: &Envelope) -> Result<(), EmailQueueError> {
         let entry_id = uuid::Uuid::now_v7().as_bytes().to_vec();
         let email_id_bytes = id.as_uuid().as_bytes().to_vec();
-        sqlx::query("INSERT INTO email_queue (id, email_id) VALUES (?, ?)")
+        let pairs = catapulte_telemetry::propagation::inject_current();
+        let trace_context = if pairs.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&pairs)
+                    .context("serializing trace context")
+                    .map_err(|source| EmailQueueError::Storage { source })?,
+            )
+        };
+        sqlx::query("INSERT INTO email_queue (id, email_id, trace_context) VALUES (?, ?, ?)")
             .bind(entry_id)
             .bind(email_id_bytes)
+            .bind(trace_context)
             .execute(self.pool())
             .await
             .context("inserting into email_queue")
@@ -158,7 +189,7 @@ impl EmailQueue for SqliteAdapter {
         Ok(())
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
+    async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
         loop {
             if let Some(item) = self.try_dequeue().await? {
                 return Ok(item);
@@ -240,8 +271,8 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (returned_id, _, _, _token) = adapter.dequeue().await.unwrap();
-        assert_eq!(returned_id, id);
+        let dequeued = adapter.dequeue().await.unwrap();
+        assert_eq!(dequeued.id, id);
     }
 
     #[tokio::test]
@@ -251,8 +282,8 @@ mod tests {
         adapter.save(id, &sample_envelope()).await.unwrap();
         adapter.enqueue(id, &sample_envelope()).await.unwrap();
 
-        let (returned_id, _, _, _token) = adapter.dequeue().await.unwrap();
-        assert_eq!(returned_id, id);
+        let dequeued = adapter.dequeue().await.unwrap();
+        assert_eq!(dequeued.id, id);
     }
 
     #[tokio::test]
@@ -261,10 +292,10 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (returned_id, _, _, token) = adapter.dequeue().await.unwrap();
-        assert_eq!(returned_id, id);
+        let dequeued = adapter.dequeue().await.unwrap();
+        assert_eq!(dequeued.id, id);
 
-        adapter.ack(token).await.unwrap();
+        adapter.ack(dequeued.token).await.unwrap();
         assert!(adapter.try_dequeue().await.unwrap().is_none());
     }
 
@@ -274,8 +305,8 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (returned_id, _, _, _token) = adapter.dequeue().await.unwrap();
-        assert_eq!(returned_id, id);
+        let dequeued = adapter.dequeue().await.unwrap();
+        assert_eq!(dequeued.id, id);
 
         assert!(adapter.try_dequeue().await.unwrap().is_none());
     }
@@ -286,8 +317,8 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (_, _, attempt, _token) = adapter.dequeue().await.unwrap();
-        assert_eq!(attempt, 1);
+        let dequeued = adapter.dequeue().await.unwrap();
+        assert_eq!(dequeued.attempt, 1);
 
         // Reset claimed_until so the item becomes claimable again
         sqlx::query("UPDATE email_queue SET claimed_until = 0 WHERE email_id = ?")
@@ -296,8 +327,8 @@ mod tests {
             .await
             .unwrap();
 
-        let (_, _, attempt2, _token2) = adapter.dequeue().await.unwrap();
-        assert_eq!(attempt2, 2);
+        let dequeued2 = adapter.dequeue().await.unwrap();
+        assert_eq!(dequeued2.attempt, 2);
     }
 
     #[tokio::test]
@@ -326,14 +357,34 @@ mod tests {
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
-        let (_returned_id, _, _, token) = adapter.dequeue().await.unwrap();
+        let dequeued = adapter.dequeue().await.unwrap();
 
         adapter
-            .nack(token, std::time::Duration::from_secs(10))
+            .nack(dequeued.token, std::time::Duration::from_secs(10))
             .await
             .unwrap();
 
         // Item is still claimed; try_dequeue should return None immediately
         assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn null_trace_context_decodes_to_empty_carrier() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        // Insert a queue row with NULL trace_context to simulate a pre-migration row.
+        sqlx::query("INSERT INTO email_queue (id, email_id, trace_context) VALUES (?, ?, NULL)")
+            .bind(uuid::Uuid::now_v7().as_bytes().to_vec())
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        let dequeued = adapter.dequeue().await.unwrap();
+        assert!(
+            dequeued.trace.is_empty(),
+            "NULL trace_context must decode to an empty carrier"
+        );
     }
 }

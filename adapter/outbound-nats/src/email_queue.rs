@@ -3,7 +3,9 @@ use std::time::Duration;
 use anyhow::Context;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
-use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
+use catapulte_domain::port::email_queue::{
+    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, TraceCarrier,
+};
 use futures_util::StreamExt;
 
 use crate::NatsAdapter;
@@ -62,7 +64,7 @@ impl EmailQueue for NatsAdapter {
         Ok(())
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
+    async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
         loop {
             let mut batch = self
                 .consumer()
@@ -106,7 +108,14 @@ impl EmailQueue for NatsAdapter {
                 let (email_id, envelope) = <(EmailId, Envelope)>::try_from(payload)
                     .map_err(|source| EmailQueueError::Storage { source })?;
 
-                return Ok((email_id, envelope, attempt, token));
+                return Ok(DequeuedEmail {
+                    id: email_id,
+                    envelope,
+                    attempt,
+                    token,
+                    // NATS header propagation is phase 2b-2; carry empty for now.
+                    trace: TraceCarrier::default(),
+                });
             }
         }
     }
@@ -238,15 +247,14 @@ mod tests {
 
         adapter.enqueue(id, &envelope).await.unwrap();
 
-        let (returned_id, returned_envelope, _, _token) =
-            tokio::time::timeout(Duration::from_secs(10), adapter.dequeue())
-                .await
-                .expect("dequeue timed out")
-                .unwrap();
+        let dequeued = tokio::time::timeout(Duration::from_secs(10), adapter.dequeue())
+            .await
+            .expect("dequeue timed out")
+            .unwrap();
 
-        assert_eq!(returned_id, id);
-        assert_eq!(returned_envelope.sender, envelope.sender);
-        assert_eq!(returned_envelope.subject, envelope.subject);
+        assert_eq!(dequeued.id, id);
+        assert_eq!(dequeued.envelope.sender, envelope.sender);
+        assert_eq!(dequeued.envelope.subject, envelope.subject);
     }
 
     #[serial_test::serial]
@@ -258,13 +266,12 @@ mod tests {
 
         adapter.enqueue(id, &envelope).await.unwrap();
 
-        let (_, _, attempt, _token) =
-            tokio::time::timeout(Duration::from_secs(10), adapter.dequeue())
-                .await
-                .expect("dequeue timed out")
-                .unwrap();
+        let dequeued = tokio::time::timeout(Duration::from_secs(10), adapter.dequeue())
+            .await
+            .expect("dequeue timed out")
+            .unwrap();
 
-        assert_eq!(attempt, 1);
+        assert_eq!(dequeued.attempt, 1);
     }
 
     #[serial_test::serial]
@@ -276,12 +283,12 @@ mod tests {
 
         adapter.enqueue(id, &envelope).await.unwrap();
 
-        let (_, _, _, token) = tokio::time::timeout(Duration::from_secs(10), adapter.dequeue())
+        let dequeued = tokio::time::timeout(Duration::from_secs(10), adapter.dequeue())
             .await
             .expect("dequeue timed out")
             .unwrap();
 
-        adapter.ack(token).await.unwrap();
+        adapter.ack(dequeued.token).await.unwrap();
 
         let result = tokio::time::timeout(Duration::from_secs(8), adapter.dequeue()).await;
         assert!(result.is_err(), "expected dequeue to time out after ack");

@@ -484,8 +484,7 @@ mod tests {
 
         async fn dequeue(
             &self,
-        ) -> Result<(EmailId, Envelope, u32, crate::port::email_queue::AckToken), EmailQueueError>
-        {
+        ) -> Result<crate::port::email_queue::DequeuedEmail, EmailQueueError> {
             std::future::pending().await
         }
 
@@ -517,8 +516,7 @@ mod tests {
 
         async fn dequeue(
             &self,
-        ) -> Result<(EmailId, Envelope, u32, crate::port::email_queue::AckToken), EmailQueueError>
-        {
+        ) -> Result<crate::port::email_queue::DequeuedEmail, EmailQueueError> {
             std::future::pending().await
         }
 

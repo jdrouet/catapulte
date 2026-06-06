@@ -6,6 +6,7 @@ use catapulte_domain::port::event_publisher::EventPublisher;
 use catapulte_domain::use_case::process_queued_email::{
     ProcessQueuedEmailError, ProcessQueuedEmailUseCase,
 };
+use tracing::Instrument as _;
 
 const MAX_ATTEMPTS: u32 = 3;
 
@@ -50,18 +51,26 @@ impl Worker {
             };
 
             match result {
-                Ok((id, envelope, attempt, token)) => {
+                Ok(dequeued) => {
                     if cancel.is_cancelled() {
                         if let Err(e) = state
                             .email_queue()
-                            .nack(token, std::time::Duration::ZERO)
+                            .nack(dequeued.token, std::time::Duration::ZERO)
                             .await
                         {
                             tracing::error!(error = %e, "failed to nack message on shutdown");
                         }
                         break;
                     }
-                    process_one(&state, id, envelope, attempt, token).await;
+                    process_one(
+                        &state,
+                        dequeued.id,
+                        dequeued.envelope,
+                        dequeued.attempt,
+                        dequeued.token,
+                        dequeued.trace,
+                    )
+                    .await;
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to dequeue");
@@ -77,109 +86,126 @@ impl Worker {
     }
 }
 
-#[tracing::instrument(skip_all, name = "worker.process", fields(email_id = %id.as_uuid(), attempt, correlation_id = tracing::field::Empty))]
+#[allow(clippy::too_many_lines)]
 async fn process_one<S: WorkerState>(
     state: &S,
     id: catapulte_domain::entity::email::EmailId,
     envelope: catapulte_domain::entity::envelope::Envelope,
     attempt: u32,
     token: AckToken,
+    trace: catapulte_domain::port::email_queue::TraceCarrier,
 ) {
-    let correlation_id = envelope.correlation_id.clone();
-    if let Some(ref cid) = correlation_id {
-        tracing::Span::current().record("correlation_id", cid.as_str());
-    }
+    let span = tracing::info_span!(
+        "worker.process",
+        email_id = %id.as_uuid(),
+        attempt,
+        correlation_id = tracing::field::Empty,
+    );
+    catapulte_telemetry::propagation::set_span_parent(&span, trace.as_pairs());
 
-    if let Err(e) = state
-        .event_publisher()
-        .publish(&LifecycleEvent::Sending {
-            id,
-            attempt,
-            correlation_id: correlation_id.clone(),
-        })
-        .await
-    {
-        tracing::error!(error = %e, "failed to publish sending event");
-    }
+    async move {
+        let correlation_id = envelope.correlation_id.clone();
+        if let Some(ref cid) = correlation_id {
+            tracing::Span::current().record("correlation_id", cid.as_str());
+        }
 
-    let attachments_for_cleanup = envelope.attachments.clone();
+        if let Err(e) = state
+            .event_publisher()
+            .publish(&LifecycleEvent::Sending {
+                id,
+                attempt,
+                correlation_id: correlation_id.clone(),
+            })
+            .await
+        {
+            tracing::error!(error = %e, "failed to publish sending event");
+        }
 
-    match state.process_queued_email().execute(envelope).await {
-        Ok(sender_name) => {
-            if let Err(e) = state.email_queue().ack(token).await {
-                tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to ack email");
-                return;
-            }
-            if let Err(e) = state.email_repository().set_attachments(id, &[]).await {
-                tracing::warn!(
-                    error = %e,
-                    email_id = %id.as_uuid(),
-                    "failed to clear attachment refs after send"
-                );
-            }
-            for att in &attachments_for_cleanup {
-                if let Err(e) = state.attachment_store().delete(&att.blob).await {
+        let attachments_for_cleanup = envelope.attachments.clone();
+
+        match state.process_queued_email().execute(envelope).await {
+            Ok(sender_name) => {
+                if let Err(e) = state.email_queue().ack(token).await {
+                    tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to ack email");
+                    return;
+                }
+                if let Err(e) = state.email_repository().set_attachments(id, &[]).await {
                     tracing::warn!(
                         error = %e,
-                        blob_key = %att.blob.key,
-                        "failed to delete attachment blob after send"
+                        email_id = %id.as_uuid(),
+                        "failed to clear attachment refs after send"
                     );
                 }
+                for att in &attachments_for_cleanup {
+                    if let Err(e) = state.attachment_store().delete(&att.blob).await {
+                        tracing::warn!(
+                            error = %e,
+                            blob_key = %att.blob.key,
+                            "failed to delete attachment blob after send"
+                        );
+                    }
+                }
+                if let Err(e) = state
+                    .event_publisher()
+                    .publish(&LifecycleEvent::Sent {
+                        id,
+                        sender_name,
+                        correlation_id: correlation_id.clone(),
+                    })
+                    .await
+                {
+                    tracing::error!(error = %e, "failed to publish sent event");
+                }
             }
-            if let Err(e) = state
-                .event_publisher()
-                .publish(&LifecycleEvent::Sent {
-                    id,
-                    sender_name,
-                    correlation_id: correlation_id.clone(),
-                })
-                .await
-            {
-                tracing::error!(error = %e, "failed to publish sent event");
-            }
-        }
-        Err(e) => {
-            tracing::error!(
-                error = ?e,
-                email_id = %id.as_uuid(),
-                attempt,
-                "failed to process email"
-            );
-            let reason = e.to_string();
-            let sender_name = e.sender_name().cloned();
-            let is_terminal = matches!(&e, ProcessQueuedEmailError::Send(s) if !s.is_transient())
-                || attempt >= MAX_ATTEMPTS;
-            let event = if is_terminal {
-                if let Err(ack_err) = state.email_queue().ack(token).await {
-                    tracing::error!(error = %ack_err, "failed to ack permanently failed email");
-                    return;
-                }
-                LifecycleEvent::Failed {
-                    id,
+            Err(e) => {
+                tracing::error!(
+                    error = ?e,
+                    email_id = %id.as_uuid(),
                     attempt,
-                    reason,
-                    sender_name,
-                    correlation_id: correlation_id.clone(),
+                    "failed to process email"
+                );
+                let reason = e.to_string();
+                let sender_name = e.sender_name().cloned();
+                let is_terminal =
+                    matches!(&e, ProcessQueuedEmailError::Send(s) if !s.is_transient())
+                        || attempt >= MAX_ATTEMPTS;
+                let event = if is_terminal {
+                    if let Err(ack_err) = state.email_queue().ack(token).await {
+                        tracing::error!(error = %ack_err, "failed to ack permanently failed email");
+                        return;
+                    }
+                    LifecycleEvent::Failed {
+                        id,
+                        attempt,
+                        reason,
+                        sender_name,
+                        correlation_id: correlation_id.clone(),
+                    }
+                } else {
+                    let delay = backoff(attempt);
+                    if let Err(nack_err) = state.email_queue().nack(token, delay).await {
+                        tracing::error!(
+                            error = %nack_err,
+                            "failed to nack transiently failed email"
+                        );
+                        return;
+                    }
+                    LifecycleEvent::Retrying {
+                        id,
+                        attempt,
+                        reason,
+                        sender_name,
+                        correlation_id: correlation_id.clone(),
+                    }
+                };
+                if let Err(pub_err) = state.event_publisher().publish(&event).await {
+                    tracing::error!(error = %pub_err, "failed to publish lifecycle event");
                 }
-            } else {
-                let delay = backoff(attempt);
-                if let Err(nack_err) = state.email_queue().nack(token, delay).await {
-                    tracing::error!(error = %nack_err, "failed to nack transiently failed email");
-                    return;
-                }
-                LifecycleEvent::Retrying {
-                    id,
-                    attempt,
-                    reason,
-                    sender_name,
-                    correlation_id: correlation_id.clone(),
-                }
-            };
-            if let Err(pub_err) = state.event_publisher().publish(&event).await {
-                tracing::error!(error = %pub_err, "failed to publish lifecycle event");
             }
         }
     }
+    .instrument(span)
+    .await;
 }
 
 #[cfg(test)]
@@ -196,7 +222,9 @@ mod tests {
     use catapulte_domain::port::attachment_store::{
         AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
     };
-    use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
+    use catapulte_domain::port::email_queue::{
+        AckToken, DequeuedEmail, EmailQueue, EmailQueueError, TraceCarrier,
+    };
     use catapulte_domain::port::email_repository::{
         EmailRecord, EmailRepository, EmailRepositoryError, ListEmailsParams, SaveResult,
     };
@@ -236,7 +264,7 @@ mod tests {
             Ok(())
         }
 
-        async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
+        async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
             unimplemented!()
         }
 
@@ -458,7 +486,7 @@ mod tests {
             Ok(())
         }
 
-        async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
+        async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
             std::future::pending().await
         }
 
@@ -596,7 +624,15 @@ mod tests {
         let id = EmailId::default();
         let token = AckToken::new(vec![0u8; 8]);
 
-        process_one(&state, id, sample_envelope(), 1, token).await;
+        process_one(
+            &state,
+            id,
+            sample_envelope(),
+            1,
+            token,
+            TraceCarrier::default(),
+        )
+        .await;
 
         let events = publisher.events.lock().unwrap();
         assert!(
@@ -634,7 +670,7 @@ mod tests {
         let id = EmailId::default();
         let token = AckToken::new(vec![0u8; 8]);
 
-        process_one(&state, id, envelope, 1, token).await;
+        process_one(&state, id, envelope, 1, token, TraceCarrier::default()).await;
 
         let deleted = store.deleted.lock().unwrap();
         assert!(
@@ -661,7 +697,7 @@ mod tests {
         }];
 
         let token = AckToken::new(vec![0u8; 8]);
-        process_one(&state, id, envelope, 1, token).await;
+        process_one(&state, id, envelope, 1, token, TraceCarrier::default()).await;
 
         let ops = state.log.snapshot();
         let set_pos = ops
@@ -701,7 +737,7 @@ mod tests {
             Ok(())
         }
 
-        async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
+        async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
             std::future::pending().await
         }
 
@@ -757,7 +793,15 @@ mod tests {
         let token = AckToken::new(vec![0u8; 8]);
 
         // attempt = 1, well below MAX_ATTEMPTS=3, so only the non-transient check drives failure
-        process_one(&state, id, sample_envelope(), 1, token).await;
+        process_one(
+            &state,
+            id,
+            sample_envelope(),
+            1,
+            token,
+            TraceCarrier::default(),
+        )
+        .await;
 
         assert_eq!(
             *queue.acked.lock().unwrap(),

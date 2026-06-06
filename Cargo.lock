@@ -478,6 +478,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
+ "catapulte-telemetry",
  "serde_json",
  "tokio",
  "tokio-util",
@@ -584,6 +585,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
+ "catapulte-telemetry",
  "serde",
  "serde_json",
  "sqlx",
@@ -598,6 +600,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
+ "catapulte-telemetry",
  "serde_json",
  "tokio",
 ]
@@ -632,6 +635,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
+ "catapulte-telemetry",
  "serde",
  "serde_json",
  "sqlx",

@@ -122,7 +122,12 @@ Concretely, the decision means:
 - Spans instrument: the submit use case, enqueue, the worker `process_one`
   (`adapter/inbound-worker/src/worker.rs`, deliberately not the idle dequeue
   polls), each adapter operation, and each per-sink publish. Inbound HTTP already
-  carries a `TraceLayer` and some `#[tracing::instrument]`.
+  carries a `TraceLayer` and some `#[tracing::instrument]`. Note that the
+  `TraceLayer` provides span *creation* for incoming HTTP requests, not W3C
+  remote-parent *extraction*; external HTTP-client to catapulte trace continuity
+  is a separate follow-up. Phase 2b delivers internal submit -> queue -> worker
+  continuity via `TraceCarrier` propagation through the SQL and memory queue
+  backends.
 - Configuration: `CATAPULTE_`-prefixed env vars take precedence, with the standard
   `OTEL_*` vars honored as a fallback. `service.name` and `service.version` are set
   as resource attributes. Tracer and meter provider shutdown performs a bounded

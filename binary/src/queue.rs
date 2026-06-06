@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
-use catapulte_domain::port::email_queue::{AckToken, EmailQueue, EmailQueueError};
+use catapulte_domain::port::email_queue::{AckToken, DequeuedEmail, EmailQueue, EmailQueueError};
 use catapulte_outbound_nats::{NatsAdapter, NatsConfig};
 use catapulte_outbound_postgres::PostgresAdapter;
 use catapulte_outbound_queue_memory::MemoryQueue;
@@ -40,7 +40,7 @@ impl EmailQueue for QueueAdapter {
         }
     }
 
-    async fn dequeue(&self) -> Result<(EmailId, Envelope, u32, AckToken), EmailQueueError> {
+    async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
         match self {
             Self::Sqlite(a) => a.dequeue().await,
             Self::Postgres(a) => a.dequeue().await,
