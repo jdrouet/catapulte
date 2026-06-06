@@ -136,7 +136,7 @@ async fn process_one<S: WorkerState>(
         }
         Err(e) => {
             tracing::error!(
-                error = %e,
+                error = ?e,
                 email_id = %id.as_uuid(),
                 attempt,
                 "failed to process email"
