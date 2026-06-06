@@ -101,6 +101,23 @@ mod tests {
 
     use crate::PostgresAdapter;
 
+    async fn wait_for_tcp(port: u16, timeout: std::time::Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "127.0.0.1:{port} did not accept connections within {timeout:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     async fn fresh_adapter() -> PostgresAdapter {
         use testcontainers::GenericImage;
         use testcontainers::ImageExt;
@@ -119,6 +136,7 @@ mod tests {
             .expect("failed to start postgres container; ensure Docker is running");
 
         let port = pg.get_host_port_ipv4(5432u16).await.unwrap();
+        wait_for_tcp(port, std::time::Duration::from_secs(15)).await;
         let url = format!("postgres://catapulte:catapulte@127.0.0.1:{port}/catapulte");
         let adapter = PostgresAdapter::connect(&url).await.unwrap();
         adapter.migrate().await.unwrap();

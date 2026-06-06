@@ -26,6 +26,23 @@ pub struct BackendBundle {
     pub drop_guards: Vec<Box<dyn Any + Send>>,
 }
 
+async fn wait_for_tcp(port: u16, timeout: std::time::Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "127.0.0.1:{port} did not accept connections within {timeout:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 fn base_smtp(port: u16) -> MultiSenderConfig {
     MultiSenderConfig::single(
         "default",
@@ -159,6 +176,7 @@ pub async fn sqlite_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
 pub async fn sqlite_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
     let nats_container = start_nats().await;
     let nats_port = nats_container.get_host_port_ipv4(4222).await.unwrap();
+    wait_for_tcp(nats_port, std::time::Duration::from_secs(15)).await;
 
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("scenarios_sqlite_nats.db");
@@ -197,6 +215,7 @@ pub async fn sqlite_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
 pub async fn postgres_storage(smtp_port: u16, http_port: u16) -> BackendBundle {
     let pg = start_postgres().await;
     let pg_port = pg.get_host_port_ipv4(5432).await.unwrap();
+    wait_for_tcp(pg_port, std::time::Duration::from_secs(15)).await;
     let attachment_dir_path =
         std::env::temp_dir().join(format!("catapulte_scenarios_pg_{http_port}"));
     let config = AppConfig {
@@ -229,6 +248,7 @@ pub async fn postgres_storage(smtp_port: u16, http_port: u16) -> BackendBundle {
 pub async fn postgres_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
     let pg = start_postgres().await;
     let pg_port = pg.get_host_port_ipv4(5432).await.unwrap();
+    wait_for_tcp(pg_port, std::time::Duration::from_secs(15)).await;
     let attachment_dir_path =
         std::env::temp_dir().join(format!("catapulte_scenarios_pgmem_{http_port}"));
     let config = AppConfig {
@@ -263,6 +283,8 @@ pub async fn postgres_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
     let nats_container = start_nats().await;
     let pg_port = pg.get_host_port_ipv4(5432).await.unwrap();
     let nats_port = nats_container.get_host_port_ipv4(4222).await.unwrap();
+    wait_for_tcp(pg_port, std::time::Duration::from_secs(15)).await;
+    wait_for_tcp(nats_port, std::time::Duration::from_secs(15)).await;
     let attachment_dir_path =
         std::env::temp_dir().join(format!("catapulte_scenarios_pgnats_{http_port}"));
     let config = AppConfig {

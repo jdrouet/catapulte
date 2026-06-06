@@ -197,6 +197,23 @@ mod tests {
         );
     }
 
+    async fn wait_for_tcp(port: u16, timeout: std::time::Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "127.0.0.1:{port} did not accept connections within {timeout:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     async fn fresh_store() -> (
         RedisAttachmentStore,
         testcontainers::ContainerAsync<testcontainers::GenericImage>,
@@ -212,6 +229,7 @@ mod tests {
             .expect("failed to start Redis container; ensure Docker is running");
 
         let port = container.get_host_port_ipv4(6379).await.unwrap();
+        wait_for_tcp(port, std::time::Duration::from_secs(15)).await;
         let store = RedisAttachmentStoreConfig {
             url: format!("redis://127.0.0.1:{port}"),
             prefix: String::new(),

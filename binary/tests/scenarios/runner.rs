@@ -18,6 +18,26 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Polls a `127.0.0.1:<port>` TCP listener until it accepts a connection or the
+/// deadline elapses. Used to confirm a container's mapped port is actually
+/// reachable, not merely logged as starting.
+async fn wait_for_tcp(port: u16, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "127.0.0.1:{port} did not accept connections within {timeout:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 async fn start_mailpit() -> testcontainers::ContainerAsync<GenericImage> {
     GenericImage::new("axllent/mailpit", "latest")
         .with_exposed_port(1025.tcp())
@@ -42,6 +62,15 @@ pub async fn run_scenario<S, SFut, B, BFut>(
     let mailpit = start_mailpit().await;
     let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
     let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+
+    // Mailpit logs its HTTP listener as ready before the Docker host-port proxy
+    // reliably accepts SMTP connections on the mapped port. The memory queue
+    // delivers the instant an email is submitted, so the worker can race that
+    // window and hit `connection refused`; the resulting transient failure is
+    // retried only after a 30s backoff, well past a scenario's poll window.
+    // Probe the mapped SMTP port with a real TCP connection so submissions only
+    // start once delivery can actually succeed.
+    wait_for_tcp(smtp_port, Duration::from_secs(15)).await;
 
     let http_port = free_port();
 

@@ -174,6 +174,23 @@ mod tests {
 
     use crate::{NatsAdapter, NatsConfig};
 
+    async fn wait_for_tcp(port: u16, timeout: Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "127.0.0.1:{port} did not accept connections within {timeout:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     async fn fresh_adapter() -> (NatsAdapter, testcontainers::ContainerAsync<GenericImage>) {
         let nats = GenericImage::new("nats", "2-alpine")
             .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
@@ -183,6 +200,7 @@ mod tests {
             .expect("failed to start NATS container; ensure Docker is running");
 
         let port = nats.get_host_port_ipv4(4222).await.unwrap();
+        wait_for_tcp(port, Duration::from_secs(15)).await;
         let adapter = NatsConfig {
             url: format!("nats://127.0.0.1:{port}"),
             stream: "TEST".to_owned(),

@@ -37,6 +37,40 @@ async fn start_mailpit() -> testcontainers::ContainerAsync<GenericImage> {
         .expect("failed to start mailpit container; ensure Docker is running")
 }
 
+/// Polls `127.0.0.1:<port>` until it accepts a TCP connection or the deadline
+/// elapses. Mailpit logs its HTTP listener as ready before the Docker
+/// host-port proxy reliably accepts connections on the mapped ports, so a real
+/// TCP probe is necessary before the worker or test can use either port.
+async fn wait_for_tcp(port: u16, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "127.0.0.1:{port} did not accept connections within {timeout:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Starts mailpit, resolves both mapped ports, and probes each with a real TCP
+/// connection before returning. Returns `(container, smtp_port, api_port)`.
+/// The caller must keep the returned container alive for the duration of the
+/// test; dropping it stops the container.
+async fn start_mailpit_ready() -> (testcontainers::ContainerAsync<GenericImage>, u16, u16) {
+    let mailpit = start_mailpit().await;
+    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
+    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+    wait_for_tcp(smtp_port, Duration::from_secs(15)).await;
+    wait_for_tcp(api_port, Duration::from_secs(15)).await;
+    (mailpit, smtp_port, api_port)
+}
+
 async fn start_nats() -> testcontainers::ContainerAsync<GenericImage> {
     GenericImage::new("nats", "2-alpine")
         .with_exposed_port(4222.tcp())
@@ -82,9 +116,7 @@ fn base_attachment_fetcher()
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn multi_sender_primary_delivers_email_before_backup() {
-    let mailpit = start_mailpit().await;
-    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
-    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+    let (_mailpit, smtp_port, api_port) = start_mailpit_ready().await;
 
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("catapulte_e2e_multi_primary.db");
@@ -178,13 +210,8 @@ async fn multi_sender_primary_delivers_email_before_backup() {
     // wait for mailpit to receive the email
     let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
     for _ in 0..100 {
-        if let Ok(body) = client
-            .get(&messages_url)
-            .send()
-            .await
-            .unwrap()
-            .json::<serde_json::Value>()
-            .await
+        if let Ok(resp) = client.get(&messages_url).send().await
+            && let Ok(body) = resp.json::<serde_json::Value>().await
             && body["messages"].as_array().is_some_and(|a| !a.is_empty())
         {
             break;
@@ -246,9 +273,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn multi_sender_falls_back_to_backup_when_primary_fails() {
-    let mailpit = start_mailpit().await;
-    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
-    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+    let (_mailpit, smtp_port, api_port) = start_mailpit_ready().await;
 
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("catapulte_e2e_multi_fallback.db");
@@ -342,13 +367,8 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
     // wait for mailpit to receive the email
     let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
     for _ in 0..100 {
-        if let Ok(body) = client
-            .get(&messages_url)
-            .send()
-            .await
-            .unwrap()
-            .json::<serde_json::Value>()
-            .await
+        if let Ok(resp) = client.get(&messages_url).send().await
+            && let Ok(body) = resp.json::<serde_json::Value>().await
             && body["messages"].as_array().is_some_and(|a| !a.is_empty())
         {
             break;
@@ -412,9 +432,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
 async fn sent_email_blob_is_deleted_after_delivery() {
     use base64::Engine as _;
 
-    let mailpit = start_mailpit().await;
-    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
-    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+    let (_mailpit, smtp_port, api_port) = start_mailpit_ready().await;
 
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("catapulte_e2e_blob_cleanup.db");
@@ -486,13 +504,8 @@ async fn sent_email_blob_is_deleted_after_delivery() {
     // Wait for delivery.
     let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
     for _ in 0..100 {
-        if let Ok(body) = client
-            .get(&messages_url)
-            .send()
-            .await
-            .unwrap()
-            .json::<serde_json::Value>()
-            .await
+        if let Ok(resp) = client.get(&messages_url).send().await
+            && let Ok(body) = resp.json::<serde_json::Value>().await
             && body["messages"].as_array().is_some_and(|a| !a.is_empty())
         {
             break;
@@ -533,9 +546,7 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    let mailpit = start_mailpit().await;
-    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
-    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+    let (_mailpit, smtp_port, api_port) = start_mailpit_ready().await;
 
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("catapulte_e2e_remote_att.db");
@@ -630,13 +641,8 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
     let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
     let mut message_id: Option<String> = None;
     for _ in 0..100 {
-        if let Ok(body) = client
-            .get(&messages_url)
-            .send()
-            .await
-            .unwrap()
-            .json::<serde_json::Value>()
-            .await
+        if let Ok(resp) = client.get(&messages_url).send().await
+            && let Ok(body) = resp.json::<serde_json::Value>().await
             && let Some(msgs) = body["messages"].as_array()
             && let Some(first) = msgs.first()
         {
@@ -683,11 +689,10 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
     use futures_util::StreamExt as _;
 
     let nats = start_nats().await;
-    let mailpit = start_mailpit().await;
+    let (_mailpit, smtp_port, api_port) = start_mailpit_ready().await;
 
     let nats_port = nats.get_host_port_ipv4(4222).await.unwrap();
-    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
-    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+    wait_for_tcp(nats_port, Duration::from_secs(15)).await;
 
     let nats_url = format!("nats://127.0.0.1:{nats_port}");
 
@@ -783,13 +788,8 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
     let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
     let mut delivered = false;
     for _ in 0..200 {
-        if let Ok(body) = client
-            .get(&messages_url)
-            .send()
-            .await
-            .unwrap()
-            .json::<serde_json::Value>()
-            .await
+        if let Ok(resp) = client.get(&messages_url).send().await
+            && let Ok(body) = resp.json::<serde_json::Value>().await
             && body["messages"].as_array().is_some_and(|a| !a.is_empty())
         {
             delivered = true;
@@ -908,9 +908,7 @@ async fn submit_email_with_disallowed_remote_attachment_returns_400() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn multi_sender_routes_by_sender_domain() {
-    let mailpit = start_mailpit().await;
-    let smtp_port = mailpit.get_host_port_ipv4(1025).await.unwrap();
-    let api_port = mailpit.get_host_port_ipv4(8025).await.unwrap();
+    let (_mailpit, smtp_port, api_port) = start_mailpit_ready().await;
 
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("catapulte_e2e_domain_routing.db");
@@ -1028,13 +1026,8 @@ async fn multi_sender_routes_by_sender_domain() {
     // Wait for both emails to arrive in mailpit.
     let messages_url = format!("http://127.0.0.1:{api_port}/api/v1/messages");
     for _ in 0..100 {
-        if let Ok(body) = client
-            .get(&messages_url)
-            .send()
-            .await
-            .unwrap()
-            .json::<serde_json::Value>()
-            .await
+        if let Ok(resp) = client.get(&messages_url).send().await
+            && let Ok(body) = resp.json::<serde_json::Value>().await
             && body["messages"].as_array().is_some_and(|a| a.len() >= 2)
         {
             break;
