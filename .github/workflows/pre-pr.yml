@@ -1,0 +1,114 @@
+name: pre-pr
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          components: clippy
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+      # clippy --all-targets type-checks every target, so it subsumes `cargo check`.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  machete:
+    name: machete
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete
+      - name: Detect unused dependencies
+        run: cargo machete
+
+  test:
+    name: test + coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          components: llvm-tools-preview
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Install coverage tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-crap
+      # Run the whole suite once under instrumentation; later steps render
+      # reports from the collected profile data without re-running the tests.
+      - name: Tests (with coverage instrumentation)
+        run: cargo llvm-cov --workspace --all-targets --no-report
+      - name: Generate lcov coverage file
+        run: cargo llvm-cov report --lcov --output-path lcov.info
+      - name: Coverage summary
+        run: |
+          {
+            echo '### Coverage'
+            echo ''
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: CRAP report
+        run: |
+          {
+            echo '### CRAP score'
+            echo ''
+            cargo crap --workspace --lcov lcov.info --format markdown
+          } >> "$GITHUB_STEP_SUMMARY"
