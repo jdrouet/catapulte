@@ -42,4 +42,19 @@ mod tests {
         // Must not panic.
         set_span_parent(&span, &[]);
     }
+
+    #[test]
+    fn set_span_parent_with_malformed_traceparent_does_not_panic() {
+        // A well-formed traceparent has the format:
+        //   {version}-{trace-id}-{parent-id}-{flags}
+        // The OTel propagator must silently ignore a malformed value and yield
+        // a no-op context rather than panicking.
+        let carrier = vec![(
+            "traceparent".to_owned(),
+            "not-a-valid-traceparent".to_owned(),
+        )];
+        let span = tracing::info_span!("test.malformed");
+        // Must not panic.
+        set_span_parent(&span, &carrier);
+    }
 }

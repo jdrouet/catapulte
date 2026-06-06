@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Context;
+use async_nats::HeaderMap;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::port::email_queue::{
@@ -10,6 +11,53 @@ use futures_util::StreamExt;
 
 use crate::NatsAdapter;
 use crate::dto::QueuedEmailPayload;
+
+/// Convert W3C trace-context pairs into a NATS `HeaderMap`.
+/// Returns `None` when the carrier is empty so callers can skip header publish.
+fn pairs_to_header_map(pairs: &[(String, String)]) -> Option<HeaderMap> {
+    if pairs.is_empty() {
+        return None;
+    }
+    let mut map = HeaderMap::new();
+    for (k, v) in pairs {
+        map.insert(k.as_str(), v.as_str());
+    }
+    Some(map)
+}
+
+/// Extract only the W3C trace-context headers from a NATS `HeaderMap`.
+///
+/// Keeps at most one `traceparent` pair (the first value) and at most one
+/// `tracestate` pair (all values comma-joined in order, as required by the W3C
+/// spec). Every other header is dropped to prevent arbitrary or PII headers from
+/// leaking into the trace carrier.
+///
+/// Header-name matching is case-insensitive so that external producers using
+/// `Traceparent` or `TRACEPARENT` are handled correctly.
+fn header_map_to_pairs(headers: &HeaderMap) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::with_capacity(2);
+
+    // traceparent — single-valued by spec; take the first value present.
+    let traceparent: Option<String> = headers
+        .iter()
+        .find(|(name, _)| name.to_string().eq_ignore_ascii_case("traceparent"))
+        .and_then(|(_, values)| values.first().map(|v| v.as_str().to_owned()));
+    if let Some(v) = traceparent {
+        pairs.push(("traceparent".to_owned(), v));
+    }
+
+    // tracestate — ordered comma-separated list; join all values in order.
+    let tracestate_values: Vec<String> = headers
+        .iter()
+        .find(|(name, _)| name.to_string().eq_ignore_ascii_case("tracestate"))
+        .map(|(_, values)| values.iter().map(|v| v.as_str().to_owned()).collect())
+        .unwrap_or_default();
+    if !tracestate_values.is_empty() {
+        pairs.push(("tracestate".to_owned(), tracestate_values.join(",")));
+    }
+
+    pairs
+}
 
 fn nats_err<E>(e: E) -> anyhow::Error
 where
@@ -55,12 +103,22 @@ impl EmailQueue for NatsAdapter {
         let bytes = serde_json::to_vec(&payload)
             .context("serializing envelope")
             .map_err(|source| EmailQueueError::Storage { source })?;
-        self.client()
-            .publish(self.subject().to_owned(), bytes.into())
-            .await
-            .map_err(nats_err)
-            .context("publishing to NATS")
-            .map_err(|source| EmailQueueError::Storage { source })?;
+        let trace_pairs = catapulte_telemetry::propagation::inject_current();
+        if let Some(headers) = pairs_to_header_map(&trace_pairs) {
+            self.client()
+                .publish_with_headers(self.subject().to_owned(), headers, bytes.into())
+                .await
+                .map_err(nats_err)
+                .context("publishing to NATS")
+                .map_err(|source| EmailQueueError::Storage { source })?;
+        } else {
+            self.client()
+                .publish(self.subject().to_owned(), bytes.into())
+                .await
+                .map_err(nats_err)
+                .context("publishing to NATS")
+                .map_err(|source| EmailQueueError::Storage { source })?;
+        }
         Ok(())
     }
 
@@ -108,13 +166,18 @@ impl EmailQueue for NatsAdapter {
                 let (email_id, envelope) = <(EmailId, Envelope)>::try_from(payload)
                     .map_err(|source| EmailQueueError::Storage { source })?;
 
+                let trace_pairs = msg
+                    .headers
+                    .as_ref()
+                    .map(header_map_to_pairs)
+                    .unwrap_or_default();
+
                 return Ok(DequeuedEmail {
                     id: email_id,
                     envelope,
                     attempt,
                     token,
-                    // NATS header propagation is phase 2b-2; carry empty for now.
-                    trace: TraceCarrier::default(),
+                    trace: TraceCarrier::new(trace_pairs),
                 });
             }
         }
@@ -145,6 +208,73 @@ impl EmailQueue for NatsAdapter {
             .context("publishing nack to NATS")
             .map_err(|source| EmailQueueError::Storage { source })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod header_filter_tests {
+    use async_nats::HeaderMap;
+
+    use super::header_map_to_pairs;
+
+    #[test]
+    fn non_w3c_headers_are_dropped() {
+        let mut map = HeaderMap::new();
+        map.insert("x-custom", "should-be-dropped");
+        map.insert("authorization", "Bearer secret");
+        let pairs = header_map_to_pairs(&map);
+        assert!(
+            pairs.is_empty(),
+            "non-W3C headers must be dropped; got: {pairs:?}"
+        );
+    }
+
+    #[test]
+    fn traceparent_is_preserved() {
+        let mut map = HeaderMap::new();
+        map.insert(
+            "traceparent",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        );
+        map.insert("x-custom", "noise");
+        let pairs = header_map_to_pairs(&map);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "traceparent");
+        assert_eq!(
+            pairs[0].1,
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        );
+    }
+
+    #[test]
+    fn multiple_tracestate_values_are_comma_joined_in_order() {
+        let mut map = HeaderMap::new();
+        map.append("tracestate", "vendor1=value1");
+        map.append("tracestate", "vendor2=value2");
+        map.append("tracestate", "vendor3=value3");
+        let pairs = header_map_to_pairs(&map);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "tracestate");
+        assert_eq!(pairs[0].1, "vendor1=value1,vendor2=value2,vendor3=value3");
+    }
+
+    #[test]
+    fn traceparent_and_tracestate_together_with_noise() {
+        let mut map = HeaderMap::new();
+        map.insert(
+            "traceparent",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        );
+        map.append("tracestate", "rojo=00f067aa0ba902b7");
+        map.append("tracestate", "congo=t61rcWkgMzE");
+        map.insert("authorization", "Bearer leaked-secret");
+        let pairs = header_map_to_pairs(&map);
+        // exactly two pairs, no authorization
+        assert_eq!(pairs.len(), 2);
+        let has_auth = pairs
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"));
+        assert!(!has_auth, "authorization must not appear in pairs");
     }
 }
 
