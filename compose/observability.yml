@@ -1,0 +1,81 @@
+# Catapulte wired for OpenTelemetry observability.
+#
+#   docker compose -f compose/observability.yml up
+#
+# Catapulte exports traces and gauge metrics over OTLP/gRPC to an OpenTelemetry
+# Collector. The collector derives RED metrics from the spans (spanmetrics) and
+# exposes everything to Prometheus.
+#
+# - Catapulte API:        http://localhost:3000
+# - Mailpit web UI:       http://localhost:8025
+# - Collector /metrics:   http://localhost:8889/metrics
+# - Prometheus UI:        http://localhost:9090
+#
+# Submit an email, then watch one trace span submit -> queue -> worker ->
+# smtp.deliver in the collector logs, and query `calls`, `duration`,
+# `catapulte_queue_pending`, or `catapulte_sender_sent_in_range` in Prometheus.
+services:
+  catapulte:
+    build:
+      context: ..
+    ports:
+      - "3000:3000"
+    environment:
+      - "CATAPULTE_HTTP_ADDRESS=0.0.0.0:3000"
+      - "CATAPULTE_STORAGE_BACKEND=sqlite"
+      - "CATAPULTE_SQLITE_URL=sqlite:///data/catapulte.db"
+      - "CATAPULTE_QUEUE_BACKEND=storage"
+      - "CATAPULTE_SENDERS=mailpit"
+      - "CATAPULTE_SENDER_MAILPIT_HOST=mailpit"
+      - "CATAPULTE_SENDER_MAILPIT_PORT=1025"
+      - "CATAPULTE_SENDER_MAILPIT_TLS=none"
+      - "CATAPULTE_ATTACHMENT_FS_ROOT=/data/attachments"
+      # Observability: export traces + gauge metrics over OTLP/gRPC.
+      - "CATAPULTE_OTEL_TRACES_EXPORTER=otlp"
+      - "CATAPULTE_OTEL_METRICS_EXPORTER=otlp"
+      - "CATAPULTE_OTEL_EXPORTER_OTLP_PROTOCOL=grpc"
+      - "CATAPULTE_OTEL_EXPORTER_OTLP_ENDPOINT=http://otelcol:4317"
+      - "CATAPULTE_OTEL_SERVICE_NAME=catapulte"
+    healthcheck:
+      test: ["CMD", "catapulte", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      mailpit:
+        condition: service_started
+      otelcol:
+        condition: service_started
+    volumes:
+      - catapulte_data:/data
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "8889:8889" # Prometheus exposition
+
+  prometheus:
+    image: prom/prometheus:latest
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      otelcol:
+        condition: service_started
+
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "8025:8025" # Web UI
+      - "1025:1025" # SMTP
+
+volumes:
+  catapulte_data:

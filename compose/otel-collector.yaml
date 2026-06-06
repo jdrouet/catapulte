@@ -1,0 +1,47 @@
+# OpenTelemetry Collector config for the Catapulte observability example.
+#
+# Catapulte exports traces and gauge metrics over OTLP. The spanmetrics
+# connector derives RED metrics (request rate, errors, duration) from the
+# spans, dimensioned per adapter operation (span name) and by the `backend`
+# and `sender` span attributes. Both the derived metrics and Catapulte's own
+# gauges are exposed to Prometheus.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+connectors:
+  # Derives `calls` (a counter) and `duration` (a histogram) metrics from spans.
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s, 10s]
+    # Promote these low-cardinality span attributes to metric dimensions.
+    # (email_id / correlation_id are deliberately NOT listed — they are
+    # trace attributes only, never metric dimensions.)
+    dimensions:
+      - name: backend
+      - name: sender
+    metrics_flush_interval: 15s
+
+exporters:
+  # Exposes all metrics in Prometheus text format for scraping.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+  # Prints received spans to the collector log so you can eyeball the trace.
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [spanmetrics, debug]
+    metrics:
+      # Catapulte's own gauges arrive via OTLP; the RED metrics arrive from
+      # the spanmetrics connector. Both go to Prometheus.
+      receivers: [otlp, spanmetrics]
+      exporters: [prometheus]

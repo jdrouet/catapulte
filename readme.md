@@ -46,6 +46,8 @@ The easiest way to run Catapulte is using Docker Compose. Several examples are p
   Runs Catapulte with a local [MinIO](https://min.io) instance as the S3-compatible attachment backend.
 - **Redis (attachments)**: `docker-compose -f compose/redis.yml up`
   Runs Catapulte with a Redis instance as the attachment backend.
+- **Observability (OpenTelemetry)**: `docker-compose -f compose/observability.yml up`
+  Exports traces and gauge metrics over OTLP to an [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/); the collector derives RED metrics from spans (spanmetrics) and exposes everything to Prometheus at `http://localhost:9090`.
 
 
 ### Verifying the Setup
@@ -200,6 +202,8 @@ Catapulte supports storing attachments on the local filesystem (`fs`, default), 
 ### Observability (OTLP Tracing and Metrics)
 
 All variables accept a `CATAPULTE_OTEL_` prefix that takes precedence over the standard `OTEL_*` equivalents when both are set.
+
+A ready-to-run example wiring Catapulte to an OpenTelemetry Collector (with the spanmetrics connector) and Prometheus lives at [`compose/observability.yml`](./compose/observability.yml); see [`compose/otel-collector.yaml`](./compose/otel-collector.yaml) for the collector pipeline.
 
 #### Traces
 
