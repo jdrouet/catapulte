@@ -70,14 +70,6 @@ impl TelemetryConfig {
             }
         };
 
-        let endpoint_key = format!("{prefix}_EXPORTER_OTLP_ENDPOINT");
-        let endpoint = lookup(&endpoint_key, "OTEL_EXPORTER_OTLP_ENDPOINT");
-        if traces_enabled && endpoint.is_none() {
-            anyhow::bail!(
-                "OTLP traces export requires an endpoint; set {endpoint_key} or OTEL_EXPORTER_OTLP_ENDPOINT"
-            );
-        }
-
         let metrics_exporter = lookup(
             &format!("{prefix}_METRICS_EXPORTER"),
             "OTEL_METRICS_EXPORTER",
@@ -92,6 +84,14 @@ impl TelemetryConfig {
             }
         };
 
+        let endpoint_key = format!("{prefix}_EXPORTER_OTLP_ENDPOINT");
+        let endpoint = lookup(&endpoint_key, "OTEL_EXPORTER_OTLP_ENDPOINT");
+        if (traces_enabled || metrics_enabled) && endpoint.is_none() {
+            anyhow::bail!(
+                "OTLP export requires an endpoint; set {endpoint_key} or OTEL_EXPORTER_OTLP_ENDPOINT"
+            );
+        }
+
         let interval_key = format!("{prefix}_METRIC_EXPORT_INTERVAL_SECS");
         let metric_export_interval = match env.get(&interval_key) {
             None => std::time::Duration::from_mins(1),
@@ -99,6 +99,9 @@ impl TelemetryConfig {
                 let secs = v
                     .parse::<u64>()
                     .with_context(|| format!("invalid {interval_key}: {v:?}"))?;
+                if secs == 0 {
+                    anyhow::bail!("{interval_key} must be greater than 0");
+                }
                 std::time::Duration::from_secs(secs)
             }
         };
@@ -386,15 +389,49 @@ mod tests {
 
     #[test]
     fn metrics_otlp_enables() {
-        let c = cfg(&[(&format!("{P}_METRICS_EXPORTER"), "otlp")]).unwrap();
+        let c = cfg(&[
+            (&format!("{P}_METRICS_EXPORTER"), "otlp"),
+            (
+                &format!("{P}_EXPORTER_OTLP_ENDPOINT"),
+                "http://localhost:4317",
+            ),
+        ])
+        .unwrap();
         assert!(c.metrics_enabled);
     }
 
     #[test]
     fn metrics_otel_fallback_enables() {
-        let c = TelemetryConfig::from_map(&env(&[("OTEL_METRICS_EXPORTER", "otlp")]), P, "1.0.0")
-            .unwrap();
+        let c = TelemetryConfig::from_map(
+            &env(&[
+                ("OTEL_METRICS_EXPORTER", "otlp"),
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317"),
+            ]),
+            P,
+            "1.0.0",
+        )
+        .unwrap();
         assert!(c.metrics_enabled);
+    }
+
+    #[test]
+    fn metrics_enabled_without_endpoint_errors() {
+        let err = cfg(&[(&format!("{P}_METRICS_EXPORTER"), "otlp")]).unwrap_err();
+        assert!(err.to_string().contains("endpoint"));
+    }
+
+    #[test]
+    fn zero_metric_export_interval_errors() {
+        let err = cfg(&[
+            (&format!("{P}_METRICS_EXPORTER"), "otlp"),
+            (
+                &format!("{P}_EXPORTER_OTLP_ENDPOINT"),
+                "http://localhost:4317",
+            ),
+            (&format!("{P}_METRIC_EXPORT_INTERVAL_SECS"), "0"),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("greater than 0"));
     }
 
     #[test]

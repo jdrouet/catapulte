@@ -52,12 +52,17 @@ impl EmailQueue for MemoryQueue {
     async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
         let pairs = catapulte_telemetry::propagation::inject_current();
         let trace = TraceCarrier::new(pairs);
-        self.tx
-            .send((id, envelope.clone(), 1, trace))
-            .map_err(|_| EmailQueueError::Storage {
-                source: anyhow::anyhow!("memory queue channel closed"),
-            })?;
+        // Increment before the send: a concurrent dequeue can only observe the
+        // item after it is sent, so the matching decrement can never run before
+        // this increment (which would underflow the counter). Roll back if the
+        // send fails.
         self.ready_count.fetch_add(1, Ordering::Relaxed);
+        if self.tx.send((id, envelope.clone(), 1, trace)).is_err() {
+            self.ready_count.fetch_sub(1, Ordering::Relaxed);
+            return Err(EmailQueueError::Storage {
+                source: anyhow::anyhow!("memory queue channel closed"),
+            });
+        }
         Ok(())
     }
 
@@ -108,8 +113,10 @@ impl EmailQueue for MemoryQueue {
             let ready_count = Arc::clone(&self.ready_count);
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
-                if tx.send((id, envelope, attempt + 1, trace)).is_ok() {
-                    ready_count.fetch_add(1, Ordering::Relaxed);
+                // Increment before the re-send for the same reason as enqueue.
+                ready_count.fetch_add(1, Ordering::Relaxed);
+                if tx.send((id, envelope, attempt + 1, trace)).is_err() {
+                    ready_count.fetch_sub(1, Ordering::Relaxed);
                 }
             });
         }
