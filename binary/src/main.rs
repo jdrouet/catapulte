@@ -1,4 +1,7 @@
+use std::time::Duration;
+
 use catapulte::AppConfig;
+use catapulte_telemetry::config::TelemetryConfig;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -6,10 +9,26 @@ async fn main() -> anyhow::Result<()> {
         return run_healthcheck().await;
     }
 
-    init_tracing();
+    let telemetry_cfg = TelemetryConfig::from_env("CATAPULTE_OTEL", env!("CARGO_PKG_VERSION"))?;
+    let telemetry = catapulte_telemetry::telemetry::init(telemetry_cfg)?;
+
+    init_tracing(&telemetry);
 
     let app = AppConfig::from_env()?.build().await?;
-    app.run().await
+    app.run().await?;
+
+    // Run the synchronous provider shutdown on a blocking thread so the timeout
+    // can actually preempt a hung collector flush (a sync call inside a plain
+    // async block has no await point for `timeout` to fire on).
+    let flush = tokio::task::spawn_blocking(move || telemetry.shutdown());
+    if tokio::time::timeout(Duration::from_secs(10), flush)
+        .await
+        .is_err()
+    {
+        tracing::warn!("telemetry flush timed out; skipping");
+    }
+
+    Ok(())
 }
 
 async fn run_healthcheck() -> anyhow::Result<()> {
@@ -55,9 +74,17 @@ fn readiness_authority() -> String {
     }
 }
 
-fn init_tracing() {
-    use tracing_subscriber::{EnvFilter, fmt};
+fn init_tracing(telemetry: &catapulte_telemetry::telemetry::Telemetry) {
+    use tracing_subscriber::{
+        EnvFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
+    };
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    fmt().with_env_filter(filter).init();
+    let fmt_layer = fmt::layer();
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt_layer)
+        .with(telemetry.tracing_layer())
+        .init();
 }

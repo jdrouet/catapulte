@@ -19,6 +19,7 @@ members = [
     "adapter/outbound-sqlite",
     "binary",
     "domain",
+    "telemetry",
 ]
 
 [workspace.package]
@@ -41,6 +42,11 @@ tokio-util = { version = "0.7" }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+opentelemetry = { version = "0.32" }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-client"] }
+opentelemetry-semantic-conventions = { version = "0.32" }
+tracing-opentelemetry = { version = "0.33" }
 uuid = { version = "1.23", default-features = false, features = ["std", "v7"] }
 
 [workspace.lints.rust]

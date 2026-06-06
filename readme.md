@@ -197,6 +197,22 @@ Catapulte supports storing attachments on the local filesystem (`fs`, default), 
 | `CATAPULTE_ATTACHMENT_FETCHER_MAX_BYTES` | Max size per attachment | `25MiB` |
 | `CATAPULTE_ATTACHMENT_FETCHER_FETCH_TIMEOUT_MS` | Fetch timeout | `30000` |
 
+### Observability (OTLP Tracing)
+
+Catapulte exports traces over OTLP only. Prometheus metrics are obtained by running an [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) with the spanmetrics connector — the application does not expose a Prometheus scrape endpoint directly.
+
+All variables accept a `CATAPULTE_OTEL_` prefix that takes precedence over the standard `OTEL_*` equivalents when both are set.
+
+| Variable | `OTEL_*` fallback | Description | Default |
+|----------|-------------------|-------------|---------|
+| `CATAPULTE_OTEL_TRACES_EXPORTER` | `OTEL_TRACES_EXPORTER` | Traces backend: `otlp` to enable export, `none` to disable | `none` |
+| `CATAPULTE_OTEL_EXPORTER_OTLP_PROTOCOL` | `OTEL_EXPORTER_OTLP_PROTOCOL` | Wire protocol: `grpc` or `http/protobuf` | `grpc` |
+| `CATAPULTE_OTEL_EXPORTER_OTLP_ENDPOINT` | `OTEL_EXPORTER_OTLP_ENDPOINT` | **(Required when enabled)** Collector endpoint URL (e.g. `http://collector:4317`) | - |
+| `CATAPULTE_OTEL_EXPORTER_OTLP_HEADERS` | `OTEL_EXPORTER_OTLP_HEADERS` | Additional headers sent with each export request, `k=v,k=v` format | - |
+| `CATAPULTE_OTEL_SERVICE_NAME` | `OTEL_SERVICE_NAME` | `service.name` resource attribute | `catapulte` |
+
+The `service.version` resource attribute is always set to the binary's compiled-in crate version.
+
 ## Out of scope (for now)
 
 Bounce and complaint ingestion, scheduled sends, recipient suppression lists, multi-tenant auth. Listed so they aren't mistaken for missing stories.

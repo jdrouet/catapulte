@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 catapulte-domain = { path = "../domain" }
+catapulte-telemetry = { path = "../telemetry" }
 catapulte-inbound-http = { path = "../adapter/inbound-http" }
 catapulte-inbound-nats = { path = "../adapter/inbound-nats" }
 catapulte-inbound-worker = { path = "../adapter/inbound-worker" }
