@@ -131,6 +131,11 @@ impl EmailRepository for SqliteAdapter {
             qb.push_bind(recipient);
             qb.push(" || '%')");
         }
+        if let Some(template) = params.template {
+            qb.push(" AND id IN (SELECT id FROM emails WHERE json_extract(body, '$.source.kind') = 'mjml_named' AND json_extract(body, '$.source.name') = ");
+            qb.push_bind(template);
+            qb.push(")");
+        }
         match params.status {
             Some(EmailStatus::Sent) => {
                 qb.push(" AND latest_event_type = ");
@@ -428,6 +433,7 @@ mod tests {
             after_ms: None,
             before_ms: None,
             recipient: None,
+            template: None,
             id: None,
             limit: 20,
             offset: 0,
@@ -493,6 +499,7 @@ mod tests {
                 id,
                 attempt: 3,
                 reason: "err".into(),
+                error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
                 sender_name: Some(SenderName::new("test")),
                 correlation_id: None,
             })
@@ -842,6 +849,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_emails_template_filter_matches_only_named_mjml() {
+        let adapter = fresh_adapter().await;
+
+        // Save a named MJML email.
+        let id_named = EmailId::default();
+        let mut named_envelope = sample_envelope();
+        named_envelope.body = BodySource::Mjml(MjmlSource::Named("welcome".to_owned()));
+        adapter.save(id_named, &named_envelope).await.unwrap();
+
+        // Save a plain email.
+        let id_plain = EmailId::default();
+        adapter.save(id_plain, &sample_envelope()).await.unwrap();
+
+        // Filter by template "welcome": only the named email must be returned.
+        let filtered = adapter
+            .list_emails(ListEmailsParams {
+                template: Some("welcome".to_owned()),
+                ..default_list_params()
+            })
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, id_named);
+
+        // No template filter: both emails are returned.
+        let all = adapter.list_emails(default_list_params()).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
     async fn list_all_attachment_blobs_excludes_terminal_emails() {
         let adapter = fresh_adapter().await;
 
@@ -933,6 +970,7 @@ mod tests {
                 id: id4,
                 attempt: 3,
                 reason: "err".into(),
+                error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
                 sender_name: None,
                 correlation_id: None,
             })

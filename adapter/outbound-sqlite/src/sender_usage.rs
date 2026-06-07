@@ -143,6 +143,7 @@ mod tests {
                 id: id1,
                 attempt: 3,
                 reason: "err".to_owned(),
+                error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
                 sender_name: Some(SenderName::new("backup")),
                 correlation_id: None,
             })

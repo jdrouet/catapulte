@@ -44,6 +44,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
             id,
             attempt,
             reason,
+            error_class,
             sender_name,
             correlation_id,
         }
@@ -51,6 +52,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
             id,
             attempt,
             reason,
+            error_class,
             sender_name,
             correlation_id,
         } => (
@@ -58,6 +60,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
             serde_json::json!({
                 "attempt": attempt,
                 "reason": reason,
+                "error_class": error_class.as_str(),
                 "sender_name": sender_name.as_ref().map(SenderName::as_str),
                 "correlation_id": correlation_id,
             }),

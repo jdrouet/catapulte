@@ -3,6 +3,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::entity::attachment::{AttachmentRef, ResolvedAttachment};
 use crate::entity::envelope::Envelope;
+use crate::entity::error_class::ErrorClass;
 use crate::entity::sender::SenderName;
 use crate::port::attachment_store::AttachmentStore;
 use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
@@ -40,6 +41,18 @@ impl ProcessQueuedEmailError {
         match self {
             Self::Send(e) => e.sender_name(),
             _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn error_class(&self) -> ErrorClass {
+        match self {
+            Self::Resolve(_) => ErrorClass::TemplateResolve,
+            Self::Interpolate(_) => ErrorClass::TemplateInterpolate,
+            Self::Render(_) => ErrorClass::TemplateRender,
+            Self::AttachmentResolve { .. } => ErrorClass::Attachment,
+            Self::Send(SendError::Send { .. }) => ErrorClass::Delivery,
+            Self::Send(SendError::NoMatchingRoute { .. }) => ErrorClass::Routing,
         }
     }
 }
@@ -608,5 +621,108 @@ mod tests {
         assert_eq!(email.attachments.len(), 1);
         assert_eq!(email.attachments[0].filename, "doc.txt");
         assert_eq!(email.attachments[0].bytes.as_ref(), b"fake content");
+    }
+
+    #[tokio::test]
+    async fn resolve_failure_maps_to_template_resolve_error_class() {
+        use crate::entity::error_class::ErrorClass;
+
+        let service = ProcessQueuedEmailService::new(
+            FailingResolver,
+            FakeInterpolator,
+            FakeRenderer,
+            FakeSender,
+            FakeAttachmentStore,
+        );
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let envelope = default_envelope(body);
+        let err = service.execute(envelope).await.unwrap_err();
+        assert_eq!(err.error_class(), ErrorClass::TemplateResolve);
+    }
+
+    #[tokio::test]
+    async fn interpolate_failure_maps_to_template_interpolate_error_class() {
+        use crate::entity::error_class::ErrorClass;
+
+        let service = ProcessQueuedEmailService::new(
+            FakeResolver {
+                inline_mjml: String::new(),
+            },
+            FailingInterpolator,
+            FakeRenderer,
+            FakeSender,
+            FakeAttachmentStore,
+        );
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let envelope = default_envelope(body);
+        let err = service.execute(envelope).await.unwrap_err();
+        assert_eq!(err.error_class(), ErrorClass::TemplateInterpolate);
+    }
+
+    #[tokio::test]
+    async fn render_failure_maps_to_template_render_error_class() {
+        use crate::entity::error_class::ErrorClass;
+
+        let service = ProcessQueuedEmailService::new(
+            FakeResolver {
+                inline_mjml: String::new(),
+            },
+            FakeInterpolator,
+            FailingRenderer,
+            FakeSender,
+            FakeAttachmentStore,
+        );
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let envelope = default_envelope(body);
+        let err = service.execute(envelope).await.unwrap_err();
+        assert_eq!(err.error_class(), ErrorClass::TemplateRender);
+    }
+
+    #[tokio::test]
+    async fn send_failure_maps_to_delivery_error_class() {
+        use crate::entity::error_class::ErrorClass;
+
+        let service = ProcessQueuedEmailService::new(
+            FakeResolver {
+                inline_mjml: String::new(),
+            },
+            FakeInterpolator,
+            FakeRenderer,
+            FailingSender,
+            FakeAttachmentStore,
+        );
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let envelope = default_envelope(body);
+        let err = service.execute(envelope).await.unwrap_err();
+        assert_eq!(err.error_class(), ErrorClass::Delivery);
+    }
+
+    struct NoMatchingRouteSender;
+
+    impl EmailSender for NoMatchingRouteSender {
+        async fn send(&self, _email: OutboundEmail) -> Result<SenderName, SendError> {
+            Err(SendError::NoMatchingRoute {
+                sender_domain: "example.com".to_owned(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn no_matching_route_maps_to_routing_error_class() {
+        use crate::entity::error_class::ErrorClass;
+
+        let service = ProcessQueuedEmailService::new(
+            FakeResolver {
+                inline_mjml: String::new(),
+            },
+            FakeInterpolator,
+            FakeRenderer,
+            NoMatchingRouteSender,
+            FakeAttachmentStore,
+        );
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let envelope = default_envelope(body);
+        let err = service.execute(envelope).await.unwrap_err();
+        assert_eq!(err.error_class(), ErrorClass::Routing);
     }
 }

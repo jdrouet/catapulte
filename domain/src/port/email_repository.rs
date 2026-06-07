@@ -79,6 +79,7 @@ pub struct ListEmailsParams {
     pub after_ms: Option<i64>,
     pub before_ms: Option<i64>,
     pub recipient: Option<String>,
+    pub template: Option<String>,
     pub id: Option<EmailId>,
     pub limit: u32,
     pub offset: u32,

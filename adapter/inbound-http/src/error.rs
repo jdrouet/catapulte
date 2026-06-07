@@ -26,6 +26,8 @@ pub enum AppError {
     ListSenders(#[from] ListSendersError),
     #[error("invalid email id")]
     InvalidEmailId,
+    #[error("invalid error_class value")]
+    InvalidErrorClass,
 }
 
 #[derive(Serialize)]
@@ -39,6 +41,7 @@ impl IntoResponse for AppError {
             Self::BadRequest(_)
             | Self::BadRequestRaw(_)
             | Self::InvalidEmailId
+            | Self::InvalidErrorClass
             | Self::Submit(SubmitEmailError::AttachmentFetch { .. }) => {
                 (StatusCode::BAD_REQUEST, "invalid request")
             }

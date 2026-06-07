@@ -165,6 +165,7 @@ async fn process_one<S: WorkerState>(
                     "failed to process email"
                 );
                 let reason = e.to_string();
+                let error_class = e.error_class();
                 let sender_name = e.sender_name().cloned();
                 let is_terminal =
                     matches!(&e, ProcessQueuedEmailError::Send(s) if !s.is_transient())
@@ -178,6 +179,7 @@ async fn process_one<S: WorkerState>(
                         id,
                         attempt,
                         reason,
+                        error_class,
                         sender_name,
                         correlation_id: correlation_id.clone(),
                     }
@@ -194,6 +196,7 @@ async fn process_one<S: WorkerState>(
                         id,
                         attempt,
                         reason,
+                        error_class,
                         sender_name,
                         correlation_id: correlation_id.clone(),
                     }
@@ -815,6 +818,81 @@ mod tests {
         assert!(
             !events.contains(&"retrying"),
             "must not emit 'retrying' for non-transient error"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturingEventPublisher {
+        events: Arc<Mutex<Vec<LifecycleEvent>>>,
+    }
+
+    impl EventPublisher for CapturingEventPublisher {
+        async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct CapturingEventState {
+        queue: TrackingQueue,
+        publisher: CapturingEventPublisher,
+    }
+
+    impl WorkerState for CapturingEventState {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &NoMatchingRouteProcessor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &self.queue
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &self.publisher
+        }
+
+        fn attachment_store(&self) -> &impl AttachmentStore {
+            &NoopStore
+        }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            &NoopRepository
+        }
+    }
+
+    #[tokio::test]
+    async fn no_matching_route_emits_failed_event_with_routing_error_class() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+
+        let queue = TrackingQueue::default();
+        let publisher = CapturingEventPublisher::default();
+        let state = CapturingEventState {
+            queue,
+            publisher: publisher.clone(),
+        };
+
+        let id = EmailId::default();
+        let token = AckToken::new(vec![0u8; 8]);
+
+        process_one(
+            &state,
+            id,
+            sample_envelope(),
+            1,
+            token,
+            TraceCarrier::default(),
+        )
+        .await;
+
+        let events = publisher.events.lock().unwrap();
+        let failed = events
+            .iter()
+            .find(|e| matches!(e, LifecycleEvent::Failed { .. }))
+            .expect("must have a Failed event");
+        assert!(
+            matches!(failed, LifecycleEvent::Failed { error_class, .. } if *error_class == ErrorClass::Routing),
+            "NoMatchingRoute must produce Routing error class, got: {failed:?}"
         );
     }
 }

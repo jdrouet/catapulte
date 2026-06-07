@@ -1,6 +1,9 @@
+use std::str::FromStr;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use catapulte_domain::entity::email::EmailId;
+use catapulte_domain::entity::error_class::ErrorClass;
 use catapulte_domain::port::event_repository::ListEventsParams;
 use catapulte_domain::use_case::list_events::ListEventsUseCase;
 
@@ -10,9 +13,19 @@ use crate::dto::{
 };
 use crate::error::AppError;
 
+fn parse_error_class(raw: Option<&str>) -> Result<Option<ErrorClass>, AppError> {
+    match raw {
+        Some(s) => ErrorClass::from_str(s)
+            .map(Some)
+            .map_err(|_| AppError::InvalidErrorClass),
+        None => Ok(None),
+    }
+}
+
 /// # Errors
 ///
 /// Returns `AppError::InvalidEmailId` when the `email_id` query param is not a valid UUID.
+/// Returns `AppError::InvalidErrorClass` when `error_class` is not a recognised value.
 /// Returns `AppError::ListEvents` when the use case fails.
 #[tracing::instrument(skip_all)]
 pub async fn list_events<S: HttpServerState>(
@@ -25,6 +38,7 @@ pub async fn list_events<S: HttpServerState>(
         )),
         None => None,
     };
+    let error_class = parse_error_class(query.error_class.as_deref())?;
     let limit = query
         .limit
         .unwrap_or(DEFAULT_EVENTS_LIMIT)
@@ -33,6 +47,8 @@ pub async fn list_events<S: HttpServerState>(
     let params = ListEventsParams {
         email_id,
         event_type: query.event_type,
+        sender_name: query.sender_name,
+        error_class,
         after_ms: query.after_ms,
         before_ms: query.before_ms,
         limit,
@@ -55,6 +71,7 @@ pub async fn list_events<S: HttpServerState>(
 /// # Errors
 ///
 /// Returns `AppError::InvalidEmailId` when the path segment is not a valid UUID.
+/// Returns `AppError::InvalidErrorClass` when `error_class` is not a recognised value.
 /// Returns `AppError::ListEvents` when the use case fails.
 #[tracing::instrument(skip_all, fields(email_id = %email_id))]
 pub async fn list_events_for_email<S: HttpServerState>(
@@ -63,6 +80,7 @@ pub async fn list_events_for_email<S: HttpServerState>(
     Query(query): Query<ListEventsQuery>,
 ) -> Result<Json<ListEventsResponse>, AppError> {
     let uuid = uuid::Uuid::parse_str(&email_id).map_err(|_| AppError::InvalidEmailId)?;
+    let error_class = parse_error_class(query.error_class.as_deref())?;
     let limit = query
         .limit
         .unwrap_or(DEFAULT_EVENTS_LIMIT)
@@ -71,6 +89,8 @@ pub async fn list_events_for_email<S: HttpServerState>(
     let params = ListEventsParams {
         email_id: Some(EmailId::from(uuid)),
         event_type: query.event_type,
+        sender_name: query.sender_name,
+        error_class,
         after_ms: query.after_ms,
         before_ms: query.before_ms,
         limit,
@@ -294,6 +314,7 @@ mod tests {
             event_type: "queued".to_owned(),
             payload: None,
             sender_name: None,
+            error_class: None,
             created_at_ms: 1000,
         };
         let list_events = Arc::new(FakeListEvents::with_records(vec![record]));
@@ -498,5 +519,109 @@ mod tests {
         app.oneshot(get_all_events("?limit=999")).await.unwrap();
         let params = captured.lock().unwrap();
         assert_eq!(params.as_ref().unwrap().limit, MAX_EVENTS_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn list_events_forwards_sender_name_filter() {
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        app.oneshot(get_events(&valid_email_id(), "?sender_name=primary"))
+            .await
+            .unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(
+            params.as_ref().unwrap().sender_name.as_deref(),
+            Some("primary")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_events_forwards_error_class_filter() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        app.oneshot(get_events(&valid_email_id(), "?error_class=delivery"))
+            .await
+            .unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(
+            params.as_ref().unwrap().error_class,
+            Some(ErrorClass::Delivery)
+        );
+    }
+
+    #[tokio::test]
+    async fn list_events_invalid_error_class_returns_400() {
+        let list_events = Arc::new(FakeListEvents::new());
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        let response = app
+            .oneshot(get_events(&valid_email_id(), "?error_class=bogus"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_events_global_forwards_sender_name_filter() {
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        app.oneshot(get_all_events("?sender_name=backup"))
+            .await
+            .unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(
+            params.as_ref().unwrap().sender_name.as_deref(),
+            Some("backup")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_events_global_invalid_error_class_returns_400() {
+        let list_events = Arc::new(FakeListEvents::new());
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        let response = app
+            .oneshot(get_all_events("?error_class=unknown_value"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

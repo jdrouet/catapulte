@@ -616,6 +616,10 @@ pub struct ListEventsQuery {
     #[serde(default)]
     pub event_type: Option<String>,
     #[serde(default)]
+    pub sender_name: Option<String>,
+    #[serde(default)]
+    pub error_class: Option<String>,
+    #[serde(default)]
     pub after_ms: Option<i64>,
     #[serde(default)]
     pub before_ms: Option<i64>,
@@ -635,6 +639,7 @@ pub struct EventRecordDto {
     pub event_type: String,
     pub payload: Option<serde_json::Value>,
     pub sender_name: Option<String>,
+    pub error_class: Option<String>,
     pub created_at_ms: i64,
 }
 
@@ -646,6 +651,7 @@ impl From<catapulte_domain::port::event_repository::EventRecord> for EventRecord
             event_type: r.event_type,
             payload: r.payload,
             sender_name: r.sender_name.map(|n| n.as_str().to_owned()),
+            error_class: r.error_class,
             created_at_ms: r.created_at_ms,
         }
     }
@@ -686,6 +692,8 @@ pub struct ListEmailsQuery {
     pub before_ms: Option<i64>,
     #[serde(default)]
     pub recipient: Option<String>,
+    #[serde(default)]
+    pub template: Option<String>,
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]

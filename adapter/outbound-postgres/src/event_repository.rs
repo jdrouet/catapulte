@@ -15,7 +15,7 @@ impl EventRepository for PostgresAdapter {
         params: ListEventsParams,
     ) -> Result<Vec<EventRecord>, EventRepositoryError> {
         let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-            "SELECT id, email_id, event_type, payload, sender_name, created_at FROM lifecycle_events WHERE 1=1",
+            "SELECT id, email_id, event_type, payload, sender_name, error_class, created_at FROM lifecycle_events WHERE 1=1",
         );
         if let Some(email_id) = params.email_id {
             qb.push(" AND email_id = ");
@@ -24,6 +24,14 @@ impl EventRepository for PostgresAdapter {
         if let Some(event_type) = params.event_type.as_deref() {
             qb.push(" AND event_type = ");
             qb.push_bind(event_type.to_owned());
+        }
+        if let Some(sender_name) = params.sender_name.as_deref() {
+            qb.push(" AND sender_name = ");
+            qb.push_bind(sender_name.to_owned());
+        }
+        if let Some(error_class) = params.error_class.as_ref() {
+            qb.push(" AND error_class = ");
+            qb.push_bind(error_class.as_str().to_owned());
         }
         if let Some(after) = params.after_ms {
             qb.push(" AND created_at > ");
@@ -61,6 +69,8 @@ impl PostgresAdapter {
             row.try_get("payload").context("reading payload")?;
         let sender_name: Option<String> =
             row.try_get("sender_name").context("reading sender_name")?;
+        let error_class: Option<String> =
+            row.try_get("error_class").context("reading error_class")?;
         let created_at_ms: i64 = row.try_get("created_at").context("reading created_at")?;
         Ok(EventRecord {
             id,
@@ -68,6 +78,7 @@ impl PostgresAdapter {
             event_type,
             payload: payload.map(|j| j.0),
             sender_name: sender_name.map(SenderName::new),
+            error_class,
             created_at_ms,
         })
     }
@@ -148,6 +159,8 @@ mod tests {
         ListEventsParams {
             email_id: None,
             event_type: None,
+            sender_name: None,
+            error_class: None,
             after_ms: None,
             before_ms: None,
             limit: 20,
@@ -332,5 +345,117 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "queued");
+    }
+
+    #[tokio::test]
+    async fn list_events_filters_by_sender_name() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id,
+                attempt: 1,
+                reason: "send error".to_owned(),
+                error_class: ErrorClass::Delivery,
+                sender_name: Some(SenderName::new("primary")),
+                correlation_id: None,
+            })
+            .await
+            .unwrap();
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id,
+                attempt: 2,
+                reason: "send error".to_owned(),
+                error_class: ErrorClass::Delivery,
+                sender_name: Some(SenderName::new("backup")),
+                correlation_id: None,
+            })
+            .await
+            .unwrap();
+
+        let events = adapter
+            .list_events(ListEventsParams {
+                sender_name: Some("primary".to_owned()),
+                ..default_params()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0]
+                .sender_name
+                .as_ref()
+                .map(catapulte_domain::entity::sender::SenderName::as_str),
+            Some("primary")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_events_filters_by_error_class() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id,
+                attempt: 1,
+                reason: "delivery error".to_owned(),
+                error_class: ErrorClass::Delivery,
+                sender_name: None,
+                correlation_id: None,
+            })
+            .await
+            .unwrap();
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id,
+                attempt: 2,
+                reason: "routing error".to_owned(),
+                error_class: ErrorClass::Routing,
+                sender_name: None,
+                correlation_id: None,
+            })
+            .await
+            .unwrap();
+
+        let events = adapter
+            .list_events(ListEventsParams {
+                error_class: Some(ErrorClass::Routing),
+                ..default_params()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].error_class.as_deref(), Some("routing"));
+    }
+
+    #[tokio::test]
+    async fn event_record_carries_error_class() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id,
+                attempt: 1,
+                reason: "template error".to_owned(),
+                error_class: ErrorClass::TemplateResolve,
+                sender_name: None,
+                correlation_id: None,
+            })
+            .await
+            .unwrap();
+
+        let events = adapter.list_events(default_params()).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].error_class.as_deref(), Some("template_resolve"));
     }
 }

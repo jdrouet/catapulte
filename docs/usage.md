@@ -173,6 +173,7 @@ with `500`. Batch items use the inline/remote attachment form (no multipart).
 |-------------|-------|
 | `status` | `queued` \| `sent` \| `failed` |
 | `recipient` | filter by recipient address |
+| `template` | filter by named MJML template name; only matches emails submitted with `kind: mjml_named` |
 | `id` | exact email id (UUID) |
 | `after_ms`, `before_ms` | created-at bounds, Unix epoch ms |
 | `limit` | default 20, max 100 |
@@ -208,8 +209,12 @@ them in real time.
 ### Reading events
 
 - `GET /events` — across all emails. Filters: `email_id`, `event_type`,
-  `after_ms`, `before_ms`, `limit`, `offset`.
-- `GET /emails/{id}/events` — events for one email.
+  `sender_name` (the upstream SMTP server), `error_class`, `after_ms`,
+  `before_ms`, `limit`, `offset`.
+- `GET /emails/{id}/events` — events for one email (same filters).
+
+`error_class` is validated against the vocabulary below — an unknown value
+returns `400`. `event_type` and `sender_name` are free-form.
 
 ```bash
 curl "http://localhost:3000/emails/018f4e3c-2d1a-7b3c-8f00-1234567890ab/events"
@@ -224,6 +229,7 @@ curl "http://localhost:3000/emails/018f4e3c-2d1a-7b3c-8f00-1234567890ab/events"
       "event_type": "delivery.succeeded",
       "payload": { "sender_name": "primary", "correlation_id": "order-12345" },
       "sender_name": "primary",
+      "error_class": null,
       "created_at_ms": 1700000000050
     }
   ],
@@ -250,11 +256,13 @@ each event as JSON:
 | `queued` | accepted and enqueued | `correlation_id` |
 | `sending` | a delivery attempt is starting | `attempt`, `correlation_id` |
 | `delivery.succeeded` | accepted by the upstream SMTP server | `sender_name`, `correlation_id` |
-| `retrying` | attempt failed, will retry | `attempt`, `reason`, `sender_name`, `correlation_id` |
-| `delivery.failed` | retries exhausted | `attempt`, `reason`, `sender_name`, `correlation_id` |
+| `retrying` | attempt failed, will retry | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
+| `delivery.failed` | retries exhausted | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
 
-`attempt` counts from 1; `sender_name`/`correlation_id` may be null. (The pushed
-payload has no timestamp; the stored events from `GET /events` carry
+`attempt` counts from 1; `sender_name`/`correlation_id` may be null. `error_class`
+is present on `retrying` / `delivery.failed` only, and is one of `template_resolve`,
+`template_interpolate`, `template_render`, `attachment`, `delivery`, `routing`.
+(The pushed payload has no timestamp; the stored events from `GET /events` carry
 `created_at_ms`.) Webhooks are retried a few times on a non-2xx response.
 
 ## Submitting over NATS (fire-and-forget)

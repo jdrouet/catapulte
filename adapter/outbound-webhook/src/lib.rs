@@ -44,6 +44,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
             id,
             attempt,
             reason,
+            error_class,
             sender_name,
             correlation_id,
         }
@@ -51,6 +52,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
             id,
             attempt,
             reason,
+            error_class,
             sender_name,
             correlation_id,
         } => (
@@ -58,6 +60,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
             serde_json::json!({
                 "attempt": attempt,
                 "reason": reason,
+                "error_class": error_class.as_str(),
                 "sender_name": sender_name.as_ref().map(SenderName::as_str),
                 "correlation_id": correlation_id,
             }),
@@ -226,6 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn publish_failed_includes_attempt_and_correlation_in_payload() {
+        use catapulte_domain::entity::error_class::ErrorClass;
         use catapulte_domain::entity::sender::SenderName;
 
         let server = MockServer::start().await;
@@ -243,6 +247,7 @@ mod tests {
                 id,
                 attempt: 3,
                 reason: "smtp error".to_owned(),
+                error_class: ErrorClass::Delivery,
                 sender_name: Some(SenderName::new("test")),
                 correlation_id: Some("corr-xyz".into()),
             })
@@ -254,5 +259,6 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body["payload"]["attempt"], 3);
         assert_eq!(body["payload"]["correlation_id"], "corr-xyz");
+        assert_eq!(body["payload"]["error_class"], "delivery");
     }
 }

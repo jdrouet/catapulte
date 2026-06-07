@@ -9,12 +9,13 @@ impl EventPublisher for PostgresAdapter {
     ///
     /// Returns `EventPublisherError::Publish` when the database insert fails.
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-        let (email_id_uuid, payload, sender_name) = match event {
+        let (email_id_uuid, payload, sender_name, error_class) = match event {
             LifecycleEvent::Queued { id, correlation_id } => (
                 id.as_uuid(),
                 correlation_id
                     .as_ref()
                     .map(|cid| serde_json::json!({ "correlation_id": cid })),
+                None,
                 None,
             ),
             LifecycleEvent::Sending {
@@ -25,6 +26,7 @@ impl EventPublisher for PostgresAdapter {
                 id.as_uuid(),
                 Some(serde_json::json!({ "attempt": attempt, "correlation_id": correlation_id })),
                 None,
+                None,
             ),
             LifecycleEvent::Sent {
                 id,
@@ -32,15 +34,18 @@ impl EventPublisher for PostgresAdapter {
                 correlation_id,
             } => (
                 id.as_uuid(),
-                correlation_id
-                    .as_ref()
-                    .map(|cid| serde_json::json!({ "correlation_id": cid })),
+                Some(serde_json::json!({
+                    "sender_name": sender_name.as_str(),
+                    "correlation_id": correlation_id,
+                })),
                 Some(sender_name.as_str().to_owned()),
+                None,
             ),
             LifecycleEvent::Retrying {
                 id,
                 attempt,
                 reason,
+                error_class,
                 sender_name,
                 correlation_id,
             }
@@ -48,27 +53,34 @@ impl EventPublisher for PostgresAdapter {
                 id,
                 attempt,
                 reason,
+                error_class,
                 sender_name,
                 correlation_id,
             } => (
                 id.as_uuid(),
-                Some(
-                    serde_json::json!({ "attempt": attempt, "reason": reason, "correlation_id": correlation_id }),
-                ),
+                Some(serde_json::json!({
+                    "attempt": attempt,
+                    "reason": reason,
+                    "error_class": error_class.as_str(),
+                    "sender_name": sender_name.as_ref().map(catapulte_domain::entity::sender::SenderName::as_str),
+                    "correlation_id": correlation_id,
+                })),
                 sender_name.as_ref().map(|s| s.as_str().to_owned()),
+                Some(error_class.as_str().to_owned()),
             ),
         };
 
         let event_id = uuid::Uuid::now_v7();
 
         sqlx::query(
-            "INSERT INTO lifecycle_events (id, email_id, event_type, payload, sender_name) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO lifecycle_events (id, email_id, event_type, payload, sender_name, error_class) VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(event_id)
         .bind(email_id_uuid)
         .bind(event.event_type())
         .bind(payload)
         .bind(sender_name)
+        .bind(error_class)
         .execute(self.pool())
         .await
         .context("inserting lifecycle event")
@@ -176,6 +188,8 @@ mod tests {
 
     #[tokio::test]
     async fn publish_failed_inserts_row_with_reason() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+
         let id = EmailId::default();
         let adapter = adapter_with_email(id).await;
         adapter
@@ -183,6 +197,7 @@ mod tests {
                 id,
                 attempt: 3,
                 reason: "smtp error".to_owned(),
+                error_class: ErrorClass::Delivery,
                 sender_name: Some(SenderName::new("test")),
                 correlation_id: None,
             })
@@ -203,6 +218,10 @@ mod tests {
         let p = payload.unwrap();
         assert_eq!(p["reason"].as_str(), Some("smtp error"));
         assert_eq!(p["attempt"].as_i64(), Some(3));
+        // The stored payload mirrors the pushed (webhook/NATS) payload, so
+        // sender_name and error_class are present in it, not only in their columns.
+        assert_eq!(p["sender_name"].as_str(), Some("test"));
+        assert_eq!(p["error_class"].as_str(), Some("delivery"));
     }
 
     #[tokio::test]
@@ -278,6 +297,8 @@ mod tests {
 
     #[tokio::test]
     async fn publish_retrying_includes_attempt_and_reason_in_payload() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+
         let id = EmailId::default();
         let adapter = adapter_with_email(id).await;
         adapter
@@ -285,6 +306,7 @@ mod tests {
                 id,
                 attempt: 1,
                 reason: "timeout".to_owned(),
+                error_class: ErrorClass::Delivery,
                 sender_name: Some(SenderName::new("test")),
                 correlation_id: None,
             })
@@ -299,5 +321,32 @@ mod tests {
         let p = payload.unwrap();
         assert_eq!(p["attempt"].as_i64(), Some(1));
         assert_eq!(p["reason"].as_str(), Some("timeout"));
+        assert_eq!(p["error_class"].as_str(), Some("delivery"));
+    }
+
+    #[tokio::test]
+    async fn publish_failed_persists_error_class_column() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id,
+                attempt: 2,
+                reason: "no route".to_owned(),
+                error_class: ErrorClass::Routing,
+                sender_name: None,
+                correlation_id: None,
+            })
+            .await
+            .unwrap();
+
+        let error_class: Option<String> =
+            sqlx::query_scalar("SELECT error_class FROM lifecycle_events")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        assert_eq!(error_class.as_deref(), Some("routing"));
     }
 }

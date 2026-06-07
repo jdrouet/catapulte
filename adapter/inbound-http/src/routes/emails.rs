@@ -192,6 +192,7 @@ pub async fn list_emails<S: HttpServerState>(
         after_ms: query.after_ms,
         before_ms: query.before_ms,
         recipient: query.recipient,
+        template: query.template,
         id,
         limit,
         offset,
@@ -601,6 +602,26 @@ mod tests {
         app.oneshot(get_emails("?recipient=alice")).await.unwrap();
         let params = captured.lock().unwrap();
         assert_eq!(params.as_ref().unwrap().recipient.as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn list_emails_template_filter_forwarded() {
+        let list_emails = Arc::new(FakeListEmails::new());
+        let captured = list_emails.captured_params.clone();
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_emails,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        app.oneshot(get_emails("?template=welcome")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(
+            params.as_ref().unwrap().template.as_deref(),
+            Some("welcome")
+        );
     }
 
     #[tokio::test]

@@ -1,4 +1,5 @@
 use crate::entity::email::EmailId;
+use crate::entity::error_class::ErrorClass;
 use crate::entity::sender::SenderName;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +22,7 @@ pub enum LifecycleEvent {
         id: EmailId,
         attempt: u32,
         reason: String,
+        error_class: ErrorClass,
         sender_name: Option<SenderName>,
         correlation_id: Option<String>,
     },
@@ -28,6 +30,7 @@ pub enum LifecycleEvent {
         id: EmailId,
         attempt: u32,
         reason: String,
+        error_class: ErrorClass,
         sender_name: Option<SenderName>,
         correlation_id: Option<String>,
     },
@@ -51,6 +54,7 @@ impl LifecycleEvent {
 mod tests {
     use super::*;
     use crate::entity::email::EmailId;
+    use crate::entity::error_class::ErrorClass;
     use crate::entity::sender::SenderName;
 
     #[test]
@@ -88,6 +92,7 @@ mod tests {
             id: EmailId::default(),
             attempt: 1,
             reason: "timeout".to_owned(),
+            error_class: ErrorClass::Delivery,
             sender_name: None,
             correlation_id: None,
         };
@@ -100,6 +105,7 @@ mod tests {
             id: EmailId::default(),
             attempt: 3,
             reason: "smtp error".to_owned(),
+            error_class: ErrorClass::Delivery,
             sender_name: None,
             correlation_id: None,
         };

@@ -16,7 +16,7 @@ Within each persona, stories are ordered by priority (most important first).
 - [x] As an API consumer, I can ask an email (text or html) to be sent through a SMTP server, and get back a tracking id, so that I don't have to manage SMTP and retries myself.
 - [x] As an API consumer, I can ask an email to be sent from inline mjml plus variables, so that I keep template sources in my own repo.
 - [x] As an API consumer, I can ask an email with attachments to be sent through a SMTP server, so that I can send invoices, receipts or reports.
-- [ ] As an API consumer, I can list emails I previously submitted with filters (status `queued` / `sent` / `failed`, time range, recipient, template, tracking id), paginated, so that I can check delivery state and debug without keeping my own mirror of the data. _(status, time range, recipient, and tracking id are supported; filtering by template is not yet.)_
+- [x] As an API consumer, I can list emails I previously submitted with filters (status `queued` / `sent` / `failed`, time range, recipient, template, tracking id), paginated, so that I can check delivery state and debug without keeping my own mirror of the data.
 - [x] As an API consumer, I can pass an idempotency key on submission, so that retrying a failed request doesn't send the email twice.
 - [x] As an API consumer, I can submit a batch of emails in a single request and get back one tracking id per email, so that I can fan out a campaign without N round-trips. Partial acceptance is allowed: per-email validation errors are returned alongside the accepted ids.
 - [x] As an API consumer, I can ask an email to be sent from a pre-registered template name + variables, so that callers don't ship template bytes on every request.
