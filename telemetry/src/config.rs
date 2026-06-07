@@ -18,6 +18,10 @@ pub struct TelemetryConfig {
     pub headers: Vec<(String, String)>,
     pub service_name: String,
     pub service_version: String,
+    /// `service.instance.id` resource attribute — distinguishes replicas in
+    /// metrics/traces. `None` here means "let `init` generate one" (see
+    /// `from_map` for the resolution order).
+    pub service_instance_id: Option<String>,
 }
 
 impl TelemetryConfig {
@@ -116,6 +120,15 @@ impl TelemetryConfig {
         let service_name = lookup(&format!("{prefix}_SERVICE_NAME"), "OTEL_SERVICE_NAME")
             .unwrap_or_else(|| String::from("catapulte"));
 
+        // Resolution order for the per-replica id: an explicit var, else the
+        // container/pod HOSTNAME, else `init` generates a random UUID.
+        let service_instance_id = lookup(
+            &format!("{prefix}_SERVICE_INSTANCE_ID"),
+            "OTEL_SERVICE_INSTANCE_ID",
+        )
+        .or_else(|| env.get("HOSTNAME").cloned())
+        .filter(|s| !s.is_empty());
+
         Ok(Self {
             traces_enabled,
             metrics_enabled,
@@ -125,6 +138,7 @@ impl TelemetryConfig {
             headers,
             service_name,
             service_version: service_version.to_owned(),
+            service_instance_id,
         })
     }
 }
@@ -326,6 +340,35 @@ mod tests {
     fn service_version_from_arg() {
         let c = TelemetryConfig::from_map(&env(&[]), P, "2.3.4").unwrap();
         assert_eq!(c.service_version, "2.3.4");
+    }
+
+    #[test]
+    fn service_instance_id_from_prefix() {
+        let c = cfg(&[(&format!("{P}_SERVICE_INSTANCE_ID"), "inst-1")]).unwrap();
+        assert_eq!(c.service_instance_id.as_deref(), Some("inst-1"));
+    }
+
+    #[test]
+    fn service_instance_id_falls_back_to_hostname() {
+        let c = cfg(&[("HOSTNAME", "pod-abc")]).unwrap();
+        assert_eq!(c.service_instance_id.as_deref(), Some("pod-abc"));
+    }
+
+    #[test]
+    fn service_instance_id_prefers_explicit_over_hostname() {
+        let c = cfg(&[
+            (&format!("{P}_SERVICE_INSTANCE_ID"), "inst-1"),
+            ("HOSTNAME", "pod-abc"),
+        ])
+        .unwrap();
+        assert_eq!(c.service_instance_id.as_deref(), Some("inst-1"));
+    }
+
+    #[test]
+    fn service_instance_id_none_when_unset() {
+        // None here means `init` will generate a random UUID.
+        let c = cfg(&[]).unwrap();
+        assert_eq!(c.service_instance_id, None);
     }
 
     #[test]

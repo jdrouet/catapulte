@@ -240,8 +240,9 @@ A ready-to-run example wiring Catapulte to an OpenTelemetry Collector (with the 
 | `CATAPULTE_OTEL_EXPORTER_OTLP_ENDPOINT` | `OTEL_EXPORTER_OTLP_ENDPOINT` | **(Required when traces enabled)** Collector endpoint URL (e.g. `http://collector:4317`) | - |
 | `CATAPULTE_OTEL_EXPORTER_OTLP_HEADERS` | `OTEL_EXPORTER_OTLP_HEADERS` | Additional headers sent with each export request, `k=v,k=v` format | - |
 | `CATAPULTE_OTEL_SERVICE_NAME` | `OTEL_SERVICE_NAME` | `service.name` resource attribute | `catapulte` |
+| `CATAPULTE_OTEL_SERVICE_INSTANCE_ID` | `OTEL_SERVICE_INSTANCE_ID` | `service.instance.id` resource attribute — distinguishes replicas in metrics/traces | `$HOSTNAME`, else a random UUID |
 
-The `service.version` resource attribute is always set to the binary's compiled-in crate version.
+The `service.version` resource attribute is always set to the binary's compiled-in crate version. `service.instance.id` is what keeps each replica's traces and gauge time-series distinct when you run more than one instance.
 
 #### Metrics
 

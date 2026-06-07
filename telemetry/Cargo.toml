@@ -18,6 +18,7 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }
 tonic = { version = "0.14", default-features = false }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

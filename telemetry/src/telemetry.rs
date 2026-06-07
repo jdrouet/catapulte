@@ -87,6 +87,13 @@ pub fn init(config: &TelemetryConfig) -> anyhow::Result<Telemetry> {
         opentelemetry_sdk::propagation::TraceContextPropagator::new(),
     );
 
+    // Per-replica identity: explicit/HOSTNAME from config, else a random UUID so
+    // each process is still distinguishable in metrics/traces.
+    let instance_id = config
+        .service_instance_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+
     let resource = Resource::builder()
         .with_attribute(KeyValue::new(
             opentelemetry_semantic_conventions::resource::SERVICE_NAME,
@@ -96,6 +103,10 @@ pub fn init(config: &TelemetryConfig) -> anyhow::Result<Telemetry> {
             opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
             config.service_version.clone(),
         ))
+        // The `service.instance.id` constant is gated behind the crate's
+        // experimental feature; the semantic-convention key itself is stable,
+        // so use the literal to avoid pulling in all experimental constants.
+        .with_attribute(KeyValue::new("service.instance.id", instance_id))
         .build();
 
     let provider = if config.traces_enabled {
