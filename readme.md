@@ -2,6 +2,11 @@
 
 Make sending email easy.
 
+> **Using the API?** See the [usage guide](./docs/usage.md) for how to submit
+> emails (plain, HTML, MJML, attachments, batches), read their state, and
+> subscribe to lifecycle events. The rest of this readme covers running and
+> configuring a server.
+
 ## User stories
 
 Within each persona, stories are ordered by priority (most important first).
@@ -63,6 +68,27 @@ This script will bring up each configuration, submit a test email, verify it rea
 The container image and all compose files define a healthcheck that runs `catapulte healthcheck`. The subcommand probes `/health/ready` over HTTP and exits non-zero when a downstream dependency is unavailable. Operators deploying to Kubernetes can use an exec probe `["catapulte", "healthcheck"]` or a standard `httpGet` probe on `/health/ready`.
 
 **Readiness scope.** `/health/ready` probes the **storage** backend and the **queue** backend (a live connection check when the queue is NATS; storage-backed and in-memory queues are covered by the storage probe). It deliberately does **not** probe the SMTP senders or the attachment store: SMTP outages are absorbed by the retry pipeline rather than making intake unready, and attachment-store outages only affect attachment-bearing submissions, not all traffic. `/health/live` is a process-liveness check that always returns `200`. The NATS probe verifies the client connection is up; it does not re-validate that the JetStream stream/consumer still exists, so a stream deleted after startup is not currently reflected in readiness.
+
+## Usage
+
+See the [usage guide](./docs/usage.md) for the full HTTP and NATS API: submitting
+emails (plain/HTML, inline/named/remote MJML, attachments, batches), idempotency
+and correlation ids, listing emails and lifecycle events, subscribing to events
+over webhook or NATS, and the request/response shapes and limits.
+
+A minimal submission:
+
+```bash
+curl -X POST http://localhost:3000/emails \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sender": "noreply@example.com",
+    "recipients": [{ "kind": "to", "address": "alice@example.com" }],
+    "subject": "Welcome",
+    "body": { "kind": "plain", "text": "Hello Alice" }
+  }'
+# => {"id":"018f4e3c-2d1a-7b3c-8f00-1234567890ab"}
+```
 
 ## Configuration
 
