@@ -156,6 +156,14 @@ For each `{NAME}` in the list:
 | `CATAPULTE_SENDER_{NAME}_QUOTA_RANGE` | `hourly`, `daily`, `weekly`, or `monthly` | - |
 | `CATAPULTE_SENDER_{NAME}_MATCH_DOMAIN` | Optional domain to strictly route traffic for | - |
 
+**Connection pooling:** each configured sender reuses its SMTP connections instead of dialing
+the server for every message, so the per-send connection setup cost is paid once and then
+amortised. Expect each sender to keep up to one idle connection open per process for about a
+minute between sends. Pool size and idle timeout are not configurable yet (there is no concurrent
+in-flight sending today that would make a larger pool useful); the knobs will arrive with
+intra-worker concurrency. If a pooled connection was dropped by the server while idle, the next
+send on it fails and is retried through the normal queue retry and alternate-sender fallback.
+
 ### Email Queue
 
 | Variable | Description | Default |

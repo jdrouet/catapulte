@@ -366,8 +366,8 @@ mod tests {
         assert!(parse_tls(Some("unknown".to_string()), "X_TLS").is_err());
     }
 
-    #[test]
-    fn smtp_config_build_no_tls_succeeds() {
+    #[tokio::test]
+    async fn smtp_config_build_no_tls_succeeds() {
         let config = SmtpConfig {
             host: "localhost".to_string(),
             port: 25,
