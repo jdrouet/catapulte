@@ -1,7 +1,10 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1.95.0-alpine3.23 AS chef
 WORKDIR /app
 
-FROM chef AS planner
+# Run the planner on the native build host: `cargo chef prepare` only parses the
+# cargo manifests into recipe.json, which is identical for every target arch, so
+# there's no reason to emulate it for a cross-arch build.
+FROM --platform=$BUILDPLATFORM chef AS planner
 
 COPY . .
 
