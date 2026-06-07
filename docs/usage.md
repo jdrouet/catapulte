@@ -221,7 +221,7 @@ curl "http://localhost:3000/emails/018f4e3c-2d1a-7b3c-8f00-1234567890ab/events"
     {
       "id": "018f...",
       "email_id": "018f4e3c-2d1a-7b3c-8f00-1234567890ab",
-      "event_type": "sent",
+      "event_type": "delivery.succeeded",
       "payload": { "sender_name": "primary", "correlation_id": "order-12345" },
       "sender_name": "primary",
       "created_at_ms": 1700000000050
@@ -239,7 +239,7 @@ each event as JSON:
 
 ```json
 {
-  "event_type": "sent",
+  "event_type": "delivery.succeeded",
   "email_id": "018f4e3c-2d1a-7b3c-8f00-aabbccddeeff",
   "payload": { "sender_name": "primary", "correlation_id": "order-12345" }
 }
@@ -249,9 +249,9 @@ each event as JSON:
 |--------------|---------|------------------|
 | `queued` | accepted and enqueued | `correlation_id` |
 | `sending` | a delivery attempt is starting | `attempt`, `correlation_id` |
-| `sent` | accepted by the upstream SMTP server | `sender_name`, `correlation_id` |
+| `delivery.succeeded` | accepted by the upstream SMTP server | `sender_name`, `correlation_id` |
 | `retrying` | attempt failed, will retry | `attempt`, `reason`, `sender_name`, `correlation_id` |
-| `failed` | retries exhausted | `attempt`, `reason`, `sender_name`, `correlation_id` |
+| `delivery.failed` | retries exhausted | `attempt`, `reason`, `sender_name`, `correlation_id` |
 
 `attempt` counts from 1; `sender_name`/`correlation_id` may be null. (The pushed
 payload has no timestamp; the stored events from `GET /events` carry

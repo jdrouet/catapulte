@@ -20,10 +20,10 @@ impl catapulte_domain::port::sender_usage::SenderUsage for SqliteAdapter {
 
         let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
             "SELECT sender_name, \
-             SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) AS sent_count, \
-             SUM(CASE WHEN event_type = 'failed' THEN 1 ELSE 0 END) AS failed_count \
+             SUM(CASE WHEN event_type = 'delivery.succeeded' THEN 1 ELSE 0 END) AS sent_count, \
+             SUM(CASE WHEN event_type = 'delivery.failed' THEN 1 ELSE 0 END) AS failed_count \
              FROM lifecycle_events \
-             WHERE event_type IN ('sent', 'failed') \
+             WHERE event_type IN ('delivery.succeeded', 'delivery.failed') \
              AND sender_name IN (",
         );
         let mut sep = qb.separated(", ");

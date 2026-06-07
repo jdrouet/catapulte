@@ -286,14 +286,7 @@ mod tests {
 
     impl EventPublisher for RecordingPublisher {
         async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-            let kind = match event {
-                LifecycleEvent::Queued { .. } => "queued",
-                LifecycleEvent::Sending { .. } => "sending",
-                LifecycleEvent::Sent { .. } => "sent",
-                LifecycleEvent::Failed { .. } => "failed",
-                LifecycleEvent::Retrying { .. } => "retrying",
-            };
-            self.events.lock().unwrap().push(kind);
+            self.events.lock().unwrap().push(event.event_type());
             Ok(())
         }
     }
@@ -640,7 +633,7 @@ mod tests {
             "sending event should be published before the attempt"
         );
         assert!(
-            !events.contains(&"sent"),
+            !events.contains(&"delivery.succeeded"),
             "sent event must not be published when ack fails"
         );
     }
@@ -816,8 +809,8 @@ mod tests {
 
         let events = publisher.events.lock().unwrap();
         assert!(
-            events.contains(&"failed"),
-            "expected 'failed' lifecycle event, got: {events:?}"
+            events.contains(&"delivery.failed"),
+            "expected 'delivery.failed' lifecycle event, got: {events:?}"
         );
         assert!(
             !events.contains(&"retrying"),

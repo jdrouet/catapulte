@@ -316,7 +316,7 @@ mod tests {
         )
         .bind(uuid::Uuid::now_v7())
         .bind(id.as_uuid())
-        .bind("sent")
+        .bind("delivery.succeeded")
         .bind(2000i64)
         .execute(adapter.pool())
         .await

@@ -17,18 +17,15 @@ impl NatsEventPublisher {
 }
 
 fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
-    let (event_type, email_id, extra) = match event {
-        LifecycleEvent::Queued { id, correlation_id } => (
-            "queued",
-            id,
-            serde_json::json!({ "correlation_id": correlation_id }),
-        ),
+    let (email_id, extra) = match event {
+        LifecycleEvent::Queued { id, correlation_id } => {
+            (id, serde_json::json!({ "correlation_id": correlation_id }))
+        }
         LifecycleEvent::Sending {
             id,
             attempt,
             correlation_id,
         } => (
-            "sending",
             id,
             serde_json::json!({ "attempt": attempt, "correlation_id": correlation_id }),
         ),
@@ -37,7 +34,6 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
             sender_name,
             correlation_id,
         } => (
-            "sent",
             id,
             serde_json::json!({
                 "sender_name": sender_name.as_str(),
@@ -50,24 +46,14 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
             reason,
             sender_name,
             correlation_id,
-        } => (
-            "retrying",
-            id,
-            serde_json::json!({
-                "attempt": attempt,
-                "reason": reason,
-                "sender_name": sender_name.as_ref().map(SenderName::as_str),
-                "correlation_id": correlation_id,
-            }),
-        ),
-        LifecycleEvent::Failed {
+        }
+        | LifecycleEvent::Failed {
             id,
             attempt,
             reason,
             sender_name,
             correlation_id,
         } => (
-            "failed",
             id,
             serde_json::json!({
                 "attempt": attempt,
@@ -78,7 +64,7 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
         ),
     };
     serde_json::json!({
-        "event_type": event_type,
+        "event_type": event.event_type(),
         "email_id": email_id.as_uuid().to_string(),
         "payload": extra,
     })

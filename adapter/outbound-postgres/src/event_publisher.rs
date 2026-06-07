@@ -9,10 +9,9 @@ impl EventPublisher for PostgresAdapter {
     ///
     /// Returns `EventPublisherError::Publish` when the database insert fails.
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-        let (email_id_uuid, event_type, payload, sender_name) = match event {
+        let (email_id_uuid, payload, sender_name) = match event {
             LifecycleEvent::Queued { id, correlation_id } => (
                 id.as_uuid(),
-                "queued",
                 correlation_id
                     .as_ref()
                     .map(|cid| serde_json::json!({ "correlation_id": cid })),
@@ -24,7 +23,6 @@ impl EventPublisher for PostgresAdapter {
                 correlation_id,
             } => (
                 id.as_uuid(),
-                "sending",
                 Some(serde_json::json!({ "attempt": attempt, "correlation_id": correlation_id })),
                 None,
             ),
@@ -34,7 +32,6 @@ impl EventPublisher for PostgresAdapter {
                 correlation_id,
             } => (
                 id.as_uuid(),
-                "sent",
                 correlation_id
                     .as_ref()
                     .map(|cid| serde_json::json!({ "correlation_id": cid })),
@@ -46,15 +43,8 @@ impl EventPublisher for PostgresAdapter {
                 reason,
                 sender_name,
                 correlation_id,
-            } => (
-                id.as_uuid(),
-                "retrying",
-                Some(
-                    serde_json::json!({ "attempt": attempt, "reason": reason, "correlation_id": correlation_id }),
-                ),
-                sender_name.as_ref().map(|s| s.as_str().to_owned()),
-            ),
-            LifecycleEvent::Failed {
+            }
+            | LifecycleEvent::Failed {
                 id,
                 attempt,
                 reason,
@@ -62,7 +52,6 @@ impl EventPublisher for PostgresAdapter {
                 correlation_id,
             } => (
                 id.as_uuid(),
-                "failed",
                 Some(
                     serde_json::json!({ "attempt": attempt, "reason": reason, "correlation_id": correlation_id }),
                 ),
@@ -77,7 +66,7 @@ impl EventPublisher for PostgresAdapter {
         )
         .bind(event_id)
         .bind(email_id_uuid)
-        .bind(event_type)
+        .bind(event.event_type())
         .bind(payload)
         .bind(sender_name)
         .execute(self.pool())
@@ -204,7 +193,7 @@ mod tests {
             .fetch_one(adapter.pool())
             .await
             .unwrap();
-        assert_eq!(event_type, "failed");
+        assert_eq!(event_type, "delivery.failed");
 
         let payload: Option<serde_json::Value> =
             sqlx::query_scalar("SELECT payload FROM lifecycle_events")

@@ -285,7 +285,7 @@ mod tests {
         )
         .bind(&event_id2)
         .bind(&email_id_bytes)
-        .bind("sent")
+        .bind("delivery.succeeded")
         .bind(2000i64)
         .execute(adapter.pool())
         .await

@@ -125,14 +125,14 @@ impl EmailRepository for PostgresAdapter {
         match params.status {
             Some(EmailStatus::Sent) => {
                 qb.push(" AND latest_event_type = ");
-                qb.push_bind("sent");
+                qb.push_bind("delivery.succeeded");
             }
             Some(EmailStatus::Failed) => {
                 qb.push(" AND latest_event_type = ");
-                qb.push_bind("failed");
+                qb.push_bind("delivery.failed");
             }
             Some(EmailStatus::Queued) => {
-                qb.push(" AND latest_event_type NOT IN ('sent', 'failed')");
+                qb.push(" AND latest_event_type NOT IN ('delivery.succeeded', 'delivery.failed')");
             }
             None => {}
         }
@@ -236,7 +236,7 @@ impl EmailRepository for PostgresAdapter {
                 FROM emails e\
             ) \
             SELECT body FROM email_status \
-            WHERE latest_event_type NOT IN ('sent', 'failed')",
+            WHERE latest_event_type NOT IN ('delivery.succeeded', 'delivery.failed')",
         )
         .fetch_all(self.pool())
         .await
@@ -275,8 +275,8 @@ impl PostgresAdapter {
             .try_get("latest_event_type")
             .context("reading latest_event_type")?;
         let status = match latest_event_type.as_str() {
-            "sent" => EmailStatus::Sent,
-            "failed" => EmailStatus::Failed,
+            "delivery.succeeded" => EmailStatus::Sent,
+            "delivery.failed" => EmailStatus::Failed,
             _ => EmailStatus::Queued,
         };
         Ok(EmailRecord {

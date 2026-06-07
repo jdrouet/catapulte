@@ -382,11 +382,17 @@ mod tests {
             None,
             std::time::Duration::from_secs(30),
         );
-        app.oneshot(get_events(&valid_email_id(), "?event_type=sent"))
-            .await
-            .unwrap();
+        app.oneshot(get_events(
+            &valid_email_id(),
+            "?event_type=delivery.succeeded",
+        ))
+        .await
+        .unwrap();
         let params = captured.lock().unwrap();
-        assert_eq!(params.as_ref().unwrap().event_type.as_deref(), Some("sent"));
+        assert_eq!(
+            params.as_ref().unwrap().event_type.as_deref(),
+            Some("delivery.succeeded")
+        );
     }
 
     #[tokio::test]
