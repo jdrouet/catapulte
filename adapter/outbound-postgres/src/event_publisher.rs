@@ -1,5 +1,6 @@
 use anyhow::Context;
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+use catapulte_domain::entity::sender::SenderName;
 use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
 
 use crate::PostgresAdapter;
@@ -9,68 +10,17 @@ impl EventPublisher for PostgresAdapter {
     ///
     /// Returns `EventPublisherError::Publish` when the database insert fails.
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-        let (email_id_uuid, payload, sender_name, error_class) = match event {
-            LifecycleEvent::Queued { id, correlation_id } => (
-                id.as_uuid(),
-                correlation_id
-                    .as_ref()
-                    .map(|cid| serde_json::json!({ "correlation_id": cid })),
-                None,
-                None,
-            ),
-            LifecycleEvent::Sending {
-                id,
-                attempt,
-                correlation_id,
-            } => (
-                id.as_uuid(),
-                Some(serde_json::json!({ "attempt": attempt, "correlation_id": correlation_id })),
-                None,
-                None,
-            ),
-            LifecycleEvent::Sent {
-                id,
-                sender_name,
-                correlation_id,
-            } => (
-                id.as_uuid(),
-                Some(serde_json::json!({
-                    "sender_name": sender_name.as_str(),
-                    "correlation_id": correlation_id,
-                })),
-                Some(sender_name.as_str().to_owned()),
-                None,
-            ),
-            LifecycleEvent::Retrying {
-                id,
-                attempt,
-                reason,
-                error_class,
-                sender_name,
-                correlation_id,
-            }
-            | LifecycleEvent::Failed {
-                id,
-                attempt,
-                reason,
-                error_class,
-                sender_name,
-                correlation_id,
-            } => (
-                id.as_uuid(),
-                Some(serde_json::json!({
-                    "attempt": attempt,
-                    "reason": reason,
-                    "error_class": error_class.as_str(),
-                    "sender_name": sender_name.as_ref().map(catapulte_domain::entity::sender::SenderName::as_str),
-                    "correlation_id": correlation_id,
-                })),
-                sender_name.as_ref().map(|s| s.as_str().to_owned()),
-                Some(error_class.as_str().to_owned()),
-            ),
-        };
-
         let event_id = uuid::Uuid::now_v7();
+        let email_id_uuid = event.email_id().as_uuid();
+        // payload is always written as a JSON object so new rows are consistent
+        // with the pushed (webhook/NATS) payload. The column remains nullable so
+        // rows written before this change keep their NULL value; do not add NOT
+        // NULL to the column without a data migration.
+        let payload = event.payload();
+        let sender_name = event.sender_name().map(SenderName::as_str);
+        let error_class = event
+            .error_class()
+            .map(catapulte_domain::entity::error_class::ErrorClass::as_str);
 
         sqlx::query(
             "INSERT INTO lifecycle_events (id, email_id, event_type, payload, sender_name, error_class) VALUES ($1, $2, $3, $4, $5, $6)",
@@ -78,7 +28,7 @@ impl EventPublisher for PostgresAdapter {
         .bind(event_id)
         .bind(email_id_uuid)
         .bind(event.event_type())
-        .bind(payload)
+        .bind(Some(payload))
         .bind(sender_name)
         .bind(error_class)
         .execute(self.pool())
@@ -224,8 +174,10 @@ mod tests {
         assert_eq!(p["error_class"].as_str(), Some("delivery"));
     }
 
+    /// Queued without `correlation_id` now stores `{"correlation_id":null}` — an
+    /// object — matching the webhook/NATS wire shape (parity fix).
     #[tokio::test]
-    async fn publish_queued_inserts_row_with_event_type_queued_and_null_payload() {
+    async fn publish_queued_inserts_row_with_correlation_id_payload() {
         let id = EmailId::default();
         let adapter = adapter_with_email(id).await;
         adapter
@@ -247,7 +199,8 @@ mod tests {
                 .fetch_one(adapter.pool())
                 .await
                 .unwrap();
-        assert!(payload.is_none());
+        let p = payload.unwrap();
+        assert_eq!(p, serde_json::json!({ "correlation_id": null }));
     }
 
     #[tokio::test]

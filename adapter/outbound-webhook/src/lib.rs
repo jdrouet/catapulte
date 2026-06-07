@@ -1,6 +1,5 @@
 use anyhow::Context;
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
-use catapulte_domain::entity::sender::SenderName;
 use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
 
 #[derive(Clone)]
@@ -17,59 +16,10 @@ impl WebhookPublisher {
 }
 
 fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
-    let (email_id, extra) = match event {
-        LifecycleEvent::Queued { id, correlation_id } => {
-            (id, serde_json::json!({ "correlation_id": correlation_id }))
-        }
-        LifecycleEvent::Sending {
-            id,
-            attempt,
-            correlation_id,
-        } => (
-            id,
-            serde_json::json!({ "attempt": attempt, "correlation_id": correlation_id }),
-        ),
-        LifecycleEvent::Sent {
-            id,
-            sender_name,
-            correlation_id,
-        } => (
-            id,
-            serde_json::json!({
-                "sender_name": sender_name.as_str(),
-                "correlation_id": correlation_id,
-            }),
-        ),
-        LifecycleEvent::Retrying {
-            id,
-            attempt,
-            reason,
-            error_class,
-            sender_name,
-            correlation_id,
-        }
-        | LifecycleEvent::Failed {
-            id,
-            attempt,
-            reason,
-            error_class,
-            sender_name,
-            correlation_id,
-        } => (
-            id,
-            serde_json::json!({
-                "attempt": attempt,
-                "reason": reason,
-                "error_class": error_class.as_str(),
-                "sender_name": sender_name.as_ref().map(SenderName::as_str),
-                "correlation_id": correlation_id,
-            }),
-        ),
-    };
     serde_json::json!({
         "event_type": event.event_type(),
-        "email_id": email_id.as_uuid().to_string(),
-        "payload": extra,
+        "email_id": event.email_id().as_uuid().to_string(),
+        "payload": event.payload(),
     })
 }
 
@@ -260,5 +210,86 @@ mod tests {
         assert_eq!(body["payload"]["attempt"], 3);
         assert_eq!(body["payload"]["correlation_id"], "corr-xyz");
         assert_eq!(body["payload"]["error_class"], "delivery");
+    }
+
+    /// Contract-lock: full body for a Sent event matches the canonical shape.
+    #[tokio::test]
+    async fn contract_sent_full_body() {
+        use catapulte_domain::entity::sender::SenderName;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let publisher = publisher_for(&server);
+        let id = EmailId::default();
+        publisher
+            .publish(&LifecycleEvent::Sent {
+                id,
+                sender_name: SenderName::new("primary"),
+                correlation_id: Some("corr-sent".to_owned()),
+            })
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let expected = serde_json::json!({
+            "event_type": "delivery.succeeded",
+            "email_id": id.as_uuid().to_string(),
+            "payload": {
+                "sender_name": "primary",
+                "correlation_id": "corr-sent",
+            },
+        });
+        assert_eq!(body, expected);
+    }
+
+    /// Contract-lock: full body for a Failed event matches the canonical shape.
+    #[tokio::test]
+    async fn contract_failed_full_body() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+        use catapulte_domain::entity::sender::SenderName;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let publisher = publisher_for(&server);
+        let id = EmailId::default();
+        publisher
+            .publish(&LifecycleEvent::Failed {
+                id,
+                attempt: 3,
+                reason: "smtp error".to_owned(),
+                error_class: ErrorClass::Delivery,
+                sender_name: Some(SenderName::new("primary")),
+                correlation_id: Some("corr-fail".to_owned()),
+            })
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let expected = serde_json::json!({
+            "event_type": "delivery.failed",
+            "email_id": id.as_uuid().to_string(),
+            "payload": {
+                "attempt": 3,
+                "reason": "smtp error",
+                "error_class": "delivery",
+                "sender_name": "primary",
+                "correlation_id": "corr-fail",
+            },
+        });
+        assert_eq!(body, expected);
     }
 }
