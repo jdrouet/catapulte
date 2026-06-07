@@ -21,7 +21,7 @@ pub async fn scenario(ctx: TestContext) {
         .await;
 
     let sent = ctx
-        .wait_for_event(&id, "sent", Duration::from_secs(10))
+        .wait_for_event(&id, "delivery.succeeded", Duration::from_secs(10))
         .await;
     assert!(sent.is_some(), "no sent event arrived");
 }

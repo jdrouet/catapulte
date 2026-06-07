@@ -221,7 +221,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // poll GET /emails/{id}/events until "sent" appears
+    // poll GET /emails/{id}/events until the delivery.succeeded event appears
     let events_url = format!("http://127.0.0.1:{http_port}/emails/{id}/events");
     let mut found_sent = false;
     for _ in 0..100 {
@@ -231,7 +231,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
             let events = body["events"].as_array().cloned().unwrap_or_default();
             if events
                 .iter()
-                .any(|e| e["event_type"].as_str() == Some("sent"))
+                .any(|e| e["event_type"].as_str() == Some("delivery.succeeded"))
             {
                 found_sent = true;
                 break;
@@ -380,7 +380,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // poll GET /emails/{id}/events until "sent" appears
+    // poll GET /emails/{id}/events until the delivery.succeeded event appears
     let events_url = format!("http://127.0.0.1:{http_port}/emails/{id}/events");
     let mut found_sent = false;
     for _ in 0..100 {
@@ -390,7 +390,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
             let events = body["events"].as_array().cloned().unwrap_or_default();
             if events
                 .iter()
-                .any(|e| e["event_type"].as_str() == Some("sent"))
+                .any(|e| e["event_type"].as_str() == Some("delivery.succeeded"))
             {
                 found_sent = true;
                 break;
@@ -812,7 +812,7 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
         "email was not delivered to mailpit within timeout"
     );
 
-    // Collect lifecycle events and look for a "sent" event with the expected correlation_id.
+    // Collect lifecycle events and look for a delivery.succeeded event with the expected correlation_id.
     let mut found_sent = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -823,7 +823,7 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
         match tokio::time::timeout(remaining, lifecycle_sub.next()).await {
             Ok(Some(msg)) => {
                 if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&msg.payload)
-                    && body["event_type"].as_str() == Some("sent")
+                    && body["event_type"].as_str() == Some("delivery.succeeded")
                     && body["payload"]["correlation_id"].as_str() == Some("corr-e2e-test")
                 {
                     found_sent = true;
@@ -1060,7 +1060,7 @@ async fn multi_sender_routes_by_sender_domain() {
                 let events = body["events"].as_array().cloned().unwrap_or_default();
                 if events
                     .iter()
-                    .any(|e| e["event_type"].as_str() == Some("sent"))
+                    .any(|e| e["event_type"].as_str() == Some("delivery.succeeded"))
                 {
                     found_sent = true;
                     break;
