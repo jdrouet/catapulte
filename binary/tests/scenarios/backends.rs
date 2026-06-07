@@ -121,7 +121,7 @@ fn sqlite_config(smtp_port: u16, http_port: u16, db_tag: &str) -> (AppConfig, te
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
-        worker: WorkerConfig {},
+        worker: WorkerConfig::default(),
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
@@ -160,7 +160,7 @@ pub async fn sqlite_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
-        worker: WorkerConfig {},
+        worker: WorkerConfig::default(),
         queue: QueueBackendConfig::Memory,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
@@ -198,7 +198,7 @@ pub async fn sqlite_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
-        worker: WorkerConfig {},
+        worker: WorkerConfig::default(),
         queue: QueueBackendConfig::Nats(nats_config(
             format!("nats://127.0.0.1:{nats_port}"),
             http_port,
@@ -238,7 +238,7 @@ pub async fn postgres_storage(smtp_port: u16, http_port: u16) -> BackendBundle {
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
-        worker: WorkerConfig {},
+        worker: WorkerConfig::default(),
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
@@ -275,7 +275,7 @@ pub async fn postgres_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
-        worker: WorkerConfig {},
+        worker: WorkerConfig::default(),
         queue: QueueBackendConfig::Memory,
         publisher: PublisherAdapterConfig::storage_only(),
         attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
@@ -315,7 +315,7 @@ pub async fn postgres_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
         inbound_nats: None,
         smtp: base_smtp(smtp_port),
         resolver: base_resolver(),
-        worker: WorkerConfig {},
+        worker: WorkerConfig::default(),
         queue: QueueBackendConfig::Nats(nats_config(
             format!("nats://127.0.0.1:{nats_port}"),
             http_port,

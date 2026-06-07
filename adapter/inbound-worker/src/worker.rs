@@ -18,23 +18,51 @@ pub trait WorkerState: Clone + Send + Sync + 'static {
     fn email_repository(&self) -> &impl EmailRepository;
 }
 
-pub struct WorkerConfig {}
+pub struct WorkerConfig {
+    concurrency: usize,
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self { concurrency: 1 }
+    }
+}
 
 impl WorkerConfig {
     /// # Errors
     ///
-    /// Always succeeds; the signature is kept for consistency with other configs.
-    pub fn from_env(_prefix: &str) -> anyhow::Result<Self> {
-        Ok(Self {})
+    /// Returns an error if `CATAPULTE_WORKER_CONCURRENCY` is set but cannot be
+    /// parsed as a positive integer.
+    pub fn from_env(prefix: &str) -> anyhow::Result<Self> {
+        use anyhow::Context as _;
+
+        let concurrency_key = format!("{prefix}_CONCURRENCY");
+        let concurrency: usize = match std::env::var(&concurrency_key) {
+            Err(std::env::VarError::NotPresent) => 1,
+            Err(e) => {
+                return Err(anyhow::Error::new(e).context(format!("reading {concurrency_key}")));
+            }
+            Ok(v) => v
+                .parse()
+                .with_context(|| format!("invalid {concurrency_key}: {v:?}"))?,
+        };
+        if concurrency == 0 {
+            anyhow::bail!("{concurrency_key} must be at least 1 (got 0)");
+        }
+        Ok(Self { concurrency })
     }
 
     #[must_use]
     pub fn build(self) -> Worker {
-        Worker {}
+        Worker {
+            concurrency: self.concurrency,
+        }
     }
 }
 
-pub struct Worker {}
+pub struct Worker {
+    concurrency: usize,
+}
 
 fn backoff(attempt: u32) -> std::time::Duration {
     let secs = (30u64 * (1u64 << attempt.saturating_sub(1))).min(3600);
@@ -42,38 +70,52 @@ fn backoff(attempt: u32) -> std::time::Duration {
 }
 
 impl Worker {
+    /// # Panics
+    ///
+    /// Never panics in practice: the `expect` on the semaphore acquire is
+    /// unreachable because the semaphore is never closed.
     pub async fn run<S: WorkerState>(self, state: S, cancel: tokio_util::sync::CancellationToken) {
+        tracing::info!(concurrency = self.concurrency, "worker started");
+
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(self.concurrency));
+        let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+
         loop {
-            let result = tokio::select! {
+            let permit = tokio::select! {
                 biased;
                 () = cancel.cancelled() => break,
+                p = sem.clone().acquire_owned() => p.expect("semaphore is never closed"),
+            };
+
+            let dequeued = tokio::select! {
+                biased;
+                () = cancel.cancelled() => { drop(permit); break }
                 result = state.email_queue().dequeue() => result,
             };
 
-            match result {
+            match dequeued {
                 Ok(dequeued) => {
-                    if cancel.is_cancelled() {
-                        if let Err(e) = state
-                            .email_queue()
-                            .nack(dequeued.token, std::time::Duration::ZERO)
-                            .await
-                        {
-                            tracing::error!(error = %e, "failed to nack message on shutdown");
-                        }
-                        break;
-                    }
-                    process_one(
-                        &state,
-                        dequeued.id,
-                        dequeued.envelope,
-                        dequeued.attempt,
-                        dequeued.token,
-                        dequeued.trace,
-                    )
-                    .await;
+                    // Clone the state for the spawned task. WorkerState impls
+                    // hold Arc-wrapped internals so clones are cheap.
+                    let st = state.clone();
+                    tasks.spawn(async move {
+                        let _permit = permit; // holds the slot until the task finishes
+                        process_one(
+                            &st,
+                            dequeued.id,
+                            dequeued.envelope,
+                            dequeued.attempt,
+                            dequeued.token,
+                            dequeued.trace,
+                        )
+                        .await;
+                    });
+                    // Reap finished tasks so the JoinSet does not grow unbounded.
+                    while tasks.try_join_next().is_some() {}
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to dequeue");
+                    drop(permit);
                     tokio::select! {
                         biased;
                         () = cancel.cancelled() => break,
@@ -82,6 +124,10 @@ impl Worker {
                 }
             }
         }
+
+        // Graceful drain: let in-flight tasks finish (bounded externally by the
+        // binary's 30 s shutdown budget).
+        while tasks.join_next().await.is_some() {}
         tracing::info!("worker stopped");
     }
 }
@@ -592,7 +638,7 @@ mod tests {
         use tokio_util::sync::CancellationToken;
 
         let cancel = CancellationToken::new();
-        let worker = Worker {};
+        let worker = Worker { concurrency: 1 };
         let cancel_clone = cancel.clone();
 
         tokio::spawn(async move {
@@ -893,6 +939,409 @@ mod tests {
         assert!(
             matches!(failed, LifecycleEvent::Failed { error_class, .. } if *error_class == ErrorClass::Routing),
             "NoMatchingRoute must produce Routing error class, got: {failed:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers for Worker::run concurrency tests
+    // -------------------------------------------------------------------------
+
+    /// A queue that yields exactly `count` messages (using sequential fake IDs)
+    /// and then blocks forever, so the worker loop is kept alive without
+    /// consuming more slots.
+    #[derive(Clone)]
+    struct FiniteQueue {
+        remaining: Arc<Mutex<u32>>,
+        acked: Arc<Mutex<u32>>,
+    }
+
+    impl FiniteQueue {
+        fn new(count: u32) -> Self {
+            Self {
+                remaining: Arc::new(Mutex::new(count)),
+                acked: Arc::new(Mutex::new(0)),
+            }
+        }
+    }
+
+    impl EmailQueue for FiniteQueue {
+        async fn enqueue(&self, _: EmailId, _: &Envelope) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
+            {
+                let mut rem = self.remaining.lock().unwrap();
+                if *rem > 0 {
+                    *rem -= 1;
+                    let id = EmailId::default();
+                    return Ok(DequeuedEmail {
+                        id,
+                        envelope: sample_envelope(),
+                        attempt: 1,
+                        token: AckToken::new(vec![0u8; 8]),
+                        trace: TraceCarrier::default(),
+                    });
+                }
+            }
+            // All messages handed out — block until the future is dropped.
+            std::future::pending().await
+        }
+
+        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
+            *self.acked.lock().unwrap() += 1;
+            Ok(())
+        }
+
+        async fn nack(&self, _: AckToken, _: Duration) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+    }
+
+    /// Processor that tracks the instantaneous in-flight count and records the
+    /// peak.  Each invocation sleeps briefly to force overlap when concurrency
+    /// > 1.
+    #[derive(Clone, Default)]
+    struct PeakTrackingProcessor {
+        in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        peak: Arc<Mutex<usize>>,
+        processed: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ProcessQueuedEmailUseCase for PeakTrackingProcessor {
+        async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+            let current = self
+                .in_flight
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            {
+                let mut peak = self.peak.lock().unwrap();
+                if current > *peak {
+                    *peak = current;
+                }
+            }
+            // Sleep long enough that concurrent tasks overlap.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            self.in_flight
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            self.processed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(SenderName::new("sender"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct PeakTrackingState {
+        queue: FiniteQueue,
+        processor: PeakTrackingProcessor,
+    }
+
+    impl WorkerState for PeakTrackingState {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &self.processor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &self.queue
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &NoopPublisher
+        }
+
+        fn attachment_store(&self) -> &impl AttachmentStore {
+            &NoopStore
+        }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            &NoopRepository
+        }
+    }
+
+    /// Processor that parks each task on a gate semaphore (0 initial permits)
+    /// until the test releases them. Tracks instantaneous in-flight count and
+    /// records the peak using atomics.
+    #[derive(Clone)]
+    struct GateProcessor {
+        in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        peak: Arc<std::sync::atomic::AtomicUsize>,
+        processed: Arc<std::sync::atomic::AtomicUsize>,
+        gate: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl GateProcessor {
+        fn new(gate: Arc<tokio::sync::Semaphore>) -> Self {
+            Self {
+                in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                peak: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                processed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                gate,
+            }
+        }
+    }
+
+    impl ProcessQueuedEmailUseCase for GateProcessor {
+        async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+            let current = self
+                .in_flight
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            self.peak
+                .fetch_max(current, std::sync::atomic::Ordering::SeqCst);
+            // Park until the test releases the gate.
+            let _permit = self
+                .gate
+                .acquire()
+                .await
+                .expect("gate semaphore is never closed");
+            self.in_flight
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            self.processed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(SenderName::new("sender"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct GateState {
+        queue: FiniteQueue,
+        processor: GateProcessor,
+    }
+
+    impl WorkerState for GateState {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &self.processor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &self.queue
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &NoopPublisher
+        }
+
+        fn attachment_store(&self) -> &impl AttachmentStore {
+            &NoopStore
+        }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            &NoopRepository
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn bounded_concurrency_peak_equals_limit() {
+        use tokio_util::sync::CancellationToken;
+
+        const MESSAGES: u32 = 5;
+        const CONCURRENCY: usize = 3;
+
+        // Gate starts with 0 permits — each processor task parks until the test
+        // releases them.
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let processor = GateProcessor::new(gate.clone());
+        let queue = FiniteQueue::new(MESSAGES);
+        let state = GateState {
+            queue,
+            processor: processor.clone(),
+        };
+
+        let cancel = CancellationToken::new();
+        let run_task = tokio::spawn(
+            Worker {
+                concurrency: CONCURRENCY,
+            }
+            .run(state, cancel.clone()),
+        );
+
+        // Poll until exactly CONCURRENCY tasks are simultaneously in-flight.
+        // This is deterministic: the worker must saturate the semaphore before
+        // any task can proceed past the gate.
+        let reached_limit = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if processor
+                    .in_flight
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    == CONCURRENCY
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        assert!(
+            reached_limit.is_ok(),
+            "worker must saturate to {CONCURRENCY} in-flight tasks within the timeout"
+        );
+
+        // At this point exactly CONCURRENCY tasks are parked on the gate.
+        assert_eq!(
+            processor.peak.load(std::sync::atomic::Ordering::SeqCst),
+            CONCURRENCY,
+            "peak must equal the configured concurrency limit"
+        );
+
+        // Release the gate so all parked tasks (and any future ones) can complete.
+        gate.add_permits(usize::MAX >> 3);
+
+        // Wait for all messages to finish processing before cancelling, so the
+        // worker can dequeue and dispatch the remaining 2 messages (beyond the
+        // initial CONCURRENCY burst) without racing against cancellation.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if processor
+                    .processed
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    >= MESSAGES as usize
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("all messages must be processed within the timeout");
+
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), run_task)
+            .await
+            .expect("worker task must complete within the timeout")
+            .expect("worker task must not panic");
+
+        assert_eq!(
+            processor
+                .processed
+                .load(std::sync::atomic::Ordering::SeqCst),
+            MESSAGES as usize,
+            "all messages must be processed"
+        );
+        assert_eq!(
+            processor.peak.load(std::sync::atomic::Ordering::SeqCst),
+            CONCURRENCY,
+            "peak must never exceed the configured concurrency limit"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrency_one_is_sequential() {
+        use tokio_util::sync::CancellationToken;
+
+        const MESSAGES: u32 = 3;
+
+        let processor = PeakTrackingProcessor::default();
+        let queue = FiniteQueue::new(MESSAGES);
+        let state = PeakTrackingState {
+            queue: queue.clone(),
+            processor: processor.clone(),
+        };
+
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let processed = processor.processed.clone();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                if processed.load(std::sync::atomic::Ordering::SeqCst) >= MESSAGES as usize {
+                    cancel_clone.cancel();
+                    break;
+                }
+            }
+        });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            Worker { concurrency: 1 }.run(state, cancel),
+        )
+        .await
+        .expect("worker must finish within the timeout");
+
+        let peak = *processor.peak.lock().unwrap();
+        assert_eq!(
+            peak, 1,
+            "concurrency=1 must never have more than 1 in-flight task"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn graceful_drain_completes_in_flight_task() {
+        use tokio_util::sync::CancellationToken;
+
+        // A processor that signals when it has started and then completes after
+        // a short delay, recording that it finished.
+        #[derive(Clone, Default)]
+        struct SlowProcessor {
+            started: Arc<tokio::sync::Notify>,
+            finished: Arc<std::sync::atomic::AtomicBool>,
+        }
+
+        impl ProcessQueuedEmailUseCase for SlowProcessor {
+            async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+                self.started.notify_one();
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                self.finished
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(SenderName::new("sender"))
+            }
+        }
+
+        #[derive(Clone)]
+        struct DrainState {
+            queue: FiniteQueue,
+            processor: SlowProcessor,
+        }
+
+        impl WorkerState for DrainState {
+            fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+                &self.processor
+            }
+
+            fn email_queue(&self) -> &impl EmailQueue {
+                &self.queue
+            }
+
+            fn event_publisher(&self) -> &impl EventPublisher {
+                &NoopPublisher
+            }
+
+            fn attachment_store(&self) -> &impl AttachmentStore {
+                &NoopStore
+            }
+
+            fn email_repository(&self) -> &impl EmailRepository {
+                &NoopRepository
+            }
+        }
+
+        let processor = SlowProcessor::default();
+        let queue = FiniteQueue::new(1);
+        let state = DrainState {
+            queue,
+            processor: processor.clone(),
+        };
+
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let started = processor.started.clone();
+
+        // Cancel once the in-flight task has started.
+        tokio::spawn(async move {
+            started.notified().await;
+            cancel_clone.cancel();
+        });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            Worker { concurrency: 2 }.run(state, cancel),
+        )
+        .await
+        .expect("worker must finish within the timeout");
+
+        assert!(
+            processor.finished.load(std::sync::atomic::Ordering::SeqCst),
+            "in-flight task must complete (not be abandoned) on graceful drain"
         );
     }
 }

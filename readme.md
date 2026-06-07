@@ -181,6 +181,18 @@ send on it fails and is retried through the normal queue retry and alternate-sen
 | `CATAPULTE_QUEUE_MAX_DELIVER` | Maximum delivery attempts | `3` |
 | `CATAPULTE_QUEUE_BACKOFF` | Comma-separated retry backoff steps in seconds | `30,60,120` |
 
+### Worker
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CATAPULTE_WORKER_CONCURRENCY` | Maximum number of emails the worker processes concurrently | `1` |
+
+**Choosing a safe concurrency value.** Every in-flight send touches both the DB (event publish, ack/nack, `set_attachments`) and an SMTP connection, so the practical ceiling is `min(SMTP pool size = 10, CATAPULTE_POSTGRES_MAX_CONNECTIONS)` with headroom left for the HTTP submit path and background GC. A formula like `concurrency = pool_size - 2` is a reasonable starting point.
+
+**SQLite caveat.** SQLite uses a single connection (`max_connections(1)`), so raising concurrency above `1` just serializes all DB calls on that one connection and risks acquire timeouts rather than improving throughput. Only raise `CATAPULTE_WORKER_CONCURRENCY` when using Postgres, and raise `CATAPULTE_POSTGRES_MAX_CONNECTIONS` to match.
+
+**Quota note.** Sender quotas are counted from committed `Sent` events and are checked before sending. With concurrency > 1 the read-to-send window widens, so a quota may be overshot by up to ~concurrency before the next event is committed. This is accepted: quotas are best-effort and eventually consistent by design.
+
 ### Event Publishers (Observability)
 
 | Variable | Description | Default |
