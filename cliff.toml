@@ -1,0 +1,60 @@
+# git-cliff configuration for catapulte.
+#
+# catapulte is a self-hosted binary, not a published library, so its version
+# tracks the OPERATOR contract, not the Rust API:
+#   - major: a breaking change for operators (config / env vars, or observable
+#            behavior: HTTP/NATS contract, lifecycle event names/payloads,
+#            defaults, on-disk/DB format). Authored as `type!:` or a
+#            `BREAKING CHANGE:` footer.
+#   - minor: a new backward-compatible capability (`feat:`).
+#   - patch: a fix (`fix:`) or other change.
+# The bump is computed purely from commit messages (see [bump]); there is no
+# cargo-semver-checks gate, which would otherwise force majors on internal
+# library-API churn that operators never see.
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project are documented here.
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}\
+- {{ commit.message | upper_first }}{% if commit.breaking %} **(breaking)**{% endif %}
+{% endfor %}\
+{% endfor %}\n
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactor" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Testing" },
+  { message = "^ci", group = "CI" },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore", group = "Miscellaneous" },
+  { body = ".*security", group = "Security" },
+]
+protect_breaking_commits = true
+tag_pattern = "v[0-9]*"
+filter_commits = false
+topo_order = false
+sort_commits = "oldest"
+
+[bump]
+features_always_bump_minor = true
+breaking_always_bump_major = true

@@ -1,0 +1,83 @@
+name: release
+
+# Cut a release of the catapulte binary. The next version is derived from the
+# conventional commits since the last `vX.Y.Z` tag (see cliff.toml + CONTRIBUTING.md):
+# breaking -> major, feat -> minor, everything else -> patch. Nothing is published
+# to crates.io; the release is a git tag + GitHub release, and the Docker image is
+# built by docker.yml from the tag.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Explicit version (X.Y.Z) to release. Leave empty to derive it from commits. Use this for the first release (2.0.0)."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Determine next version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VER="${{ inputs.version }}"
+          else
+            VER="$(git cliff --bumped-version)"
+          fi
+          VER="${VER#v}"
+          LAST="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
+          if [ "v$VER" = "$LAST" ]; then
+            echo "No release needed: computed v$VER equals latest tag $LAST."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Bump workspace version
+        if: steps.ver.outputs.release == 'true'
+        run: |
+          perl -0777 -i -pe 's/(\[workspace\.package\]\nversion = ")[^"]+(")/${1}${{ steps.ver.outputs.version }}${2}/' Cargo.toml
+          cargo update --workspace --quiet
+
+      - name: Update changelog and release notes
+        if: steps.ver.outputs.release == 'true'
+        run: |
+          git cliff --tag "${{ steps.ver.outputs.tag }}" -o CHANGELOG.md
+          git cliff --unreleased --tag "${{ steps.ver.outputs.tag }}" --strip header -o RELEASE_NOTES.md
+
+      - name: Commit, tag, push
+        if: steps.ver.outputs.release == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): ${{ steps.ver.outputs.tag }}"
+          git tag "${{ steps.ver.outputs.tag }}"
+          git push origin HEAD "${{ steps.ver.outputs.tag }}"
+
+      - name: Create GitHub release
+        if: steps.ver.outputs.release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --title "${{ steps.ver.outputs.tag }}" \
+            --notes-file RELEASE_NOTES.md
