@@ -286,3 +286,7 @@ Emitted gauges:
 ## Out of scope (for now)
 
 Bounce and complaint ingestion, scheduled sends, recipient suppression lists, multi-tenant auth. Listed so they aren't mistaken for missing stories.
+
+## License
+
+Catapulte is licensed under the GNU Affero General Public License v3.0. See [LICENSE](./LICENSE).
