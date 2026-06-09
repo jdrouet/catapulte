@@ -3,6 +3,7 @@ name: docker
 on:
   push:
     branches: [nextgen]
+    tags: ["v*.*.*"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -109,6 +110,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,format=long
 
       - name: Log in to GHCR
