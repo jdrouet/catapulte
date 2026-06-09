@@ -2,7 +2,7 @@ name: pre-pr
 
 on:
   push:
-    branches: [nextgen]
+    branches: [main]
   pull_request:
 
 concurrency:

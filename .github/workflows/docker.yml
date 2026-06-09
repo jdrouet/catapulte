@@ -2,7 +2,7 @@ name: docker
 
 on:
   push:
-    branches: [nextgen]
+    branches: [main]
     tags: ["v*.*.*"]
 
 concurrency:
