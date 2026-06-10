@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-async-nats = "0.48"
+async-nats = "0.49"
 catapulte-domain = { path = "../../domain" }
 catapulte-telemetry = { path = "../../telemetry" }
 futures-util = "0.3"
@@ -22,5 +22,5 @@ uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 serial_test = "3"
-testcontainers = { version = "0.23" }
+testcontainers = { version = "0.27" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
