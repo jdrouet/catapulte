@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-async-nats = "0.48"
+async-nats = "0.49"
 catapulte-domain = { path = "../../domain" }
 catapulte-inbound-http = { path = "../inbound-http" }
 catapulte-telemetry = { path = "../../telemetry" }
