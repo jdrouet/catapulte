@@ -492,7 +492,7 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert("MYPREFIX_TOKENS", "github");
         vars.insert("MYPREFIX_TOKEN_GITHUB_HOST", "raw.githubusercontent.com");
-        // neither _BEARER_TOKEN nor _HEADERS — should be rejected
+        // neither _BEARER_TOKEN nor _HEADERS, should be rejected
         let result = TemplateResolverConfig::from_lookup("MYPREFIX", make_lookup(vars));
         assert!(result.is_err());
     }
@@ -596,6 +596,17 @@ mod tests {
             host: "example.com".to_owned(),
             bearer_token: None,
             headers: vec![("bad header name".to_owned(), "value".to_owned())],
+        }];
+        let result = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_with_invalid_header_value_returns_err() {
+        let entries = vec![ResolverAuthEntry {
+            host: "example.com".to_owned(),
+            bearer_token: None,
+            headers: vec![("X-Custom".to_owned(), "bad\nvalue".to_owned())],
         }];
         let result = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries);
         assert!(result.is_err());
