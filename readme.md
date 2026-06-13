@@ -209,6 +209,9 @@ send on it fails and is retried through the normal queue retry and alternate-sen
 |----------|-------------|---------|
 | `CATAPULTE_RESOLVER_ALLOWED_DOMAINS` | Allowed domains for remote MJML fetching | - |
 | `CATAPULTE_RESOLVER_TEMPLATES_DIR` | Directory containing `.mjml` templates | - |
+| `CATAPULTE_RESOLVER_TOKENS` | Comma-separated names of auth entries (e.g. `github,gitlab`); absent or empty means no auth | - |
+| `CATAPULTE_RESOLVER_TOKEN_<NAME>_HOST` | Exact host the named entry's token is attached to (must also be in `ALLOWED_DOMAINS`) | - |
+| `CATAPULTE_RESOLVER_TOKEN_<NAME>_BEARER_TOKEN` | Sent as `Authorization: Bearer <token>` only to the matching host; treated as secret, never logged | - |
 
 #### MJML Include Loader
 | Variable | Description | Default |
