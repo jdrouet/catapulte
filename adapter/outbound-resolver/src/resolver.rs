@@ -321,7 +321,8 @@ impl TemplateResolverConfig {
     /// # Errors
     ///
     /// Returns an error if the templates directory cannot be read, any bearer token is invalid,
-    /// or two entries share the same host.
+    /// any custom header name or value is invalid, a bearer token is combined with an explicit
+    /// `Authorization` header for the same host, or two entries share the same host.
     pub fn build(self) -> anyhow::Result<TemplateResolverAdapter> {
         let templates = match self.templates_dir {
             None => HashMap::new(),
