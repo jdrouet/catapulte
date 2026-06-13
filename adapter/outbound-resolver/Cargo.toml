@@ -19,3 +19,4 @@ url = { workspace = true }
 [dev-dependencies]
 tempfile = { version = "3" }
 tokio = { workspace = true }
+wiremock = { version = "0.6" }

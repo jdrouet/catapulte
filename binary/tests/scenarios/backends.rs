@@ -60,6 +60,7 @@ fn base_resolver() -> TemplateResolverConfig {
     TemplateResolverConfig {
         allowed_domains: HashSet::new(),
         templates_dir: None,
+        auth_entries: Vec::new(),
     }
 }
 

@@ -209,6 +209,34 @@ send on it fails and is retried through the normal queue retry and alternate-sen
 |----------|-------------|---------|
 | `CATAPULTE_RESOLVER_ALLOWED_DOMAINS` | Allowed domains for remote MJML fetching | - |
 | `CATAPULTE_RESOLVER_TEMPLATES_DIR` | Directory containing `.mjml` templates | - |
+| `CATAPULTE_RESOLVER_TOKENS` | Comma-separated names of auth entries (e.g. `github,gitlab`); absent or empty means no auth | - |
+| `CATAPULTE_RESOLVER_TOKEN_<NAME>_HOST` | Exact host the named entry's token is attached to (must also be in `ALLOWED_DOMAINS`) | - |
+| `CATAPULTE_RESOLVER_TOKEN_<NAME>_BEARER_TOKEN` | **(Optional)** Sent as `Authorization: Bearer <token>` only to the matching host; treated as secret, never logged | - |
+| `CATAPULTE_RESOLVER_TOKEN_<NAME>_HEADERS` | Comma-separated list of header names to attach to requests to the matching host (e.g. `Accept,PRIVATE-TOKEN`) | - |
+| `CATAPULTE_RESOLVER_TOKEN_<NAME>_HEADER_<FRAGMENT>_VALUE` | Value for the named header; FRAGMENT is the header name uppercased with `-` replaced by `_` (e.g. `ACCEPT`, `PRIVATE_TOKEN`); treated as secret, never logged | - |
+
+Each auth entry must configure at least a bearer token or one header. Defining a host with neither is a configuration error.
+
+**Examples**
+
+Private GitHub raw content via bearer token plus a custom `Accept` header:
+
+```sh
+CATAPULTE_RESOLVER_TOKENS=github
+CATAPULTE_RESOLVER_TOKEN_GITHUB_HOST=api.github.com
+CATAPULTE_RESOLVER_TOKEN_GITHUB_BEARER_TOKEN=ghp_xxxx
+CATAPULTE_RESOLVER_TOKEN_GITHUB_HEADERS=Accept
+CATAPULTE_RESOLVER_TOKEN_GITHUB_HEADER_ACCEPT_VALUE=application/vnd.github.raw
+```
+
+GitLab via a `PRIVATE-TOKEN` header and no bearer:
+
+```sh
+CATAPULTE_RESOLVER_TOKENS=gitlab
+CATAPULTE_RESOLVER_TOKEN_GITLAB_HOST=gitlab.com
+CATAPULTE_RESOLVER_TOKEN_GITLAB_HEADERS=PRIVATE-TOKEN
+CATAPULTE_RESOLVER_TOKEN_GITLAB_HEADER_PRIVATE_TOKEN_VALUE=glpat-xxxx
+```
 
 #### MJML Include Loader
 | Variable | Description | Default |
