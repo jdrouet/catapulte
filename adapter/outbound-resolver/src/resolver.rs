@@ -8,26 +8,31 @@ use catapulte_domain::port::template_resolver::{ResolveError, TemplateResolver};
 
 pub struct ResolverAuthEntry {
     pub host: String,
-    pub bearer_token: String,
+    pub bearer_token: Option<String>,
+    pub headers: Vec<(String, String)>,
 }
 
 pub struct TemplateResolverAdapter {
     templates: HashMap<String, String>,
     allowed_domains: HashSet<String>,
     http_client: reqwest::Client,
-    auth_headers: HashMap<String, reqwest::header::HeaderValue>,
+    auth_headers: HashMap<String, reqwest::header::HeaderMap>,
 }
 
 impl TemplateResolverAdapter {
-    /// Creates the adapter. Each entry in `auth_entries` binds a bearer token to an exact host;
-    /// the token is attached only to requests for that host. A host must also be in
-    /// `allowed_domains` to be fetched at all. Duplicate hosts across entries are rejected at
-    /// build time.
+    /// Creates the adapter. Each entry in `auth_entries` attaches auth headers to an exact host;
+    /// headers are sent only to requests for that host. A host must also be in `allowed_domains`
+    /// to be fetched at all. Duplicate hosts across entries are rejected at build time.
     ///
     /// # Errors
     ///
-    /// Returns an error if any bearer token contains characters invalid in an HTTP header value,
-    /// or if two entries share the same host.
+    /// Returns an error if:
+    /// - two entries share the same host
+    /// - a bearer token contains characters invalid in an HTTP header value
+    /// - a generic header name is invalid
+    /// - a generic header value contains characters invalid in an HTTP header value
+    /// - both `bearer_token` and an explicit `Authorization` header are configured for the same
+    ///   host
     pub fn new(
         templates: HashMap<String, String>,
         allowed_domains: HashSet<String>,
@@ -37,19 +42,42 @@ impl TemplateResolverAdapter {
             .build()
             .context("building reqwest client for template resolver")?;
 
-        let mut auth_headers: HashMap<String, reqwest::header::HeaderValue> =
+        let mut auth_headers: HashMap<String, reqwest::header::HeaderMap> =
             HashMap::with_capacity(auth_entries.len());
         for entry in auth_entries {
             if auth_headers.contains_key(&entry.host) {
                 anyhow::bail!("duplicate host in resolver auth entries: {}", entry.host);
             }
-            let mut value =
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", entry.bearer_token))
+            let mut map = reqwest::header::HeaderMap::new();
+            if let Some(ref token) = entry.bearer_token {
+                let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
                     .with_context(|| {
-                    format!("invalid resolver bearer token for host {}", entry.host)
-                })?;
-            value.set_sensitive(true);
-            auth_headers.insert(entry.host, value);
+                        format!("invalid resolver bearer token for host {}", entry.host)
+                    })?;
+                value.set_sensitive(true);
+                map.insert(reqwest::header::AUTHORIZATION, value);
+            }
+            for (name, value) in &entry.headers {
+                let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                    .with_context(|| format!("invalid header name for host {}", entry.host))?;
+                if entry.bearer_token.is_some() && header_name == reqwest::header::AUTHORIZATION {
+                    anyhow::bail!(
+                        "conflicting Authorization header for host {}: both a bearer token and \
+                         an explicit authorization header are configured",
+                        entry.host
+                    );
+                }
+                let mut header_value =
+                    reqwest::header::HeaderValue::from_str(value).with_context(|| {
+                        format!(
+                            "invalid header value for host {} header {}",
+                            entry.host, name
+                        )
+                    })?;
+                header_value.set_sensitive(true);
+                map.append(header_name, header_value);
+            }
+            auth_headers.insert(entry.host, map);
         }
 
         Ok(Self {
@@ -75,8 +103,8 @@ impl TemplateResolverAdapter {
         let url_str = url.to_string();
         let host = url.host_str().map(str::to_owned);
         let mut request = self.http_client.get(url);
-        if let Some(value) = host.as_deref().and_then(|h| self.auth_headers.get(h)) {
-            request = request.header(reqwest::header::AUTHORIZATION, value.clone());
+        if let Some(headers) = host.as_deref().and_then(|h| self.auth_headers.get(h)) {
+            request = request.headers(headers.clone());
         }
         let response = request
             .send()
@@ -215,9 +243,12 @@ impl TemplateResolverConfig {
                         let bearer_token = lookup(&token_key)
                             .ok()
                             .map(|v| v.trim().to_owned())
-                            .filter(|s| !s.is_empty())
-                            .with_context(|| format!("missing or empty env var {token_key}"))?;
-                        Ok(ResolverAuthEntry { host, bearer_token })
+                            .filter(|s| !s.is_empty());
+                        Ok(ResolverAuthEntry {
+                            host,
+                            bearer_token,
+                            headers: Vec::new(),
+                        })
                     })
                     .collect::<anyhow::Result<Vec<_>>>()
             })
@@ -376,9 +407,17 @@ mod tests {
         let config = TemplateResolverConfig::from_lookup("MYPREFIX", make_lookup(vars)).unwrap();
         assert_eq!(config.auth_entries.len(), 2);
         assert_eq!(config.auth_entries[0].host, "raw.githubusercontent.com");
-        assert_eq!(config.auth_entries[0].bearer_token, "ghp_xxx");
+        assert_eq!(
+            config.auth_entries[0].bearer_token,
+            Some("ghp_xxx".to_owned())
+        );
+        assert!(config.auth_entries[0].headers.is_empty());
         assert_eq!(config.auth_entries[1].host, "gitlab.com");
-        assert_eq!(config.auth_entries[1].bearer_token, "glpat_yyy");
+        assert_eq!(
+            config.auth_entries[1].bearer_token,
+            Some("glpat_yyy".to_owned())
+        );
+        assert!(config.auth_entries[1].headers.is_empty());
     }
 
     #[test]
@@ -392,13 +431,16 @@ mod tests {
     }
 
     #[test]
-    fn config_from_lookup_missing_token_errors() {
+    fn config_from_lookup_missing_token_bearer_becomes_none() {
         let mut vars = HashMap::new();
         vars.insert("MYPREFIX_TOKENS", "github");
         vars.insert("MYPREFIX_TOKEN_GITHUB_HOST", "raw.githubusercontent.com");
-        // _BEARER_TOKEN intentionally absent
-        let result = TemplateResolverConfig::from_lookup("MYPREFIX", make_lookup(vars));
-        assert!(result.is_err());
+        // _BEARER_TOKEN intentionally absent — bearer_token becomes None
+        let config = TemplateResolverConfig::from_lookup("MYPREFIX", make_lookup(vars)).unwrap();
+        assert_eq!(config.auth_entries.len(), 1);
+        assert_eq!(config.auth_entries[0].host, "raw.githubusercontent.com");
+        assert!(config.auth_entries[0].bearer_token.is_none());
+        assert!(config.auth_entries[0].headers.is_empty());
     }
 
     #[test]
@@ -406,11 +448,13 @@ mod tests {
         let entries = vec![
             ResolverAuthEntry {
                 host: "example.com".to_owned(),
-                bearer_token: "tok-a".to_owned(),
+                bearer_token: Some("tok-a".to_owned()),
+                headers: Vec::new(),
             },
             ResolverAuthEntry {
                 host: "example.com".to_owned(),
-                bearer_token: "tok-b".to_owned(),
+                bearer_token: Some("tok-b".to_owned()),
+                headers: Vec::new(),
             },
         ];
         let result = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries);
@@ -421,10 +465,39 @@ mod tests {
     fn new_with_invalid_token_returns_err() {
         let entries = vec![ResolverAuthEntry {
             host: "example.com".to_owned(),
-            bearer_token: "bad\nvalue".to_owned(),
+            bearer_token: Some("bad\nvalue".to_owned()),
+            headers: Vec::new(),
         }];
         let result = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_with_invalid_header_name_returns_err() {
+        let entries = vec![ResolverAuthEntry {
+            host: "example.com".to_owned(),
+            bearer_token: None,
+            headers: vec![("bad header name".to_owned(), "value".to_owned())],
+        }];
+        let result = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_with_bearer_and_explicit_authorization_header_conflicts() {
+        let entries = vec![ResolverAuthEntry {
+            host: "example.com".to_owned(),
+            bearer_token: Some("tok-a".to_owned()),
+            headers: vec![("Authorization".to_owned(), "Bearer other".to_owned())],
+        }];
+        let Err(err) = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries) else {
+            panic!("expected conflict error but got Ok")
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("conflicting Authorization header"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
@@ -505,13 +578,52 @@ mod tests {
         let entries = vec![
             ResolverAuthEntry {
                 host: host.clone(),
-                bearer_token: "tok-a".to_owned(),
+                bearer_token: Some("tok-a".to_owned()),
+                headers: Vec::new(),
             },
             ResolverAuthEntry {
                 host: "other.example.invalid".to_owned(),
-                bearer_token: "tok-b".to_owned(),
+                bearer_token: Some("tok-b".to_owned()),
+                headers: Vec::new(),
             },
         ];
+        let adapter = TemplateResolverAdapter::new(HashMap::new(), allowed, entries).unwrap();
+
+        let url = url::Url::parse(&format!("http://{host}:{port}/template.mjml")).unwrap();
+        let body = BodySource::Mjml(MjmlSource::Remote(url));
+        let result = adapter.resolve(body).await.unwrap();
+
+        match result {
+            ResolvedBody::Mjml(s) => assert_eq!(s, "<mjml/>"),
+            ResolvedBody::Plain(_) => panic!("expected Mjml variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_header_attached_to_matching_host() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let host = server.address().ip().to_string();
+        let port = server.address().port();
+
+        Mock::given(method("GET"))
+            .and(path("/template.mjml"))
+            .and(header("X-Custom-Header", "custom-value"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<mjml/>"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut allowed = HashSet::new();
+        allowed.insert(host.clone());
+
+        let entries = vec![ResolverAuthEntry {
+            host: host.clone(),
+            bearer_token: None,
+            headers: vec![("X-Custom-Header".to_owned(), "custom-value".to_owned())],
+        }];
         let adapter = TemplateResolverAdapter::new(HashMap::new(), allowed, entries).unwrap();
 
         let url = url::Url::parse(&format!("http://{host}:{port}/template.mjml")).unwrap();
