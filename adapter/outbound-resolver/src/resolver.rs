@@ -196,12 +196,24 @@ impl TemplateResolverConfig {
     /// - `{prefix}_TOKENS` — comma-separated entry names (e.g. `github,gitlab`); absent/empty
     ///   means no auth entries
     /// - `{prefix}_TOKEN_<NAME>_HOST` — exact host for the named entry
-    /// - `{prefix}_TOKEN_<NAME>_BEARER_TOKEN` — bearer token for the named entry; sent only to
-    ///   its exact host, treated as secret and never logged
+    /// - `{prefix}_TOKEN_<NAME>_BEARER_TOKEN` — optional bearer token; sent as
+    ///   `Authorization: Bearer <token>` only to the matching host; treated as secret, never logged
+    /// - `{prefix}_TOKEN_<NAME>_HEADERS` — comma-separated list of header names to attach to the
+    ///   matching host (e.g. `Accept,X-Custom`); absent or empty means no extra headers
+    /// - `{prefix}_TOKEN_<NAME>_HEADER_<FRAGMENT>_VALUE` — value for the named header, where
+    ///   FRAGMENT is the header name uppercased with `-` replaced by `_` (e.g. `ACCEPT`,
+    ///   `PRIVATE_TOKEN`); treated as secret, never logged
+    ///
+    /// Each entry listed in `_TOKENS` must configure at least a bearer token or one header;
+    /// a host-only entry with no auth is rejected.
     ///
     /// # Errors
     ///
-    /// Returns an error if a named token entry is missing its `_HOST` or `_BEARER_TOKEN`.
+    /// Returns an error if:
+    /// - a named entry is missing its `_HOST`
+    /// - a named entry has neither a bearer token nor any headers
+    /// - a header listed in `_HEADERS` is missing its `_VALUE` variable
+    /// - two header names in `_HEADERS` map to the same FRAGMENT (would silently shadow)
     pub fn from_env(prefix: &str) -> anyhow::Result<Self> {
         Self::from_lookup(prefix, |key| std::env::var(key))
     }
@@ -235,19 +247,63 @@ impl TemplateResolverConfig {
                         let upper = name.to_uppercase();
                         let host_key = format!("{prefix}_TOKEN_{upper}_HOST");
                         let token_key = format!("{prefix}_TOKEN_{upper}_BEARER_TOKEN");
+                        let headers_key = format!("{prefix}_TOKEN_{upper}_HEADERS");
+
                         let host = lookup(&host_key)
                             .ok()
                             .map(|v| v.trim().to_owned())
                             .filter(|s| !s.is_empty())
                             .with_context(|| format!("missing or empty env var {host_key}"))?;
+
                         let bearer_token = lookup(&token_key)
                             .ok()
                             .map(|v| v.trim().to_owned())
                             .filter(|s| !s.is_empty());
+
+                        let mut seen_fragments: HashMap<String, String> = HashMap::new();
+                        let headers = lookup(&headers_key)
+                            .ok()
+                            .map(|v| {
+                                v.split(',')
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                                    .map(|header_name| {
+                                        let fragment = header_name.to_uppercase().replace('-', "_");
+                                        if let Some(prior) = seen_fragments
+                                            .insert(fragment.clone(), header_name.to_owned())
+                                        {
+                                            anyhow::bail!(
+                                                "header names {prior} and {header_name} for \
+                                                 entry {name} both map to fragment {fragment}"
+                                            );
+                                        }
+                                        let value_key = format!(
+                                            "{prefix}_TOKEN_{upper}_HEADER_{fragment}_VALUE"
+                                        );
+                                        let value = lookup(&value_key)
+                                            .ok()
+                                            .map(|v| v.trim().to_owned())
+                                            .filter(|s| !s.is_empty())
+                                            .with_context(|| {
+                                                format!("missing or empty env var {value_key}")
+                                            })?;
+                                        Ok((header_name.to_owned(), value))
+                                    })
+                                    .collect::<anyhow::Result<Vec<_>>>()
+                            })
+                            .transpose()?
+                            .unwrap_or_default();
+
+                        if bearer_token.is_none() && headers.is_empty() {
+                            anyhow::bail!(
+                                "auth entry {name} has a host but no bearer token or headers"
+                            );
+                        }
+
                         Ok(ResolverAuthEntry {
                             host,
                             bearer_token,
-                            headers: Vec::new(),
+                            headers,
                         })
                     })
                     .collect::<anyhow::Result<Vec<_>>>()
@@ -431,16 +487,77 @@ mod tests {
     }
 
     #[test]
-    fn config_from_lookup_missing_token_bearer_becomes_none() {
+    fn config_from_lookup_host_with_no_auth_errors() {
         let mut vars = HashMap::new();
         vars.insert("MYPREFIX_TOKENS", "github");
         vars.insert("MYPREFIX_TOKEN_GITHUB_HOST", "raw.githubusercontent.com");
-        // _BEARER_TOKEN intentionally absent — bearer_token becomes None
+        // neither _BEARER_TOKEN nor _HEADERS — should be rejected
+        let result = TemplateResolverConfig::from_lookup("MYPREFIX", make_lookup(vars));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn config_from_lookup_bearer_and_header() {
+        let mut vars = HashMap::new();
+        vars.insert("MYPREFIX_TOKENS", "github");
+        vars.insert("MYPREFIX_TOKEN_GITHUB_HOST", "api.github.com");
+        vars.insert("MYPREFIX_TOKEN_GITHUB_BEARER_TOKEN", "ghp_xxx");
+        vars.insert("MYPREFIX_TOKEN_GITHUB_HEADERS", "Accept");
+        vars.insert(
+            "MYPREFIX_TOKEN_GITHUB_HEADER_ACCEPT_VALUE",
+            "application/vnd.github+json",
+        );
         let config = TemplateResolverConfig::from_lookup("MYPREFIX", make_lookup(vars)).unwrap();
         assert_eq!(config.auth_entries.len(), 1);
-        assert_eq!(config.auth_entries[0].host, "raw.githubusercontent.com");
-        assert!(config.auth_entries[0].bearer_token.is_none());
-        assert!(config.auth_entries[0].headers.is_empty());
+        let entry = &config.auth_entries[0];
+        assert_eq!(entry.host, "api.github.com");
+        assert_eq!(entry.bearer_token, Some("ghp_xxx".to_owned()));
+        assert_eq!(entry.headers.len(), 1);
+        assert_eq!(entry.headers[0].0, "Accept");
+        assert_eq!(entry.headers[0].1, "application/vnd.github+json");
+    }
+
+    #[test]
+    fn config_from_lookup_header_only_no_bearer() {
+        let mut vars = HashMap::new();
+        vars.insert("MYPREFIX_TOKENS", "gitlab");
+        vars.insert("MYPREFIX_TOKEN_GITLAB_HOST", "gitlab.com");
+        vars.insert("MYPREFIX_TOKEN_GITLAB_HEADERS", "PRIVATE-TOKEN");
+        vars.insert(
+            "MYPREFIX_TOKEN_GITLAB_HEADER_PRIVATE_TOKEN_VALUE",
+            "glpat_zzz",
+        );
+        let config = TemplateResolverConfig::from_lookup("MYPREFIX", make_lookup(vars)).unwrap();
+        assert_eq!(config.auth_entries.len(), 1);
+        let entry = &config.auth_entries[0];
+        assert_eq!(entry.host, "gitlab.com");
+        assert!(entry.bearer_token.is_none());
+        assert_eq!(entry.headers.len(), 1);
+        assert_eq!(entry.headers[0].0, "PRIVATE-TOKEN");
+        assert_eq!(entry.headers[0].1, "glpat_zzz");
+    }
+
+    #[test]
+    fn config_from_lookup_header_listed_but_value_missing_errors() {
+        let mut vars = HashMap::new();
+        vars.insert("MYPREFIX_TOKENS", "github");
+        vars.insert("MYPREFIX_TOKEN_GITHUB_HOST", "api.github.com");
+        vars.insert("MYPREFIX_TOKEN_GITHUB_HEADERS", "Accept");
+        // _HEADER_ACCEPT_VALUE intentionally absent
+        let result = TemplateResolverConfig::from_lookup("MYPREFIX", make_lookup(vars));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn config_from_lookup_fragment_collision_errors() {
+        let mut vars = HashMap::new();
+        vars.insert("MYPREFIX_TOKENS", "github");
+        vars.insert("MYPREFIX_TOKEN_GITHUB_HOST", "api.github.com");
+        // "X-Foo" and "X_Foo" both produce fragment "X_FOO"
+        vars.insert("MYPREFIX_TOKEN_GITHUB_HEADERS", "X-Foo,X_Foo");
+        vars.insert("MYPREFIX_TOKEN_GITHUB_HEADER_X_FOO_VALUE", "bar");
+        let result = TemplateResolverConfig::from_lookup("MYPREFIX", make_lookup(vars));
+        assert!(result.is_err());
     }
 
     #[test]
