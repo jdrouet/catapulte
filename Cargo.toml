@@ -41,7 +41,7 @@ tempfile = { version = "3" }
 sqlx = { version = "0.9", default-features = false, features = ["json", "macros", "migrate", "runtime-tokio", "sqlite", "postgres"] }
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7" }
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.7", features = ["trace"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 opentelemetry = { version = "0.32" }
