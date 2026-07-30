@@ -17,6 +17,6 @@ tokio = { workspace = true, features = ["io-util"] }
 uuid = { workspace = true }
 
 [dev-dependencies]
-serial_test = "3"
+serial_test = "4"
 testcontainers = { version = "0.27" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
