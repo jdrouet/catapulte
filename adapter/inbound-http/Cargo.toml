@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true, features = ["multipart"] }
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1"
 catapulte-domain = { path = "../../domain" }
 email_address = "0.2"

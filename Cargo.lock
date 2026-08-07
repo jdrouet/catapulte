@@ -455,7 +455,7 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-nats",
- "base64 0.22.1",
+ "base64 0.23.1",
  "catapulte-domain",
  "catapulte-inbound-http",
  "catapulte-inbound-nats",
@@ -510,7 +510,7 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "catapulte-domain",
  "email_address",
