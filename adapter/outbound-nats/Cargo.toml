@@ -22,5 +22,5 @@ uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 serial_test = "4"
-testcontainers = { version = "0.27" }
+testcontainers = { version = "0.28" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
