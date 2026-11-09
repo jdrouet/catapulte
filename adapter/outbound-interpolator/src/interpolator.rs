@@ -15,7 +15,7 @@ fn render_str(
         .get_template("t")
         .context("getting template")
         .map_err(|source| InterpolateError::Engine { source })?;
-    tmpl.render(variables)
+    tmpl.render(minijinja::value::Serde(variables))
         .context("rendering template")
         .map_err(|source| InterpolateError::Engine { source })
 }
