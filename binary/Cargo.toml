@@ -37,7 +37,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-async-nats = "0.50"
+async-nats = "0.52"
 base64 = { version = "0.23" }
 futures-util = "0.3"
 paste = "1"
