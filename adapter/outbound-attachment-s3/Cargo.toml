@@ -19,7 +19,7 @@ tokio-util = { workspace = true, features = ["io"] }
 futures-util = { version = "0.3" }
 tracing = { workspace = true }
 uuid = { workspace = true }
-rust-s3 = { version = "0.37.2", default-features = false, features = ["tokio-rustls-tls"] }
+rust-s3 = { version = "0.38", default-features = false, features = ["tokio-rustls-tls"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
