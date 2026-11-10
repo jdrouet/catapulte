@@ -3,7 +3,9 @@ use catapulte_domain::entity::attachment::ResolvedAttachment;
 use catapulte_domain::entity::body::RenderedBody;
 use catapulte_domain::entity::email::RecipientKind;
 use catapulte_domain::port::email_sender::OutboundEmail;
-use catapulte_domain::port::email_transport::{EmailTransport, TransportError, TransportErrorKind};
+use catapulte_domain::port::email_transport::{
+    DeliveryReceipt, EmailTransport, TransportError, TransportErrorKind,
+};
 use lettre::message::header::{ContentDisposition, ContentType};
 use lettre::message::{Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
@@ -318,12 +320,23 @@ pub(crate) fn classify(permanent: bool, text: &str) -> TransportErrorKind {
 
 const MAX_REPLY_CHARS: usize = 256;
 
-/// Caps remote-controlled reply text before it reaches events and logs.
+/// Caps remote-controlled reply text, ellipsis included, at 256 characters before it reaches
+/// events and logs.
 fn truncate_reply(text: &str) -> String {
-    match text.char_indices().nth(MAX_REPLY_CHARS) {
-        Some((end, _)) => format!("{}…", &text[..end]),
-        None => text.to_owned(),
+    if text.chars().count() <= MAX_REPLY_CHARS {
+        return text.to_owned();
     }
+    let kept: String = text.chars().take(MAX_REPLY_CHARS - 1).collect();
+    format!("{kept}…")
+}
+
+/// `"{code} {lines joined by space}"`, capped because the relay controls the text.
+fn format_smtp_response<'a>(
+    code: impl std::fmt::Display,
+    lines: impl Iterator<Item = &'a str>,
+) -> String {
+    let joined = lines.collect::<Vec<_>>().join(" ");
+    truncate_reply(&format!("{code} {joined}"))
 }
 
 /// Classifies on the full text, then caps what is kept, so truncation cannot hide the code.
@@ -352,7 +365,10 @@ impl SmtpTransport {
     /// Builds the message and its wire bytes, enforcing the size limit on the final bytes.
     fn prepare(&self, email: &OutboundEmail) -> Result<(Message, Vec<u8>), TransportError> {
         let from = parse_mailbox(&email.sender).map_err(message_error)?;
-        let builder = apply_recipients(Message::builder().from(from), &email.recipients)
+        let builder = Message::builder()
+            .from(from)
+            .message_id(Some(email.message_id.clone()));
+        let builder = apply_recipients(builder, &email.recipients)
             .and_then(|b| apply_reply_to_and_headers(b, &email.reply_to, &email.headers))
             .map_err(message_error)?;
         let message = finalize_message(
@@ -375,18 +391,27 @@ impl SmtpTransport {
         Ok((message, raw))
     }
 
-    pub(crate) async fn send_inner(&self, email: &OutboundEmail) -> Result<(), TransportError> {
+    pub(crate) async fn send_inner(
+        &self,
+        email: &OutboundEmail,
+    ) -> Result<DeliveryReceipt, TransportError> {
         let (message, raw) = self.prepare(email)?;
-        self.transport
+        let response = self
+            .transport
             .send_raw(message.envelope(), &raw)
             .await
             .map_err(|e| smtp_text_error(e.is_permanent(), &e.to_string()))?;
-        Ok(())
+        Ok(DeliveryReceipt {
+            smtp_response: Some(format_smtp_response(response.code(), response.message())),
+        })
     }
 }
 
 impl EmailTransport for SmtpTransport {
-    async fn deliver<'a>(&'a self, email: &'a OutboundEmail) -> Result<(), TransportError> {
+    async fn deliver<'a>(
+        &'a self,
+        email: &'a OutboundEmail,
+    ) -> Result<DeliveryReceipt, TransportError> {
         self.send_inner(email).await
     }
 }
@@ -685,9 +710,10 @@ mod tests {
         assert_eq!(truncate_reply("short"), "short");
         let long = "é".repeat(300);
         let cut = truncate_reply(&long);
-        assert_eq!(cut.chars().count(), 257);
+        assert_eq!(cut.chars().count(), 256);
         assert!(cut.ends_with('…'));
-        assert!(cut.starts_with(&"é".repeat(256)));
+        assert!(cut.starts_with(&"é".repeat(255)));
+        assert_eq!(truncate_reply(&"é".repeat(256)), "é".repeat(256));
     }
 
     #[test]
@@ -697,7 +723,7 @@ mod tests {
         let err = smtp_text_error(true, &text);
 
         assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
-        assert_eq!(err.source.to_string().chars().count(), 257);
+        assert_eq!(err.source.to_string().chars().count(), 256);
     }
 
     fn local_transport(max: Option<u64>) -> super::SmtpTransport {
@@ -732,6 +758,7 @@ mod tests {
             }],
             reply_to: vec![],
             headers: vec![],
+            message_id: "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>".into(),
         }
     }
 
@@ -801,6 +828,7 @@ mod tests {
             attachments: vec![],
             reply_to: vec![],
             headers: vec![],
+            message_id: "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>".into(),
         }
     }
 
@@ -974,5 +1002,60 @@ mod tests {
         assert!(super::check_header_line_lengths(body_long.as_bytes()).is_ok());
         assert!(super::check_header_line_lengths(part_header_long.as_bytes()).is_ok());
         assert!(super::check_header_line_lengths(header_long.as_bytes()).is_err());
+    }
+
+    #[tokio::test]
+    async fn message_id_header_is_set_from_the_outbound_email() {
+        let transport = local_transport(None);
+        let email = plain_email();
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            text.contains("Message-ID: <018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn message_id_survives_the_header_line_check_with_a_long_domain() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.message_id = format!(
+            "<{}@{}.example.com>",
+            "00000000-0000-0000-0000-000000000000",
+            "d".repeat(60)
+        );
+
+        assert!(transport.prepare(&email).is_ok());
+    }
+
+    #[tokio::test]
+    async fn punycode_message_id_is_written_verbatim() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.message_id = "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@xn--bcher-kva.de>".into();
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            text.contains("Message-ID: <018f4e3c-2d1a-7b3c-8f00-1234567890ab@xn--bcher-kva.de>"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn smtp_response_is_code_and_joined_lines_and_capped() {
+        use super::format_smtp_response;
+        assert_eq!(
+            format_smtp_response(250, ["2.0.0 Ok: queued as 4ABC", "second"].into_iter()),
+            "250 2.0.0 Ok: queued as 4ABC second"
+        );
+        let long = "x".repeat(1000);
+        let capped = format_smtp_response(250, std::iter::once(long.as_str()));
+        assert_eq!(capped.chars().count(), 256);
+        assert!(capped.starts_with("250 "));
     }
 }

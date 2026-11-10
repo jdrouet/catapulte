@@ -122,6 +122,8 @@ mod tests {
                 id: id1,
                 sender_name: SenderName::new("primary"),
                 correlation_id: None,
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
             })
             .await
             .unwrap();
@@ -130,6 +132,8 @@ mod tests {
                 id: id2,
                 sender_name: SenderName::new("primary"),
                 correlation_id: None,
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
             })
             .await
             .unwrap();
@@ -173,6 +177,8 @@ mod tests {
                 id,
                 sender_name: SenderName::new("primary"),
                 correlation_id: None,
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
             })
             .await
             .unwrap();

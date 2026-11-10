@@ -37,6 +37,8 @@ impl SendError {
 }
 
 pub struct OutboundEmail {
+    /// `<{email uuid}@{sender domain}>`, stable across retries of the same email.
+    pub message_id: String,
     pub sender: String,
     pub subject: Option<String>,
     pub recipients: Vec<(RecipientKind, String)>,
@@ -44,6 +46,12 @@ pub struct OutboundEmail {
     pub attachments: Vec<crate::entity::attachment::ResolvedAttachment>,
     pub reply_to: Vec<String>,
     pub headers: Vec<(String, String)>,
+}
+
+#[derive(Debug)]
+pub struct SentEmail {
+    pub sender_name: SenderName,
+    pub smtp_response: Option<String>,
 }
 
 pub trait EmailSender: Send + Sync + 'static {
@@ -55,5 +63,5 @@ pub trait EmailSender: Send + Sync + 'static {
     fn send(
         &self,
         email: OutboundEmail,
-    ) -> impl std::future::Future<Output = Result<SenderName, SendError>> + Send;
+    ) -> impl std::future::Future<Output = Result<SentEmail, SendError>> + Send;
 }

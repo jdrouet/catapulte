@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::entity::sender::{SenderName, SenderQuota};
 use crate::port::clock::{Clock, SystemClock};
-use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
+use crate::port::email_sender::{EmailSender, OutboundEmail, SendError, SentEmail};
 use crate::port::email_transport::{EmailTransport, TransportErrorKind};
 use crate::port::sender_usage::{SenderStats, SenderUsage};
 
@@ -98,7 +98,7 @@ where
     /// domain and there are no catch-all routes. Returns `SendError::Send` when
     /// all attempted senders fail to deliver.
     #[allow(clippy::too_many_lines)]
-    async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
+    async fn send(&self, email: OutboundEmail) -> Result<SentEmail, SendError> {
         let sender_domain = crate::entity::email::bare_address(&email.sender)
             .rsplit_once('@')
             .map(|(_, domain)| normalize_domain(domain))
@@ -188,7 +188,7 @@ where
     async fn try_routes(
         routes: &[&SenderRoute<T>],
         email: &OutboundEmail,
-    ) -> Option<Result<SenderName, SendError>> {
+    ) -> Option<Result<SentEmail, SendError>> {
         use tracing::Instrument as _;
 
         let mut last: Option<(SenderName, anyhow::Error)> = None;
@@ -204,9 +204,12 @@ where
                 .instrument(deliver_span.clone())
                 .await;
             match result {
-                Ok(()) => {
+                Ok(receipt) => {
                     deliver_span.record("outcome", "ok");
-                    return Some(Ok(route.name.clone()));
+                    return Some(Ok(SentEmail {
+                        sender_name: route.name.clone(),
+                        smtp_response: receipt.smtp_response,
+                    }));
                 }
                 Err(err) => {
                     deliver_span.record("outcome", "error");
@@ -241,8 +244,10 @@ mod tests {
     use crate::entity::body::{Plain, RenderedBody};
     use crate::entity::sender::{QuotaRange, SenderName, SenderQuota};
     use crate::port::clock::SystemClock;
-    use crate::port::email_sender::{EmailSender, OutboundEmail};
-    use crate::port::email_transport::{EmailTransport, TransportError, TransportErrorKind};
+    use crate::port::email_sender::{EmailSender, OutboundEmail, SentEmail};
+    use crate::port::email_transport::{
+        DeliveryReceipt, EmailTransport, TransportError, TransportErrorKind,
+    };
     use crate::port::sender_usage::{SenderStats, SenderUsage, SenderUsageError};
 
     enum FakeTransport {
@@ -252,24 +257,47 @@ mod tests {
         FailWith(TransportErrorKind, Arc<AtomicUsize>),
         /// Succeeds, counting calls.
         OkCounting(Arc<AtomicUsize>),
+        /// Records the Message-ID of each attempt, then fails transiently.
+        FailRecording(Arc<std::sync::Mutex<Vec<String>>>),
+        /// Records the Message-ID of each attempt, then succeeds with its own response.
+        OkRecording(&'static str, Arc<std::sync::Mutex<Vec<String>>>),
+    }
+
+    fn receipt() -> DeliveryReceipt {
+        DeliveryReceipt {
+            smtp_response: Some("250 2.0.0 Ok: queued".to_owned()),
+        }
     }
 
     impl EmailTransport for FakeTransport {
-        async fn deliver<'a>(&'a self, _email: &'a OutboundEmail) -> Result<(), TransportError> {
+        async fn deliver<'a>(
+            &'a self,
+            email: &'a OutboundEmail,
+        ) -> Result<DeliveryReceipt, TransportError> {
             let fail = |kind| TransportError {
                 kind,
                 source: anyhow::anyhow!("simulated failure"),
             };
             match self {
-                Self::Ok => Ok(()),
+                Self::Ok => Ok(receipt()),
                 Self::Fail => Err(fail(TransportErrorKind::Transient)),
                 Self::FailWith(kind, calls) => {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Err(fail(*kind))
                 }
+                Self::FailRecording(seen) => {
+                    seen.lock().unwrap().push(email.message_id.clone());
+                    Err(fail(TransportErrorKind::Transient))
+                }
+                Self::OkRecording(response, seen) => {
+                    seen.lock().unwrap().push(email.message_id.clone());
+                    Ok(DeliveryReceipt {
+                        smtp_response: Some((*response).to_owned()),
+                    })
+                }
                 Self::OkCounting(calls) => {
                     calls.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
+                    Ok(receipt())
                 }
             }
         }
@@ -338,6 +366,7 @@ mod tests {
             attachments: vec![],
             reply_to: vec![],
             headers: vec![],
+            message_id: "<id@example.com>".into(),
         }
     }
 
@@ -395,7 +424,55 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email()).await;
-        assert_eq!(result.unwrap().as_str(), "second");
+        assert_eq!(result.unwrap().sender_name.as_str(), "second");
+    }
+
+    #[tokio::test]
+    async fn fallback_returns_the_second_routes_response_with_the_same_message_id() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let route = |name: &str, priority, transport| SenderRoute {
+            name: SenderName::new(name),
+            priority,
+            quota: None,
+            match_sender_domain: None,
+            transport,
+        };
+        let sender = RoutedEmailSender::new(
+            vec![
+                route("first", 0, FakeTransport::FailRecording(seen.clone())),
+                route(
+                    "second",
+                    1,
+                    FakeTransport::OkRecording("250 second route accepted", seen.clone()),
+                ),
+            ],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+
+        let sent = sender.send(make_email()).await.unwrap();
+
+        assert_eq!(sent.sender_name.as_str(), "second");
+        assert_eq!(
+            sent.smtp_response.as_deref(),
+            Some("250 second route accepted")
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], seen[1]);
+    }
+
+    #[tokio::test]
+    async fn successful_send_reports_the_relay_response() {
+        let sender = RoutedEmailSender::new(
+            vec![ok_route("only", 0, None)],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+        let sent = sender.send(make_email()).await.unwrap();
+        assert_eq!(sent.smtp_response.as_deref(), Some("250 2.0.0 Ok: queued"));
     }
 
     #[tokio::test]
@@ -423,7 +500,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email()).await;
-        assert_eq!(result.unwrap().as_str(), "first");
+        assert_eq!(result.unwrap().sender_name.as_str(), "first");
     }
 
     #[tokio::test]
@@ -446,7 +523,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email()).await;
-        assert_eq!(result.unwrap().as_str(), "backup");
+        assert_eq!(result.unwrap().sender_name.as_str(), "backup");
     }
 
     #[tokio::test]
@@ -478,7 +555,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email()).await;
-        assert_eq!(result.unwrap().as_str(), "primary");
+        assert_eq!(result.unwrap().sender_name.as_str(), "primary");
     }
 
     #[tokio::test]
@@ -498,7 +575,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email()).await;
-        assert_eq!(result.unwrap().as_str(), "primary");
+        assert_eq!(result.unwrap().sender_name.as_str(), "primary");
     }
 
     #[tokio::test]
@@ -517,7 +594,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email()).await;
-        assert_eq!(result.unwrap().as_str(), "primary");
+        assert_eq!(result.unwrap().sender_name.as_str(), "primary");
     }
 
     fn make_email_from(sender: &str) -> OutboundEmail {
@@ -531,6 +608,7 @@ mod tests {
             attachments: vec![],
             reply_to: vec![],
             headers: vec![],
+            message_id: "<id@example.com>".into(),
         }
     }
 
@@ -546,7 +624,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email_from("foo@acme.com")).await;
-        assert_eq!(result.unwrap().as_str(), "transactional");
+        assert_eq!(result.unwrap().sender_name.as_str(), "transactional");
     }
 
     #[tokio::test]
@@ -561,7 +639,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email_from("Acme <foo@acme.com>")).await;
-        assert_eq!(result.unwrap().as_str(), "transactional");
+        assert_eq!(result.unwrap().sender_name.as_str(), "transactional");
     }
 
     #[tokio::test]
@@ -576,7 +654,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email_from("foo@other.com")).await;
-        assert_eq!(result.unwrap().as_str(), "catchall");
+        assert_eq!(result.unwrap().sender_name.as_str(), "catchall");
     }
 
     #[tokio::test]
@@ -591,7 +669,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email_from("foo@acme.com")).await;
-        assert_eq!(result.unwrap().as_str(), "transactional");
+        assert_eq!(result.unwrap().sender_name.as_str(), "transactional");
     }
 
     #[tokio::test]
@@ -622,7 +700,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email_from("foo@acme.com")).await;
-        assert_eq!(result.unwrap().as_str(), "catchall");
+        assert_eq!(result.unwrap().sender_name.as_str(), "catchall");
     }
 
     #[tokio::test]
@@ -637,7 +715,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email_from("foo@acme.com")).await;
-        assert_eq!(result.unwrap().as_str(), "high");
+        assert_eq!(result.unwrap().sender_name.as_str(), "high");
     }
 
     #[tokio::test]
@@ -652,7 +730,7 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email_from("foo@acme.com.")).await;
-        assert_eq!(result.unwrap().as_str(), "transactional");
+        assert_eq!(result.unwrap().sender_name.as_str(), "transactional");
     }
 
     #[test]
@@ -696,9 +774,7 @@ mod tests {
         RoutedEmailSender::new(routes, NoopSenderUsage, SystemClock).unwrap()
     }
 
-    fn send_err(
-        result: Result<SenderName, crate::port::email_sender::SendError>,
-    ) -> (String, bool) {
+    fn send_err(result: Result<SentEmail, crate::port::email_sender::SendError>) -> (String, bool) {
         match result.unwrap_err() {
             crate::port::email_sender::SendError::Send {
                 sender_name,
@@ -746,7 +822,15 @@ mod tests {
             counted_route("second", 2, FakeTransport::Ok),
         ]);
 
-        assert_eq!(sender.send(make_email()).await.unwrap().as_str(), "second");
+        assert_eq!(
+            sender
+                .send(make_email())
+                .await
+                .unwrap()
+                .sender_name
+                .as_str(),
+            "second"
+        );
     }
 
     #[tokio::test]
@@ -793,7 +877,15 @@ mod tests {
             counted_route("second", 2, FakeTransport::OkCounting(second.clone())),
         ]);
 
-        assert_eq!(sender.send(make_email()).await.unwrap().as_str(), "second");
+        assert_eq!(
+            sender
+                .send(make_email())
+                .await
+                .unwrap()
+                .sender_name
+                .as_str(),
+            "second"
+        );
         assert_eq!(second.load(Ordering::SeqCst), 1);
     }
 

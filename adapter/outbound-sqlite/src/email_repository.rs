@@ -718,6 +718,8 @@ mod tests {
                 id,
                 sender_name: SenderName::new("test"),
                 correlation_id: None,
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
             })
             .await
             .unwrap();
@@ -786,6 +788,8 @@ mod tests {
                 id: id3,
                 sender_name: SenderName::new("test"),
                 correlation_id: None,
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
             })
             .await
             .unwrap();
@@ -1239,6 +1243,8 @@ mod tests {
                 id: id3,
                 sender_name: catapulte_domain::entity::sender::SenderName::new("test"),
                 correlation_id: None,
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
             })
             .await
             .unwrap();

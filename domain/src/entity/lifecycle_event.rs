@@ -26,6 +26,9 @@ pub enum LifecycleEvent {
         id: EmailId,
         sender_name: SenderName,
         correlation_id: Option<String>,
+        /// The relay's reply to the accepted message, capped in length.
+        smtp_response: Option<String>,
+        message_id: String,
     },
     Retrying {
         id: EmailId,
@@ -114,10 +117,14 @@ impl LifecycleEvent {
             Self::Sent {
                 sender_name,
                 correlation_id,
+                smtp_response,
+                message_id,
                 ..
             } => serde_json::json!({
                 "sender_name": sender_name.as_str(),
                 "correlation_id": correlation_id,
+                "smtp_response": smtp_response,
+                "message_id": message_id,
             }),
             Self::Retrying {
                 attempt,
@@ -177,6 +184,8 @@ mod tests {
             id: EmailId::default(),
             sender_name: SenderName::new("primary"),
             correlation_id: None,
+            smtp_response: None,
+            message_id: "<test@example.com>".to_owned(),
         };
         assert_eq!(e.event_type(), "delivery.succeeded");
     }
@@ -224,6 +233,8 @@ mod tests {
                 id,
                 sender_name: SenderName::new("s"),
                 correlation_id: None,
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
             },
             LifecycleEvent::Retrying {
                 id,
@@ -276,6 +287,8 @@ mod tests {
             id,
             sender_name: SenderName::new("primary"),
             correlation_id: None,
+            smtp_response: None,
+            message_id: "<test@example.com>".to_owned(),
         };
         assert_eq!(e.sender_name().map(SenderName::as_str), Some("primary"));
     }
@@ -332,7 +345,9 @@ mod tests {
             LifecycleEvent::Sent {
                 id,
                 sender_name: SenderName::new("s"),
-                correlation_id: None
+                correlation_id: None,
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
             }
             .error_class()
             .is_none()
@@ -391,8 +406,15 @@ mod tests {
             id,
             sender_name: SenderName::new("primary"),
             correlation_id: None,
+            smtp_response: Some("250 2.0.0 Ok: queued as 4ABC".to_owned()),
+            message_id: "<test@example.com>".to_owned(),
         };
-        let expected = serde_json::json!({ "sender_name": "primary", "correlation_id": null });
+        let expected = serde_json::json!({
+            "sender_name": "primary",
+            "correlation_id": null,
+            "smtp_response": "250 2.0.0 Ok: queued as 4ABC",
+            "message_id": "<test@example.com>",
+        });
         assert_eq!(e.payload(), expected);
     }
 

@@ -496,6 +496,7 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "idna",
  "serde_json",
  "thiserror",
  "tokio",

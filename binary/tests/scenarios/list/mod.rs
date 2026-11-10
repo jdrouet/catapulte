@@ -1,4 +1,5 @@
 pub mod batch_submit_delivers_multiple_emails;
+pub mod delivery_receipt;
 pub mod display_name_sender;
 pub mod idempotency;
 pub mod inline_attachment_is_delivered;

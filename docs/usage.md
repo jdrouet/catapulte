@@ -280,7 +280,12 @@ curl "http://localhost:3000/emails/018f4e3c-2d1a-7b3c-8f00-1234567890ab/events"
       "id": "018f...",
       "email_id": "018f4e3c-2d1a-7b3c-8f00-1234567890ab",
       "event_type": "delivery.succeeded",
-      "payload": { "sender_name": "primary", "correlation_id": "order-12345" },
+      "payload": {
+        "sender_name": "primary",
+        "correlation_id": "order-12345",
+        "smtp_response": "250 2.0.0 Ok: queued as 4ABC12D3",
+        "message_id": "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>"
+      },
       "sender_name": "primary",
       "error_class": null,
       "created_at_ms": 1700000000050
@@ -300,7 +305,12 @@ each event as JSON:
 {
   "event_type": "delivery.succeeded",
   "email_id": "018f4e3c-2d1a-7b3c-8f00-aabbccddeeff",
-  "payload": { "sender_name": "primary", "correlation_id": "order-12345" }
+  "payload": {
+    "sender_name": "primary",
+    "correlation_id": "order-12345",
+    "smtp_response": "250 2.0.0 Ok: queued as 4ABC12D3",
+    "message_id": "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>"
+  }
 }
 ```
 
@@ -308,9 +318,18 @@ each event as JSON:
 |--------------|---------|------------------|
 | `queued` | accepted and enqueued | `correlation_id` |
 | `sending` | a delivery attempt is starting | `attempt`, `correlation_id` |
-| `delivery.succeeded` | accepted by the upstream SMTP server | `sender_name`, `correlation_id` |
+| `delivery.succeeded` | accepted by the upstream SMTP server | `sender_name`, `correlation_id`, `smtp_response`, `message_id` |
 | `retrying` | attempt failed, will retry | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
 | `delivery.failed` | retries exhausted | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
+
+On `delivery.succeeded`, `smtp_response` is the relay's reply as `"{code} {text}"`
+(for example `250 2.0.0 Ok: queued as 4ABC12D3`), cut to at most 256 characters (the
+ellipsis included), and
+`message_id` is the `Message-ID` header Catapulte set, `<{email id}@{sender domain}>`
+with the domain in lower-case ASCII (an internationalised domain is written in its
+punycode form). Use them to find the message in the relay's logs or a
+later bounce. The `Message-ID` depends only on the email id and sender, so retries and
+duplicate deliveries of the same email under at-least-once delivery carry the same value.
 
 `attempt` counts from 1; `sender_name`/`correlation_id` may be null. `error_class`
 is present on `retrying` / `delivery.failed` only, and is one of `template_resolve`,

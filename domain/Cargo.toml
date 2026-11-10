@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 bytes = "1"
+idna = "1"
 serde_json = { workspace = true }
 thiserror = { version = "2.0" }
 tokio = { workspace = true, features = ["io-util"] }
