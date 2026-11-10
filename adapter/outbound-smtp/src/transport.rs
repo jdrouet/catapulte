@@ -7,7 +7,7 @@ use catapulte_domain::port::email_transport::EmailTransport;
 use lettre::message::header::{ContentDisposition, ContentType};
 use lettre::message::{Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
-use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SmtpTls {
@@ -49,10 +49,18 @@ fn parse_tls(raw: Option<String>, key: &str) -> anyhow::Result<SmtpTls> {
     }
 }
 
-fn parse_mailbox(addr: &str) -> anyhow::Result<Mailbox> {
-    addr.parse::<Address>()
-        .with_context(|| format!("invalid address: {addr}"))
-        .map(|a| Mailbox::new(None, a))
+/// Must stay identical to the HTTP intake's `parse_mailbox`, so delivery parses exactly
+/// what intake accepted.
+///
+/// # Errors
+///
+/// Returns an error if `addr` is neither a mailbox nor a bare address.
+pub fn parse_mailbox(addr: &str) -> anyhow::Result<Mailbox> {
+    addr.parse::<Mailbox>().or_else(|_| {
+        addr.parse::<lettre::Address>()
+            .map(|a| Mailbox::new(None, a))
+            .with_context(|| format!("invalid address: {addr}"))
+    })
 }
 
 fn add_recipient(
@@ -276,8 +284,7 @@ mod tests {
     use catapulte_domain::entity::body::{Plain, RenderedBody};
     use lettre::Address;
 
-    use super::{SmtpConfig, SmtpTls, finalize_message, parse_port, parse_tls};
-    use crate::transport::parse_mailbox;
+    use super::{SmtpConfig, SmtpTls, finalize_message, parse_mailbox, parse_port, parse_tls};
 
     fn make_lookup(
         vars: HashMap<&'static str, &'static str>,
@@ -443,5 +450,33 @@ mod tests {
     #[test]
     fn parse_mailbox_invalid_address() {
         assert!(parse_mailbox("not-an-email").is_err());
+    }
+
+    #[test]
+    fn display_name_mailbox_is_kept_and_rfc2047_encoded_in_from() {
+        let mailbox = parse_mailbox("Café Ünïcode <a@b.com>").unwrap();
+        let msg = finalize_message(
+            lettre::Message::builder()
+                .from(mailbox)
+                .to("to@example.com".parse::<Address>().unwrap().into()),
+            None,
+            &plain_text_body(),
+            &[],
+        )
+        .unwrap();
+
+        let raw = String::from_utf8(msg.formatted()).unwrap();
+        let from = raw.lines().find(|l| l.starts_with("From:")).unwrap();
+        assert!(
+            from.contains("=?utf-8?"),
+            "From should be RFC 2047 encoded: {from}"
+        );
+        assert!(from.contains("<a@b.com>"), "{from}");
+        assert!(from.is_ascii(), "{from}");
+    }
+
+    #[test]
+    fn parse_mailbox_rejects_unparseable_value() {
+        assert!(parse_mailbox("not an address").is_err());
     }
 }

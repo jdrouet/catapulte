@@ -126,7 +126,7 @@ impl EmailRepository for SqliteAdapter {
         }
         if let Some(recipient) = params.recipient {
             qb.push(
-                " AND EXISTS (SELECT 1 FROM json_each(recipients) WHERE json_extract(json_each.value, '$.address') LIKE '%' || ",
+                " AND EXISTS (SELECT 1 FROM json_each(recipients) WHERE COALESCE(json_extract(json_each.value, '$.bare'), json_extract(json_each.value, '$.address')) LIKE '%' || ",
             );
             qb.push_bind(recipient);
             qb.push(" || '%')");
@@ -601,6 +601,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(emails_bob.len(), 0);
+    }
+
+    async fn recipient_filter_matches(adapter: &crate::SqliteAdapter, needle: &str) -> usize {
+        adapter
+            .list_emails(ListEmailsParams {
+                recipient: Some(needle.into()),
+                ..default_list_params()
+            })
+            .await
+            .unwrap()
+            .len()
+    }
+
+    #[tokio::test]
+    async fn recipient_filter_matches_bare_address_not_display_name() {
+        let adapter = fresh_adapter().await;
+        let mut envelope = sample_envelope();
+        envelope.recipients = vec![(RecipientKind::To, "Acme <Bob@Example.com>".into())];
+        adapter.save(EmailId::default(), &envelope).await.unwrap();
+
+        assert_eq!(recipient_filter_matches(&adapter, "bob@example").await, 1);
+        assert_eq!(recipient_filter_matches(&adapter, "Acme").await, 0);
+    }
+
+    #[tokio::test]
+    async fn recipient_filter_handles_bare_quoted_address() {
+        let adapter = fresh_adapter().await;
+        let mut envelope = sample_envelope();
+        envelope.recipients = vec![(RecipientKind::To, "\"a b\"@example.com".into())];
+        adapter.save(EmailId::default(), &envelope).await.unwrap();
+
+        assert_eq!(recipient_filter_matches(&adapter, "a b").await, 1);
+    }
+
+    #[tokio::test]
+    async fn recipient_filter_still_matches_legacy_rows_without_bare() {
+        let adapter = fresh_adapter().await;
+        let env = sample_envelope();
+        let body_dto = crate::dto::BodySourceDto::from(&env.body);
+        sqlx::query(
+            "INSERT INTO emails (id, sender, recipients, body, variables) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::now_v7().as_bytes().to_vec())
+        .bind(&env.sender)
+        .bind(r#"[{"kind":"to","address":"legacy@example.com"}]"#)
+        .bind(sqlx::types::Json(&body_dto))
+        .bind(sqlx::types::Json(&env.variables))
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(recipient_filter_matches(&adapter, "legacy").await, 1);
+        assert_eq!(recipient_filter_matches(&adapter, "nobody").await, 0);
     }
 
     #[tokio::test]
