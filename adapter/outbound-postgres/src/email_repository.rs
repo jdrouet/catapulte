@@ -117,7 +117,7 @@ impl EmailRepository for PostgresAdapter {
         }
         if let Some(recipient) = params.recipient {
             qb.push(
-                " AND EXISTS (SELECT 1 FROM jsonb_array_elements(recipients) r WHERE r->>'address' ILIKE '%' || ",
+                " AND EXISTS (SELECT 1 FROM jsonb_array_elements(recipients) r WHERE COALESCE(r->>'bare', r->>'address') ILIKE '%' || ",
             );
             qb.push_bind(recipient);
             qb.push(" || '%')");
@@ -593,6 +593,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(emails_bob.len(), 0);
+    }
+
+    async fn recipient_filter_matches(adapter: &PostgresAdapter, needle: &str) -> usize {
+        adapter
+            .list_emails(ListEmailsParams {
+                recipient: Some(needle.into()),
+                ..default_list_params()
+            })
+            .await
+            .unwrap()
+            .len()
+    }
+
+    #[tokio::test]
+    async fn recipient_filter_matches_bare_address_not_display_name() {
+        let (adapter, _container) = fresh_adapter().await;
+        let mut envelope = sample_envelope();
+        envelope.recipients = vec![(RecipientKind::To, "Acme <Bob@Example.com>".into())];
+        adapter.save(EmailId::default(), &envelope).await.unwrap();
+
+        assert_eq!(recipient_filter_matches(&adapter, "bob@example").await, 1);
+        assert_eq!(recipient_filter_matches(&adapter, "Acme").await, 0);
+    }
+
+    #[tokio::test]
+    async fn recipient_filter_still_matches_legacy_rows_without_bare() {
+        let (adapter, _container) = fresh_adapter().await;
+        sqlx::query(
+            "INSERT INTO emails (id, sender, recipients, body, variables) \
+             VALUES ($1, 'sender@example.com', '[{\"kind\":\"to\",\"address\":\"legacy@example.com\"}]'::jsonb, \
+             '{\"kind\":\"plain\",\"text\":\"hi\",\"html\":null}'::jsonb, '{}'::jsonb)",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(recipient_filter_matches(&adapter, "legacy").await, 1);
+        assert_eq!(recipient_filter_matches(&adapter, "nobody").await, 0);
     }
 
     #[tokio::test]

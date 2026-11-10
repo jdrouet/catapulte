@@ -99,8 +99,7 @@ where
     /// all attempted senders fail to deliver.
     #[allow(clippy::too_many_lines)]
     async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
-        let sender_domain = email
-            .sender
+        let sender_domain = crate::entity::email::bare_address(&email.sender)
             .rsplit_once('@')
             .map(|(_, domain)| normalize_domain(domain))
             .unwrap_or_default();
@@ -525,6 +524,21 @@ mod tests {
         )
         .unwrap();
         let result = sender.send(make_email_from("foo@acme.com")).await;
+        assert_eq!(result.unwrap().as_str(), "transactional");
+    }
+
+    #[tokio::test]
+    async fn display_name_sender_matches_its_domain_route() {
+        let sender = RoutedEmailSender::new(
+            vec![
+                ok_route_with_domain("transactional", 1, "acme.com"),
+                ok_route("catchall", 2, None),
+            ],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+        let result = sender.send(make_email_from("Acme <foo@acme.com>")).await;
         assert_eq!(result.unwrap().as_str(), "transactional");
     }
 

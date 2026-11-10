@@ -42,9 +42,17 @@ The id is a UUIDv7. The email is queued; delivery happens asynchronously (watch
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `sender` | string | a valid email address |
-| `recipients` | array | non-empty; each `{ "kind": "to" \| "cc" \| "bcc", "address": "<email>" }` |
+| `sender` | string or object | `"noreply@example.com"`, `"Acme <noreply@example.com>"` or `{ "name": "Acme", "address": "noreply@example.com" }` |
+| `recipients` | array | non-empty; each `{ "kind": "to" \| "cc" \| "bcc", "address": "<email>", "name": "<optional display name>" }`; `address` may be `Name <email>` only when `name` is not set |
 | `body` | object | a [body variant](#body-variants) (tagged by `kind`) |
+
+Addresses accept a display name, which is kept in the `From:` and recipient headers
+and RFC 2047-encoded when it is not ASCII. Use the structured form when a name
+contains commas or quotes. SMTP routing, sender-domain matching and the `recipient`
+filter use only the bare address. `GET /emails` returns `sender` and recipient
+addresses in canonical form (`Name <email>` when a name was given). A value that cannot be parsed as a
+mailbox is rejected with `400`, as are display names with control characters and
+addresses with an IP-literal domain or a quoted local part, which the SMTP library cannot put in message headers.
 
 ### Optional fields
 
@@ -172,7 +180,7 @@ with `500`. Batch items use the inline/remote attachment form (no multipart).
 | Query param | Notes |
 |-------------|-------|
 | `status` | `queued` \| `sent` \| `failed` |
-| `recipient` | filter by recipient address |
+| `recipient` | substring filter on the recipient's bare email address; display names are not matched |
 | `template` | filter by named MJML template name; only matches emails submitted with `kind: mjml_named` |
 | `id` | exact email id (UUID) |
 | `after_ms`, `before_ms` | created-at bounds, Unix epoch ms |
