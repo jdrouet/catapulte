@@ -4,7 +4,7 @@ use anyhow::Context;
 use async_nats::HeaderMap;
 use async_nats::jetstream;
 use async_nats::jetstream::consumer::PullConsumer;
-use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
+use catapulte_domain::use_case::submit_email::{SubmitEmailError, SubmitEmailUseCase};
 use catapulte_inbound_http::dto::SubmitEmailRequest;
 use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -215,12 +215,30 @@ impl InboundNatsConfig {
             .await
             .context("creating NATS consumer")?;
 
-        Ok(InboundNatsServer { consumer })
+        Ok(InboundNatsServer {
+            consumer,
+            backoff: self
+                .backoff_secs
+                .iter()
+                .map(|&s| Duration::from_secs(s))
+                .collect(),
+        })
     }
 }
 
 pub struct InboundNatsServer {
     consumer: PullConsumer,
+    backoff: Vec<Duration>,
+}
+
+/// Backoff step for the given 1-based delivery attempt, clamped to the last step.
+fn nak_delay(backoff: &[Duration], delivered: u64) -> Duration {
+    let index = usize::try_from(delivered.saturating_sub(1)).unwrap_or(usize::MAX);
+    backoff
+        .get(index)
+        .or_else(|| backoff.last())
+        .copied()
+        .unwrap_or_default()
 }
 
 impl InboundNatsServer {
@@ -297,6 +315,16 @@ impl InboundNatsServer {
                     tracing::error!(error = %e, "inbound NATS: failed to ack after submit");
                 }
             }
+            Err(e @ SubmitEmailError::ReservationIncomplete { .. }) => {
+                // A plain NAK redelivers at once and ignores the consumer backoff.
+                let delay = msg.info().map_or(Duration::ZERO, |info| {
+                    nak_delay(&self.backoff, info.delivered.unsigned_abs())
+                });
+                tracing::warn!(error = %e, ?delay, "inbound NATS: submission in progress, nacking with delay");
+                if let Err(nack_err) = msg.ack_with(jetstream::AckKind::Nak(Some(delay))).await {
+                    tracing::error!(error = %nack_err, "inbound NATS: failed to nack incomplete submission");
+                }
+            }
             Err(e) if e.is_transient() => {
                 tracing::warn!(error = %e, "inbound NATS: submit failed, nacking for retry");
                 if let Err(nack_err) = msg.ack_with(jetstream::AckKind::Nak(None)).await {
@@ -310,6 +338,29 @@ impl InboundNatsServer {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod nak_delay_tests {
+    use std::time::Duration;
+
+    use super::nak_delay;
+
+    #[test]
+    fn follows_the_backoff_steps_then_clamps_to_the_last() {
+        let backoff = [1, 5, 30].map(Duration::from_secs);
+        assert_eq!(nak_delay(&backoff, 1), Duration::from_secs(1));
+        assert_eq!(nak_delay(&backoff, 2), Duration::from_secs(5));
+        assert_eq!(nak_delay(&backoff, 3), Duration::from_secs(30));
+        assert_eq!(nak_delay(&backoff, 9), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn delivery_zero_uses_the_first_step_and_empty_backoff_is_zero() {
+        let backoff = [Duration::from_secs(2)];
+        assert_eq!(nak_delay(&backoff, 0), Duration::from_secs(2));
+        assert_eq!(nak_delay(&[], 3), Duration::ZERO);
     }
 }
 

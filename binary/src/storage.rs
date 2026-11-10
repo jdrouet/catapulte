@@ -4,7 +4,7 @@ use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
 use catapulte_domain::port::email_repository::{
-    EmailRecord, EmailRepository, EmailRepositoryError, ListEmailsParams, SaveResult,
+    EmailRecord, EmailRepository, EmailRepositoryError, EnqueueState, ListEmailsParams, SaveResult,
 };
 use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
 use catapulte_domain::port::event_repository::{
@@ -50,6 +50,17 @@ impl EmailRepository for StorageAdapter {
         match self {
             Self::Sqlite(a) => a.set_attachments(id, attachments).await,
             Self::Postgres(a) => a.set_attachments(id, attachments).await,
+        }
+    }
+
+    async fn set_enqueue_state(
+        &self,
+        id: EmailId,
+        state: EnqueueState,
+    ) -> Result<(), EmailRepositoryError> {
+        match self {
+            Self::Sqlite(a) => a.set_enqueue_state(id, state).await,
+            Self::Postgres(a) => a.set_enqueue_state(id, state).await,
         }
     }
 

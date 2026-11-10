@@ -32,7 +32,7 @@ fn parse_scalars(
     Ok((idempotency_key, subject, sender))
 }
 
-fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<Envelope> {
+pub(crate) fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<Envelope> {
     use sqlx::Row;
     let body_deser: sqlx::types::Json<EnvelopeBodyDtoDeser> =
         row.try_get("body").context("reading body")?;

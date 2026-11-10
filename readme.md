@@ -173,6 +173,8 @@ send on it fails and is retried through the normal queue retry and alternate-sen
 | `CATAPULTE_QUEUE_BACKEND` | `storage`, `memory`, or `nats` | `storage` |
 
 #### NATS Queue (if backend is `nats`)
+Enqueue waits for the JetStream publish acknowledgement before it succeeds.
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CATAPULTE_QUEUE_URL` | **(Required)** NATS server URL | - |
@@ -183,11 +185,44 @@ send on it fails and is retried through the normal queue retry and alternate-sen
 | `CATAPULTE_QUEUE_MAX_DELIVER` | Maximum delivery attempts | `3` |
 | `CATAPULTE_QUEUE_BACKOFF` | Comma-separated retry backoff steps in seconds | `30,60,120` |
 
+##### Delivery model and recovery
+
+Delivery is at least once. Each publish carries a `Nats-Msg-Id` header equal to the email id, so JetStream drops a republish of the same email inside the stream's duplicate window (2 minutes by default). Outside that window a recovery can deliver the message twice. Nothing here provides exactly-once delivery.
+
+When the publish ack is lost or times out, Catapulte cannot tell whether the stream stored the message. It keeps the row (`enqueue_state = 'publishable'`) and the attachment blobs, and the submit fails with `500`. A retry with the same idempotency key publishes the stored envelope again. Without an idempotency key there is nothing to match, so the retry creates a new email. Use idempotency keys for NATS submissions.
+
+A submission that never finished (still in progress, or its cleanup failed) stays in `enqueue_state = 'reserved'`. A retry with its idempotency key gets `409` until an operator removes the row. There is no automatic expiry for `publishable` or `reserved` rows.
+
+To list rows that are old and show no worker activity, run the query below (Postgres: replace the time test with `e.created_at < (EXTRACT(EPOCH FROM NOW()) - 3600) * 1000`):
+
+```sql
+SELECT e.id, e.idempotency_key, e.enqueue_state
+FROM emails e
+WHERE e.enqueue_state IN ('publishable', 'reserved')
+  AND e.created_at_ms < (unixepoch() - 3600) * 1000
+  AND NOT EXISTS (
+    SELECT 1 FROM lifecycle_events le
+    WHERE le.email_id = e.id
+      AND le.event_type IN ('sending', 'retrying', 'delivery.succeeded', 'delivery.failed')
+  );
+```
+
+Clean up a `publishable` or `reserved` row only in this order:
+
+1. Quiesce. Stop the Catapulte instances, or at least stop submit traffic, and let the workers drain.
+2. Run `nats stream info <stream>`. Delete only when it reports `Messages: 0`. The stream uses work-queue retention, so acknowledged messages are removed and an empty stream cannot hold a message for the row. If the stream is not empty, do not delete: wait for it to drain, or leave the rows. Listing or scanning messages is not a safe substitute, because it cannot prove that a message for the row is absent.
+3. Only then delete the row. The attachment garbage collector removes the blobs of deleted rows.
+
+Apply the same rule to a `reserved` row: quiesce, delete only when the stream reports `Messages: 0`, and otherwise leave it.
+
 ### Worker
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CATAPULTE_WORKER_CONCURRENCY` | Maximum number of emails the worker processes concurrently | `1` |
+| `CATAPULTE_MAX_MESSAGE_BYTES` | Maximum size of an email on the wire (also used for the early estimate at submit); must be a positive integer | `26214400` (25 MiB) |
+
+**Memory.** A worker holds the resolved attachment bytes, the copy inside the MIME part, the encoded message and its formatted wire bytes, so an email near the limit needs roughly `3.5 × CATAPULTE_MAX_MESSAGE_BYTES` of memory in the worst case, and the worker needs about `CATAPULTE_WORKER_CONCURRENCY × 3.5 × CATAPULTE_MAX_MESSAGE_BYTES` (about 88 MiB per concurrent email with the default). This is an approximation, not a measured bound. Set the limit at or below your relay's own limit, minus any headers the relay adds.
 
 **Choosing a safe concurrency value.** Every in-flight send touches both the DB (event publish, ack/nack, `set_attachments`) and an SMTP connection, so the practical ceiling is `min(SMTP pool size = 10, CATAPULTE_POSTGRES_MAX_CONNECTIONS)` with headroom left for the HTTP submit path and background GC. A formula like `concurrency = pool_size - 2` is a reasonable starting point.
 

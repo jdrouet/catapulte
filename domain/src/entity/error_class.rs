@@ -9,6 +9,7 @@ pub enum ErrorClass {
     TemplateRender,
     Attachment,
     Delivery,
+    Rejected,
     Routing,
 }
 
@@ -21,6 +22,7 @@ impl ErrorClass {
             Self::TemplateRender => "template_render",
             Self::Attachment => "attachment",
             Self::Delivery => "delivery",
+            Self::Rejected => "rejected",
             Self::Routing => "routing",
         }
     }
@@ -42,6 +44,7 @@ impl FromStr for ErrorClass {
             "template_render" => Ok(Self::TemplateRender),
             "attachment" => Ok(Self::Attachment),
             "delivery" => Ok(Self::Delivery),
+            "rejected" => Ok(Self::Rejected),
             "routing" => Ok(Self::Routing),
             _ => Err(UnknownErrorClass {
                 value: s.to_owned(),
@@ -55,6 +58,13 @@ mod tests {
     use std::str::FromStr;
 
     use super::ErrorClass;
+
+    #[test]
+    fn round_trip_rejected() {
+        let ec = ErrorClass::Rejected;
+        assert_eq!(ec.as_str(), "rejected");
+        assert_eq!(ErrorClass::from_str(ec.as_str()).unwrap(), ec);
+    }
 
     #[test]
     fn round_trip_template_resolve() {

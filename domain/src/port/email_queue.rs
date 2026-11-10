@@ -66,8 +66,15 @@ pub struct DequeuedEmail {
 
 #[derive(Debug, Error)]
 pub enum EmailQueueError {
+    /// Definite failure: the message was not queued.
     #[error("email queue error")]
     Storage {
+        #[source]
+        source: anyhow::Error,
+    },
+    /// The outcome is unknown: the message may have been queued.
+    #[error("email queue outcome uncertain")]
+    Uncertain {
         #[source]
         source: anyhow::Error,
     },
@@ -76,7 +83,8 @@ pub enum EmailQueueError {
 pub trait EmailQueue: Send + Sync + 'static {
     /// # Errors
     ///
-    /// Returns `EmailQueueError::Storage` when the enqueue operation fails.
+    /// Returns `EmailQueueError::Storage` when the message was definitely not
+    /// queued, or `EmailQueueError::Uncertain` when it may have been.
     fn enqueue(
         &self,
         id: EmailId,

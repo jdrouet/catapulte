@@ -21,7 +21,7 @@ fn now_ms() -> i64 {
     .unwrap_or(i64::MAX)
 }
 
-fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Envelope> {
+pub(crate) fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Envelope> {
     use sqlx::Row;
     let body_deser: sqlx::types::Json<EnvelopeBodyDtoDeser> =
         row.try_get("body").context("reading body")?;

@@ -37,6 +37,7 @@ struct SingleSenderConfig {
 ///     "weekly", "monthly")
 pub struct MultiSenderConfig {
     senders: Vec<SingleSenderConfig>,
+    max_message_bytes: Option<u64>,
 }
 
 impl MultiSenderConfig {
@@ -52,13 +53,24 @@ impl MultiSenderConfig {
                 quota: None,
                 match_sender_domain: None,
             }],
+            max_message_bytes: None,
         }
     }
 
     /// Creates an empty config (use with `with_sender` to add entries).
     #[must_use]
     pub fn empty() -> Self {
-        Self { senders: vec![] }
+        Self {
+            senders: vec![],
+            max_message_bytes: None,
+        }
+    }
+
+    /// Caps the rendered size of messages sent by every transport built from this config.
+    #[must_use]
+    pub fn with_max_message_bytes(mut self, max: u64) -> Self {
+        self.max_message_bytes = Some(max);
+        self
     }
 
     /// Adds a named sender entry to this config (sorted by priority at build time).
@@ -148,17 +160,24 @@ impl MultiSenderConfig {
 
         senders.sort_by_key(|s| s.priority);
 
-        Ok(Self { senders })
+        Ok(Self {
+            senders,
+            max_message_bytes: None,
+        })
     }
 
     /// # Errors
     ///
     /// Returns an error if any SMTP transport cannot be constructed.
     pub fn build(self) -> anyhow::Result<Vec<SmtpTransportEntry>> {
+        let max_message_bytes = self.max_message_bytes;
         self.senders
             .into_iter()
             .map(|cfg| {
-                let transport = cfg.smtp.build()?;
+                let mut transport = cfg.smtp.build()?;
+                if let Some(max) = max_message_bytes {
+                    transport = transport.with_max_message_bytes(max);
+                }
                 Ok(SmtpTransportEntry {
                     name: cfg.name,
                     priority: cfg.priority,

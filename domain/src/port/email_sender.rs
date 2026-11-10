@@ -6,9 +6,11 @@ use crate::entity::sender::SenderName;
 
 #[derive(Debug, Error)]
 pub enum SendError {
-    #[error("email send failed")]
+    #[error("email send failed: {source:#}")]
     Send {
         sender_name: SenderName,
+        /// Terminal message-level rejection; never set for route-level failures.
+        permanent: bool,
         #[source]
         source: anyhow::Error,
     },
@@ -28,7 +30,7 @@ impl SendError {
     #[must_use]
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Send { .. } => true,
+            Self::Send { permanent, .. } => !permanent,
             Self::NoMatchingRoute { .. } => false,
         }
     }
