@@ -166,6 +166,54 @@ in-flight sending today that would make a larger pool useful); the knobs will ar
 intra-worker concurrency. If a pooled connection was dropped by the server while idle, the next
 send on it fails and is retried through the normal queue retry and alternate-sender fallback.
 
+#### DKIM signing
+
+Catapulte signs a message when a key is configured for the domain of its sender address.
+Set `CATAPULTE_DKIM_DOMAINS` to a comma-separated list of names, then for each `NAME`:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CATAPULTE_DKIM_{NAME}_DOMAIN` | **(Required)** signing domain (`d=`) | - |
+| `CATAPULTE_DKIM_{NAME}_SELECTOR` | **(Required)** selector (`s=`) | - |
+| `CATAPULTE_DKIM_{NAME}_PRIVATE_KEY_FILE` | **(Required)** path to the key file, read and trimmed at startup | - |
+| `CATAPULTE_DKIM_{NAME}_ALGORITHM` | `rsa` or `ed25519` | `rsa` |
+
+```bash
+CATAPULTE_DKIM_DOMAINS=main
+CATAPULTE_DKIM_MAIN_DOMAIN=example.com
+CATAPULTE_DKIM_MAIN_SELECTOR=s2026
+CATAPULTE_DKIM_MAIN_PRIVATE_KEY_FILE=/run/secrets/dkim.key
+CATAPULTE_DKIM_MAIN_ALGORITHM=ed25519
+```
+
+A sender uses the entry whose domain equals its domain or is its longest parent domain
+(`news.example.com` uses `example.com`; `badexample.com` does not). Matching ignores case. A
+key that cannot be loaded stops startup. Signing uses relaxed/relaxed canonicalization over
+`From`, `Subject`, `To`, `Date`, `Message-ID`, `Reply-To`, `List-Unsubscribe` and
+`List-Unsubscribe-Post` (those present), and happens before the size limit check.
+Domains are lowercased and converted to punycode, in the configuration and for each sender. A
+parent-domain match (`d=example.com` for `news.example.com`) satisfies only relaxed DMARC
+alignment; `adkim=s` needs an exact match. Startup logs the configured DKIM domains, never keys.
+
+Key formats:
+
+- **Ed25519 (recommended):** a file holding the base64 of the raw 32-byte seed, not PEM.
+  `openssl rand -base64 32 > dkim.key` creates one; the public key for DNS is the base64 of the
+  matching 32-byte public key.
+- **RSA:** a PKCS#1 PEM (`-----BEGIN RSA PRIVATE KEY-----`). A PKCS#8 key
+  (`-----BEGIN PRIVATE KEY-----`) is rejected; convert it with
+  `openssl rsa -traditional -in key.pem -out key-pkcs1.pem`.
+
+Publish the public key as a TXT record at `<selector>._domainkey.<domain>`:
+
+```
+s2026._domainkey.example.com. TXT "v=DKIM1; k=ed25519; p=<base64 public key>"
+s2026._domainkey.example.com. TXT "v=DKIM1; k=rsa; p=<base64 DER public key>"
+```
+
+Prefer Ed25519: the `rsa` crate used for RSA signing carries RUSTSEC-2023-0071 (a timing
+side channel in private-key operations). Some receivers do not yet verify Ed25519 signatures.
+
 ### Email Queue
 
 | Variable | Description | Default |

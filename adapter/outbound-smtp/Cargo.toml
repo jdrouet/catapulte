@@ -13,7 +13,10 @@ workspace = true
 anyhow = { workspace = true }
 bytes = "1"
 catapulte-domain = { path = "../../domain" }
+idna = "1"
 lettre = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true }

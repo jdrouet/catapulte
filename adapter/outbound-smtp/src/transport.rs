@@ -3,6 +3,8 @@ use catapulte_domain::entity::attachment::ResolvedAttachment;
 use catapulte_domain::entity::body::RenderedBody;
 use catapulte_domain::entity::email::RecipientKind;
 use catapulte_domain::entity::envelope::Unsubscribe;
+
+use crate::dkim::{DkimSigners, normalize_domain};
 use catapulte_domain::port::email_sender::OutboundEmail;
 use catapulte_domain::port::email_transport::{
     DeliveryReceipt, EmailTransport, TransportError, TransportErrorKind,
@@ -320,6 +322,7 @@ impl SmtpConfig {
         Ok(SmtpTransport {
             transport,
             max_message_bytes: None,
+            dkim: std::sync::Arc::new(DkimSigners::empty()),
         })
     }
 }
@@ -327,6 +330,7 @@ impl SmtpConfig {
 pub struct SmtpTransport {
     transport: AsyncSmtpTransport<Tokio1Executor>,
     max_message_bytes: Option<u64>,
+    dkim: std::sync::Arc<DkimSigners>,
 }
 
 /// Message-level rejections (enhanced codes `5.1.x`, `5.2.x`, `5.6.x`) cannot succeed on any
@@ -401,9 +405,17 @@ impl SmtpTransport {
         self
     }
 
+    /// Signs messages whose sender domain has a configured DKIM key.
+    #[must_use]
+    pub fn with_dkim(mut self, dkim: std::sync::Arc<DkimSigners>) -> Self {
+        self.dkim = dkim;
+        self
+    }
+
     /// Builds the message and its wire bytes, enforcing the size limit on the final bytes.
     fn prepare(&self, email: &OutboundEmail) -> Result<(Message, Vec<u8>), TransportError> {
         let from = parse_mailbox(&email.sender).map_err(message_error)?;
+        let sender_domain = normalize_domain(from.email.domain());
         let builder = Message::builder()
             .from(from)
             .message_id(Some(email.message_id.clone()));
@@ -417,13 +429,22 @@ impl SmtpTransport {
                 )
             })
             .map_err(message_error)?;
-        let message = finalize_message(
+        let mut message = finalize_message(
             builder,
             email.subject.as_deref(),
             &email.body,
             &email.attachments,
         )
         .map_err(message_error)?;
+        // Signed before the size and header-line checks so they see the final bytes.
+        match &sender_domain {
+            Ok(domain) => {
+                if let Some(config) = self.dkim.for_sender(domain) {
+                    message.sign(config);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "sender domain not normalizable; DKIM skipped"),
+        }
         let raw = message.formatted();
         check_header_line_lengths(&raw).map_err(message_error)?;
         if self
@@ -1058,6 +1079,87 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("List-Unsubscribe-Post: List-Unsubscribe=One-Click"));
+    }
+
+    fn dkim_transport(max: Option<u64>) -> super::SmtpTransport {
+        let signers = std::sync::Arc::new(crate::dkim::tests::signers(&["example.com"]));
+        local_transport(max).with_dkim(signers)
+    }
+
+    #[tokio::test]
+    async fn message_from_a_configured_domain_is_dkim_signed() {
+        let (_, raw) = dkim_transport(None).prepare(&plain_email()).unwrap();
+        let text = String::from_utf8_lossy(&raw);
+
+        assert!(text.contains("\r\nDKIM-Signature: "), "{text}");
+        let signature = text.split("\r\n\r\n").next().unwrap().replace("\r\n ", " ");
+        for tag in [
+            "d=example.com",
+            "s=s1",
+            "a=ed25519-sha256",
+            "c=relaxed/relaxed",
+        ] {
+            assert!(signature.contains(tag), "{tag} missing in {signature}");
+        }
+        assert!(
+            signature.contains("h=from:subject:to:date:message-id"),
+            "{signature}"
+        );
+    }
+
+    #[tokio::test]
+    async fn idn_sender_is_signed_with_the_punycode_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("k");
+        std::fs::write(&path, crate::dkim::tests::TEST_ED25519_SEED).unwrap();
+        let vars = std::collections::HashMap::from([
+            ("CATAPULTE_DKIM_DOMAINS", "idn".to_owned()),
+            ("CATAPULTE_DKIM_IDN_DOMAIN", "bücher.de".to_owned()),
+            ("CATAPULTE_DKIM_IDN_SELECTOR", "s1".to_owned()),
+            (
+                "CATAPULTE_DKIM_IDN_PRIVATE_KEY_FILE",
+                path.to_string_lossy().into_owned(),
+            ),
+            ("CATAPULTE_DKIM_IDN_ALGORITHM", "ed25519".to_owned()),
+        ]);
+        let signers = crate::dkim::DkimSigners::from_lookup(|k| {
+            vars.get(k).cloned().ok_or(std::env::VarError::NotPresent)
+        })
+        .unwrap();
+        let transport = local_transport(None).with_dkim(std::sync::Arc::new(signers));
+        let mut email = plain_email();
+        email.sender = "from@Bücher.de".into();
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let text = String::from_utf8_lossy(&raw).replace("\r\n ", " ");
+        assert!(text.contains("d=xn--bcher-kva.de"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn message_from_an_unconfigured_domain_is_not_signed() {
+        let mut email = plain_email();
+        email.sender = "from@badexample.com".into();
+        let (_, raw) = dkim_transport(None).prepare(&email).unwrap();
+        assert!(!String::from_utf8_lossy(&raw).contains("DKIM-Signature"));
+    }
+
+    #[tokio::test]
+    async fn size_limit_counts_the_dkim_signature() {
+        let unsigned = local_transport(None)
+            .prepare(&plain_email())
+            .unwrap()
+            .1
+            .len() as u64;
+        assert!(
+            local_transport(Some(unsigned))
+                .prepare(&plain_email())
+                .is_ok()
+        );
+        let err = dkim_transport(Some(unsigned))
+            .prepare(&plain_email())
+            .unwrap_err();
+        assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
     }
 
     #[tokio::test]

@@ -1,8 +1,10 @@
 use std::env::VarError;
+use std::sync::Arc;
 
 use anyhow::Context;
 use catapulte_domain::entity::sender::{QuotaRange, SenderName, SenderQuota};
 
+use crate::dkim::DkimSigners;
 use crate::transport::{SmtpConfig, SmtpTransport};
 
 pub struct SmtpTransportEntry {
@@ -35,9 +37,12 @@ struct SingleSenderConfig {
 ///   - `CATAPULTE_SENDER_{NAME}_QUOTA_COUNT` (optional)
 ///   - `CATAPULTE_SENDER_{NAME}_QUOTA_RANGE` (optional: "hourly", "daily",
 ///     "weekly", "monthly")
+///
+/// DKIM keys are configured separately; see `DkimSigners::from_lookup`.
 pub struct MultiSenderConfig {
     senders: Vec<SingleSenderConfig>,
     max_message_bytes: Option<u64>,
+    dkim: Arc<DkimSigners>,
 }
 
 impl MultiSenderConfig {
@@ -54,6 +59,7 @@ impl MultiSenderConfig {
                 match_sender_domain: None,
             }],
             max_message_bytes: None,
+            dkim: Arc::new(DkimSigners::empty()),
         }
     }
 
@@ -63,6 +69,7 @@ impl MultiSenderConfig {
         Self {
             senders: vec![],
             max_message_bytes: None,
+            dkim: Arc::new(DkimSigners::empty()),
         }
     }
 
@@ -163,6 +170,7 @@ impl MultiSenderConfig {
         Ok(Self {
             senders,
             max_message_bytes: None,
+            dkim: Arc::new(DkimSigners::from_lookup(&lookup)?),
         })
     }
 
@@ -171,10 +179,11 @@ impl MultiSenderConfig {
     /// Returns an error if any SMTP transport cannot be constructed.
     pub fn build(self) -> anyhow::Result<Vec<SmtpTransportEntry>> {
         let max_message_bytes = self.max_message_bytes;
+        let dkim = self.dkim;
         self.senders
             .into_iter()
             .map(|cfg| {
-                let mut transport = cfg.smtp.build()?;
+                let mut transport = cfg.smtp.build()?.with_dkim(Arc::clone(&dkim));
                 if let Some(max) = max_message_bytes {
                     transport = transport.with_max_message_bytes(max);
                 }
