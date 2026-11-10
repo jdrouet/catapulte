@@ -42,17 +42,8 @@ pub struct AttachmentDto {
 
 #[derive(Debug, Deserialize)]
 pub struct SubmitEmailRequest {
-    #[serde(default)]
-    pub idempotency_key: Option<String>,
-    #[serde(default)]
-    pub correlation_id: Option<String>,
-    #[serde(default)]
-    pub subject: Option<String>,
-    pub sender: String,
-    pub recipients: Vec<RecipientDto>,
-    pub body: BodyDto,
-    #[serde(default)]
-    pub variables: serde_json::Map<String, serde_json::Value>,
+    #[serde(flatten)]
+    pub core: EnvelopeCoreDto,
     #[serde(default)]
     pub attachments: Vec<AttachmentDto>,
 }
@@ -218,10 +209,6 @@ impl SubmitEmailRequest {
     /// Returns an error when the request contains invalid fields (bad sender,
     /// recipients, body, or attachments).
     pub fn into_submit_input(self) -> Result<SubmitEmailInput, EnvelopeConversionError> {
-        validate_sender(&self.sender)?;
-        let recipients = validate_recipients(self.recipients)?;
-        let body = self.body.try_into()?;
-
         if self.attachments.len() > MAX_ATTACHMENTS_PER_EMAIL {
             return Err(EnvelopeConversionError::TooManyAttachments);
         }
@@ -229,21 +216,11 @@ impl SubmitEmailRequest {
         for a in self.attachments {
             atts.push(attachment_dto_to_input(a)?);
         }
-
-        Ok(SubmitEmailInput {
-            idempotency_key: self.idempotency_key,
-            correlation_id: self.correlation_id,
-            subject: self.subject,
-            sender: self.sender,
-            recipients,
-            body,
-            variables: self.variables,
-            attachments: atts,
-        })
+        self.core.into_submit_input(atts)
     }
 }
 
-/// Envelope-only JSON sent in the `envelope` field of a multipart submission.
+/// Envelope fields shared by JSON, multipart, batch and NATS submissions.
 #[derive(Debug, Deserialize)]
 pub struct EnvelopeCoreDto {
     #[serde(default)]
@@ -328,11 +305,11 @@ impl TryFrom<BodyDto> for BodySource {
 mod tests {
     use super::{
         AttachmentDto, BodyConversionError, BodyDto, BodySource, EnvelopeConversionError,
-        MjmlSource, RecipientDto, RecipientKindDto, SubmitEmailRequest,
+        EnvelopeCoreDto, MjmlSource, RecipientDto, RecipientKindDto, SubmitEmailRequest,
     };
 
-    fn base_request() -> SubmitEmailRequest {
-        SubmitEmailRequest {
+    fn base_core() -> EnvelopeCoreDto {
+        EnvelopeCoreDto {
             idempotency_key: None,
             correlation_id: None,
             subject: None,
@@ -346,6 +323,12 @@ mod tests {
                 html: None,
             },
             variables: serde_json::Map::new(),
+        }
+    }
+
+    fn base_request() -> SubmitEmailRequest {
+        SubmitEmailRequest {
+            core: base_core(),
             attachments: vec![],
         }
     }
@@ -421,7 +404,10 @@ mod tests {
     #[test]
     fn invalid_sender_returns_error() {
         let req = SubmitEmailRequest {
-            sender: "not-an-email".into(),
+            core: EnvelopeCoreDto {
+                sender: "not-an-email".into(),
+                ..base_core()
+            },
             ..base_request()
         };
         assert!(matches!(
@@ -433,7 +419,10 @@ mod tests {
     #[test]
     fn empty_recipients_returns_error() {
         let req = SubmitEmailRequest {
-            recipients: vec![],
+            core: EnvelopeCoreDto {
+                recipients: vec![],
+                ..base_core()
+            },
             ..base_request()
         };
         assert!(matches!(
@@ -445,16 +434,53 @@ mod tests {
     #[test]
     fn invalid_recipient_returns_error() {
         let req = SubmitEmailRequest {
-            recipients: vec![RecipientDto {
-                kind: RecipientKindDto::To,
-                address: "bad".into(),
-            }],
+            core: EnvelopeCoreDto {
+                recipients: vec![RecipientDto {
+                    kind: RecipientKindDto::To,
+                    address: "bad".into(),
+                }],
+                ..base_core()
+            },
             ..base_request()
         };
         assert!(matches!(
             req.into_submit_input(),
             Err(EnvelopeConversionError::InvalidRecipient(_))
         ));
+    }
+
+    #[test]
+    fn json_with_every_field_and_unknown_field_deserializes_and_converts() {
+        let raw = serde_json::json!({
+            "idempotency_key": "k1",
+            "correlation_id": "c1",
+            "subject": "Hello",
+            "sender": "a@b.c",
+            "recipients": [{ "kind": "to", "address": "t@x.y" }],
+            "body": { "kind": "plain", "text": "hi", "html": null },
+            "variables": { "name": "Alice" },
+            "attachments": [{
+                "filename": "a.txt",
+                "content_type": "text/plain",
+                "inline_base64": "aGk="
+            }],
+            "unknown_field": true
+        });
+
+        let req: SubmitEmailRequest = serde_json::from_value(raw).unwrap();
+        let input = req.into_submit_input().unwrap();
+
+        assert_eq!(input.idempotency_key.as_deref(), Some("k1"));
+        assert_eq!(input.correlation_id.as_deref(), Some("c1"));
+        assert_eq!(input.subject.as_deref(), Some("Hello"));
+        assert_eq!(input.variables["name"], "Alice");
+        assert_eq!(input.attachments.len(), 1);
+    }
+
+    #[test]
+    fn json_missing_required_field_is_a_deserialization_error() {
+        let raw = serde_json::json!({ "sender": "a@b.c" });
+        assert!(serde_json::from_value::<SubmitEmailRequest>(raw).is_err());
     }
 
     #[test]
