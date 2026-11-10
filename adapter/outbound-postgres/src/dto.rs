@@ -1,7 +1,7 @@
 use anyhow::Context;
 use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain};
-use catapulte_domain::entity::email::RecipientKind;
+use catapulte_domain::entity::email::{RecipientKind, bare_address};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -58,6 +58,9 @@ impl From<RecipientKind> for RecipientKindDto {
 pub struct RecipientDto {
     pub kind: RecipientKindDto,
     pub address: String,
+    /// Lowercase bare address used by the recipient filter; absent on legacy rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bare: Option<String>,
 }
 
 #[must_use]
@@ -67,6 +70,7 @@ pub fn recipients_to_dto(recipients: &[(RecipientKind, String)]) -> Vec<Recipien
         .map(|(k, a)| RecipientDto {
             kind: (*k).into(),
             address: a.clone(),
+            bare: Some(bare_address(a).to_ascii_lowercase()),
         })
         .collect()
 }

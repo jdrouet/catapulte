@@ -1,0 +1,1 @@
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS enqueue_state TEXT NOT NULL DEFAULT 'enqueued';

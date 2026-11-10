@@ -3,10 +3,14 @@ use base64::Engine;
 use catapulte_domain::entity::body::{BodySource, InvalidPlainBody, MjmlSource, Plain};
 use catapulte_domain::entity::email::{EmailId, RecipientKind};
 use catapulte_domain::use_case::submit_email::{AttachmentInput, SubmitEmailInput};
+use lettre::Address;
+use lettre::message::Mailbox;
+use lettre::message::header::ContentType;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
 pub const MAX_ATTACHMENTS_PER_EMAIL: usize = 10;
+pub const MAX_ATTACHMENT_FILENAME_BYTES: usize = 255;
 pub const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024; // 25 MiB
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024; // 1 MiB
 // Worst case: 10 attachments × 25 MiB = 250 MiB binary, base64-inflated to ~333 MiB, plus ~1 MiB envelope.
@@ -42,25 +46,30 @@ pub struct AttachmentDto {
 
 #[derive(Debug, Deserialize)]
 pub struct SubmitEmailRequest {
-    #[serde(default)]
-    pub idempotency_key: Option<String>,
-    #[serde(default)]
-    pub correlation_id: Option<String>,
-    #[serde(default)]
-    pub subject: Option<String>,
-    pub sender: String,
-    pub recipients: Vec<RecipientDto>,
-    pub body: BodyDto,
-    #[serde(default)]
-    pub variables: serde_json::Map<String, serde_json::Value>,
+    #[serde(flatten)]
+    pub core: EnvelopeCoreDto,
     #[serde(default)]
     pub attachments: Vec<AttachmentDto>,
+}
+
+/// A mailbox given either as text (`a@b.c` or `Name <a@b.c>`) or as `{ name, address }`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum MailboxDto {
+    Text(String),
+    Structured {
+        #[serde(default)]
+        name: Option<String>,
+        address: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RecipientDto {
     pub kind: RecipientKindDto,
     pub address: String,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,40 +142,143 @@ pub enum EnvelopeConversionError {
         #[source]
         source: anyhow::Error,
     },
+    #[error("invalid attachment content type")]
+    InvalidAttachmentContentType { filename: String },
+    #[error("invalid attachment filename")]
+    InvalidAttachmentFilename { filename: String },
     #[error("too many attachments")]
     TooManyAttachments,
     #[error("attachment too large")]
     AttachmentTooLarge { filename: String },
 }
 
-fn validate_sender(sender: &str) -> Result<(), EnvelopeConversionError> {
-    use std::str::FromStr;
-    email_address::EmailAddress::from_str(sender)
-        .context("parsing sender")
-        .map_err(EnvelopeConversionError::InvalidSender)?;
-    Ok(())
+/// Must stay identical to the SMTP adapter's `parse_mailbox`, so intake accepts exactly
+/// what delivery can parse.
+fn parse_mailbox(s: &str) -> Result<Mailbox, anyhow::Error> {
+    s.parse::<Mailbox>().or_else(|_| {
+        s.parse::<Address>()
+            .map(|a| Mailbox::new(None, a))
+            .with_context(|| format!("invalid mailbox: {s}"))
+    })
+}
+
+fn format_mailbox(mailbox: &Mailbox) -> Result<String, anyhow::Error> {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    write!(out, "{mailbox}").context("formatting mailbox")?;
+    Ok(out)
+}
+
+/// Formats `mailbox` and accepts it only if delivery can parse the result back to the same
+/// string and lettre can build message headers from it.
+fn canonical_mailbox(mailbox: &Mailbox) -> Result<String, anyhow::Error> {
+    anyhow::ensure!(
+        !mailbox
+            .name
+            .as_deref()
+            .is_some_and(|n| n.chars().any(char::is_control)),
+        "display name contains control characters"
+    );
+    let formatted = format_mailbox(mailbox)?;
+    let reparsed = format_mailbox(&parse_mailbox(&formatted)?)?;
+    anyhow::ensure!(
+        reparsed == formatted,
+        "mailbox does not round-trip: {formatted}"
+    );
+    // lettre cannot build headers for some valid addresses (IP literals, quoted local parts).
+    lettre::Message::builder()
+        .from(mailbox.clone())
+        .to(mailbox.clone())
+        .body(String::new())
+        .context("mailbox cannot be used in message headers")?;
+    Ok(formatted)
+}
+
+fn structured_mailbox(name: Option<String>, address: &str) -> Result<Mailbox, anyhow::Error> {
+    let address = address.parse::<Address>().context("parsing address")?;
+    Ok(Mailbox::new(name.filter(|n| !n.is_empty()), address))
+}
+
+fn validate_sender(sender: MailboxDto) -> Result<String, EnvelopeConversionError> {
+    match sender {
+        MailboxDto::Text(text) => parse_mailbox(&text),
+        MailboxDto::Structured { name, address } => structured_mailbox(name, &address),
+    }
+    .and_then(|m| canonical_mailbox(&m))
+    .map_err(EnvelopeConversionError::InvalidSender)
 }
 
 fn validate_recipients(
     recipients: Vec<RecipientDto>,
 ) -> Result<Vec<(catapulte_domain::entity::email::RecipientKind, String)>, EnvelopeConversionError>
 {
-    use std::str::FromStr;
     if recipients.is_empty() {
         return Err(EnvelopeConversionError::EmptyRecipients);
     }
     recipients
         .into_iter()
         .map(|r| {
-            email_address::EmailAddress::from_str(&r.address)
-                .context("parsing recipient")
-                .map_err(EnvelopeConversionError::InvalidRecipient)?;
-            Ok((r.kind.into(), r.address))
+            let canonical = match r.name {
+                Some(name) => structured_mailbox(Some(name), &r.address),
+                None => parse_mailbox(&r.address),
+            }
+            .and_then(|m| canonical_mailbox(&m))
+            .map_err(EnvelopeConversionError::InvalidRecipient)?;
+            Ok((r.kind.into(), canonical))
         })
         .collect::<Result<Vec<_>, EnvelopeConversionError>>()
 }
 
+/// Bidi and zero-width format characters (Unicode category Cf), rejected to prevent
+/// filename spoofing such as `invoice\u{202E}fdp.exe`.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+    )
+}
+
+/// Returns the filename's last path segment and the content type unchanged, so the SMTP
+/// adapter's `ContentType::parse` sees exactly what was validated here.
+///
+/// # Errors
+///
+/// Returns an error when the content type does not parse, or the filename is empty after
+/// stripping directories, longer than 255 bytes, or contains control characters.
+pub fn validate_attachment_meta(
+    filename: &str,
+    content_type: &str,
+) -> Result<(String, String), EnvelopeConversionError> {
+    let name = filename
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.len() > MAX_ATTACHMENT_FILENAME_BYTES
+        || name.chars().any(|c| c.is_control() || is_format_char(c))
+    {
+        return Err(EnvelopeConversionError::InvalidAttachmentFilename {
+            filename: filename.to_owned(),
+        });
+    }
+    ContentType::parse(content_type).map_err(|_| {
+        EnvelopeConversionError::InvalidAttachmentContentType {
+            filename: filename.to_owned(),
+        }
+    })?;
+    Ok((name.to_owned(), content_type.to_owned()))
+}
+
 fn attachment_dto_to_input(a: AttachmentDto) -> Result<AttachmentInput, EnvelopeConversionError> {
+    let (filename, content_type) = validate_attachment_meta(&a.filename, &a.content_type)?;
+    let a = AttachmentDto {
+        filename,
+        content_type,
+        ..a
+    };
     match (a.inline_base64, a.url) {
         (Some(b64), None) => {
             // Reject before decoding so an oversized payload is never allocated.
@@ -218,10 +330,6 @@ impl SubmitEmailRequest {
     /// Returns an error when the request contains invalid fields (bad sender,
     /// recipients, body, or attachments).
     pub fn into_submit_input(self) -> Result<SubmitEmailInput, EnvelopeConversionError> {
-        validate_sender(&self.sender)?;
-        let recipients = validate_recipients(self.recipients)?;
-        let body = self.body.try_into()?;
-
         if self.attachments.len() > MAX_ATTACHMENTS_PER_EMAIL {
             return Err(EnvelopeConversionError::TooManyAttachments);
         }
@@ -229,21 +337,11 @@ impl SubmitEmailRequest {
         for a in self.attachments {
             atts.push(attachment_dto_to_input(a)?);
         }
-
-        Ok(SubmitEmailInput {
-            idempotency_key: self.idempotency_key,
-            correlation_id: self.correlation_id,
-            subject: self.subject,
-            sender: self.sender,
-            recipients,
-            body,
-            variables: self.variables,
-            attachments: atts,
-        })
+        self.core.into_submit_input(atts)
     }
 }
 
-/// Envelope-only JSON sent in the `envelope` field of a multipart submission.
+/// Envelope fields shared by JSON, multipart, batch and NATS submissions.
 #[derive(Debug, Deserialize)]
 pub struct EnvelopeCoreDto {
     #[serde(default)]
@@ -252,7 +350,7 @@ pub struct EnvelopeCoreDto {
     pub correlation_id: Option<String>,
     #[serde(default)]
     pub subject: Option<String>,
-    pub sender: String,
+    pub sender: MailboxDto,
     pub recipients: Vec<RecipientDto>,
     pub body: BodyDto,
     #[serde(default)]
@@ -269,14 +367,14 @@ impl EnvelopeCoreDto {
         self,
         attachments: Vec<AttachmentInput>,
     ) -> Result<SubmitEmailInput, EnvelopeConversionError> {
-        validate_sender(&self.sender)?;
+        let sender = validate_sender(self.sender)?;
         let recipients = validate_recipients(self.recipients)?;
         let body = self.body.try_into()?;
         Ok(SubmitEmailInput {
             idempotency_key: self.idempotency_key,
             correlation_id: self.correlation_id,
             subject: self.subject,
-            sender: self.sender,
+            sender,
             recipients,
             body,
             variables: self.variables,
@@ -328,24 +426,32 @@ impl TryFrom<BodyDto> for BodySource {
 mod tests {
     use super::{
         AttachmentDto, BodyConversionError, BodyDto, BodySource, EnvelopeConversionError,
-        MjmlSource, RecipientDto, RecipientKindDto, SubmitEmailRequest,
+        EnvelopeCoreDto, MailboxDto, MjmlSource, RecipientDto, RecipientKindDto,
+        SubmitEmailRequest,
     };
 
-    fn base_request() -> SubmitEmailRequest {
-        SubmitEmailRequest {
+    fn base_core() -> EnvelopeCoreDto {
+        EnvelopeCoreDto {
             idempotency_key: None,
             correlation_id: None,
             subject: None,
-            sender: "a@b.c".into(),
+            sender: MailboxDto::Text("a@b.c".into()),
             recipients: vec![RecipientDto {
                 kind: RecipientKindDto::To,
                 address: "t@x.y".into(),
+                name: None,
             }],
             body: BodyDto::Plain {
                 text: Some("hi".into()),
                 html: None,
             },
             variables: serde_json::Map::new(),
+        }
+    }
+
+    fn base_request() -> SubmitEmailRequest {
+        SubmitEmailRequest {
+            core: base_core(),
             attachments: vec![],
         }
     }
@@ -421,7 +527,10 @@ mod tests {
     #[test]
     fn invalid_sender_returns_error() {
         let req = SubmitEmailRequest {
-            sender: "not-an-email".into(),
+            core: EnvelopeCoreDto {
+                sender: MailboxDto::Text("not-an-email".into()),
+                ..base_core()
+            },
             ..base_request()
         };
         assert!(matches!(
@@ -433,7 +542,10 @@ mod tests {
     #[test]
     fn empty_recipients_returns_error() {
         let req = SubmitEmailRequest {
-            recipients: vec![],
+            core: EnvelopeCoreDto {
+                recipients: vec![],
+                ..base_core()
+            },
             ..base_request()
         };
         assert!(matches!(
@@ -445,15 +557,392 @@ mod tests {
     #[test]
     fn invalid_recipient_returns_error() {
         let req = SubmitEmailRequest {
-            recipients: vec![RecipientDto {
-                kind: RecipientKindDto::To,
-                address: "bad".into(),
-            }],
+            core: EnvelopeCoreDto {
+                recipients: vec![RecipientDto {
+                    kind: RecipientKindDto::To,
+                    address: "bad".into(),
+                    name: None,
+                }],
+                ..base_core()
+            },
             ..base_request()
         };
         assert!(matches!(
             req.into_submit_input(),
             Err(EnvelopeConversionError::InvalidRecipient(_))
+        ));
+    }
+
+    #[test]
+    fn json_with_every_field_and_unknown_field_deserializes_and_converts() {
+        let raw = serde_json::json!({
+            "idempotency_key": "k1",
+            "correlation_id": "c1",
+            "subject": "Hello",
+            "sender": "a@b.c",
+            "recipients": [{ "kind": "to", "address": "t@x.y" }],
+            "body": { "kind": "plain", "text": "hi", "html": null },
+            "variables": { "name": "Alice" },
+            "attachments": [{
+                "filename": "a.txt",
+                "content_type": "text/plain",
+                "inline_base64": "aGk="
+            }],
+            "unknown_field": true
+        });
+
+        let req: SubmitEmailRequest = serde_json::from_value(raw).unwrap();
+        let input = req.into_submit_input().unwrap();
+
+        assert_eq!(input.idempotency_key.as_deref(), Some("k1"));
+        assert_eq!(input.correlation_id.as_deref(), Some("c1"));
+        assert_eq!(input.subject.as_deref(), Some("Hello"));
+        assert_eq!(input.variables["name"], "Alice");
+        assert_eq!(input.attachments.len(), 1);
+    }
+
+    #[test]
+    fn json_missing_required_field_is_a_deserialization_error() {
+        let raw = serde_json::json!({ "sender": "a@b.c" });
+        assert!(serde_json::from_value::<SubmitEmailRequest>(raw).is_err());
+    }
+
+    fn convert(
+        core: EnvelopeCoreDto,
+    ) -> Result<catapulte_domain::use_case::submit_email::SubmitEmailInput, EnvelopeConversionError>
+    {
+        SubmitEmailRequest {
+            core,
+            ..base_request()
+        }
+        .into_submit_input()
+    }
+
+    #[test]
+    fn display_form_sender_is_stored_canonically() {
+        let input = convert(EnvelopeCoreDto {
+            sender: MailboxDto::Text("Acme <noreply@acme.com>".into()),
+            ..base_core()
+        })
+        .unwrap();
+        assert_eq!(input.sender, "Acme <noreply@acme.com>");
+    }
+
+    #[test]
+    fn structured_sender_and_recipient_keep_names() {
+        let raw = serde_json::json!({
+            "sender": { "name": "Acme, \"Inc\"", "address": "noreply@acme.com" },
+            "recipients": [{ "kind": "to", "name": "Alice", "address": "alice@x.y" }],
+            "body": { "kind": "plain", "text": "hi", "html": null }
+        });
+        let req: SubmitEmailRequest = serde_json::from_value(raw).unwrap();
+        let input = req.into_submit_input().unwrap();
+
+        let sender: lettre::message::Mailbox = input.sender.parse().unwrap();
+        assert_eq!(sender.name.as_deref(), Some("Acme, \"Inc\""));
+        assert_eq!(input.recipients[0].1, "Alice <alice@x.y>");
+    }
+
+    #[test]
+    fn invalid_sender_forms_are_rejected() {
+        for sender in [
+            MailboxDto::Text("Acme <not an address>".into()),
+            MailboxDto::Structured {
+                name: Some("Acme".into()),
+                address: "Other <a@b.c>".into(),
+            },
+        ] {
+            let result = convert(EnvelopeCoreDto {
+                sender,
+                ..base_core()
+            });
+            assert!(matches!(
+                result,
+                Err(EnvelopeConversionError::InvalidSender(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn recipient_with_name_requires_bare_address() {
+        let result = convert(EnvelopeCoreDto {
+            recipients: vec![RecipientDto {
+                kind: RecipientKindDto::To,
+                address: "Bob <bob@x.y>".into(),
+                name: Some("Alice".into()),
+            }],
+            ..base_core()
+        });
+        assert!(matches!(
+            result,
+            Err(EnvelopeConversionError::InvalidRecipient(_))
+        ));
+    }
+
+    #[test]
+    fn non_ascii_name_round_trips_through_canonical_string() {
+        let input = convert(EnvelopeCoreDto {
+            sender: MailboxDto::Text("Café Ünïcode <a@b.com>".into()),
+            ..base_core()
+        })
+        .unwrap();
+
+        let reparsed: lettre::message::Mailbox = input.sender.parse().unwrap();
+
+        assert_eq!(reparsed.name.as_deref(), Some("Café Ünïcode"));
+        assert_eq!(reparsed.to_string(), input.sender);
+        assert_eq!(reparsed.email.to_string(), "a@b.com");
+    }
+
+    fn sender_text(s: &str) -> Result<String, EnvelopeConversionError> {
+        convert(EnvelopeCoreDto {
+            sender: MailboxDto::Text(s.into()),
+            ..base_core()
+        })
+        .map(|i| i.sender)
+    }
+
+    fn structured(name: &str, address: &str) -> MailboxDto {
+        MailboxDto::Structured {
+            name: Some(name.into()),
+            address: address.into(),
+        }
+    }
+
+    #[test]
+    fn control_characters_in_names_are_rejected_without_panicking() {
+        for name in ["a\r\nb", "a\nb", "a\0b", "a\tb", "\r\n"] {
+            let sender = convert(EnvelopeCoreDto {
+                sender: structured(name, "a@b.c"),
+                ..base_core()
+            });
+            assert!(
+                matches!(sender, Err(EnvelopeConversionError::InvalidSender(_))),
+                "sender name {name:?}"
+            );
+            let recipient = convert(EnvelopeCoreDto {
+                recipients: vec![RecipientDto {
+                    kind: RecipientKindDto::To,
+                    address: "a@b.c".into(),
+                    name: Some(name.into()),
+                }],
+                ..base_core()
+            });
+            assert!(
+                matches!(recipient, Err(EnvelopeConversionError::InvalidRecipient(_))),
+                "recipient name {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_characters_in_text_form_names_are_rejected() {
+        for name in ["\u{1}x", "x\u{7f}", "x\u{85}y"] {
+            let text = format!("\"{name}\" <a@b.c>");
+            let sender = convert(EnvelopeCoreDto {
+                sender: MailboxDto::Text(text.clone()),
+                ..base_core()
+            });
+            assert!(
+                matches!(sender, Err(EnvelopeConversionError::InvalidSender(_))),
+                "text sender {name:?}"
+            );
+            let sender = convert(EnvelopeCoreDto {
+                sender: structured(name, "a@b.c"),
+                ..base_core()
+            });
+            assert!(
+                matches!(sender, Err(EnvelopeConversionError::InvalidSender(_))),
+                "structured sender {name:?}"
+            );
+            for recipient in [
+                RecipientDto {
+                    kind: RecipientKindDto::To,
+                    address: text.clone(),
+                    name: None,
+                },
+                RecipientDto {
+                    kind: RecipientKindDto::To,
+                    address: "a@b.c".into(),
+                    name: Some(name.into()),
+                },
+            ] {
+                let result = convert(EnvelopeCoreDto {
+                    recipients: vec![recipient],
+                    ..base_core()
+                });
+                assert!(
+                    matches!(result, Err(EnvelopeConversionError::InvalidRecipient(_))),
+                    "recipient {name:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn named_mailboxes_that_do_not_round_trip_are_rejected() {
+        for address in [
+            "\"a<b\"@example.com",
+            "a@[127.0.0.1]",
+            "\"a b\"@example.com",
+        ] {
+            let result = convert(EnvelopeCoreDto {
+                sender: structured("Alice", address),
+                ..base_core()
+            });
+            assert!(
+                matches!(result, Err(EnvelopeConversionError::InvalidSender(_))),
+                "{address}"
+            );
+        }
+        assert!(sender_text("Alice <a@[127.0.0.1]>").is_err());
+    }
+
+    #[test]
+    fn addresses_lettre_cannot_put_in_headers_are_rejected() {
+        for address in [
+            "a@[127.0.0.1]",
+            "\"a b\"@example.com",
+            "\"a<b\"@example.com",
+        ] {
+            assert!(sender_text(address).is_err(), "{address}");
+        }
+    }
+
+    #[test]
+    fn stored_names_never_hide_a_quoted_angle_in_the_address() {
+        let stored = sender_text("\"A <b>\" <a@b.c>").unwrap();
+        assert_eq!(
+            catapulte_domain::entity::email::bare_address(&stored),
+            "a@b.c"
+        );
+    }
+
+    #[test]
+    fn intake_output_equals_smtp_parse_then_format() {
+        let fixtures = [
+            MailboxDto::Text("a@b.c".into()),
+            MailboxDto::Text("Acme <noreply@acme.com>".into()),
+            MailboxDto::Text("Café Ünïcode <a@b.com>".into()),
+            structured("Acme, \"Inc\"", "a@b.c"),
+            structured("Ünï \\ back", "a@b.c"),
+            structured("", "a@b.c"),
+        ];
+        for fixture in fixtures {
+            let label = format!("{fixture:?}");
+            let stored = super::validate_sender(fixture).unwrap();
+            let delivered = catapulte_outbound_smtp::transport::parse_mailbox(&stored).unwrap();
+            assert_eq!(delivered.to_string(), stored, "{label}");
+        }
+    }
+
+    fn attachment_with(filename: &str, content_type: &str) -> SubmitEmailRequest {
+        SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: filename.into(),
+                content_type: content_type.into(),
+                inline_base64: Some("aGk=".into()),
+                url: None,
+            }],
+            ..base_request()
+        }
+    }
+
+    #[test]
+    fn invalid_attachment_content_types_are_rejected() {
+        for ct in ["pdf", "application/pdf; x", ""] {
+            let result = attachment_with("a.pdf", ct).into_submit_input();
+            assert!(
+                matches!(
+                    result,
+                    Err(EnvelopeConversionError::InvalidAttachmentContentType { .. })
+                ),
+                "{ct:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn content_type_with_parameters_is_accepted_unchanged() {
+        let (_, ct) =
+            super::validate_attachment_meta("a.txt", "text/plain; charset=utf-8").unwrap();
+        assert_eq!(ct, "text/plain; charset=utf-8");
+        assert!(
+            attachment_with("a.txt", "text/plain; charset=utf-8")
+                .into_submit_input()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn attachment_filenames_are_reduced_to_their_last_segment() {
+        for (given, expected) in [
+            ("../../invoice.pdf", "invoice.pdf"),
+            ("C:\\x\\a.pdf", "a.pdf"),
+            ("  report.pdf  ", "report.pdf"),
+            ("plain.pdf", "plain.pdf"),
+        ] {
+            let (name, _) = super::validate_attachment_meta(given, "application/pdf").unwrap();
+            assert_eq!(name, expected, "{given:?}");
+        }
+        let input = attachment_with("../../invoice.pdf", "application/pdf")
+            .into_submit_input()
+            .unwrap();
+        let catapulte_domain::use_case::submit_email::AttachmentInput::Inline { filename, .. } =
+            &input.attachments[0]
+        else {
+            panic!("expected Inline variant");
+        };
+        assert_eq!(filename, "invoice.pdf");
+    }
+
+    #[test]
+    fn invalid_attachment_filenames_are_rejected() {
+        let too_long = "a".repeat(256);
+        for name in [
+            "",
+            "   ",
+            "/",
+            "dir/",
+            ".",
+            "..",
+            "a/..",
+            "invoice\u{202E}fdp.exe",
+            "a\u{200B}b",
+            "\u{FEFF}a",
+            "a\u{200F}",
+            "a\u{0}b",
+            "a\nb",
+            "a\u{7f}b",
+            too_long.as_str(),
+        ] {
+            let result = super::validate_attachment_meta(name, "application/pdf");
+            assert!(
+                matches!(
+                    result,
+                    Err(EnvelopeConversionError::InvalidAttachmentFilename { .. })
+                ),
+                "{name:?}"
+            );
+        }
+        let max = "a".repeat(255);
+        assert!(super::validate_attachment_meta(&max, "application/pdf").is_ok());
+    }
+
+    #[test]
+    fn remote_attachment_content_type_is_validated() {
+        let req = SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: "remote.pdf".into(),
+                content_type: "pdf".into(),
+                inline_base64: None,
+                url: Some("https://example.com/a.pdf".into()),
+            }],
+            ..base_request()
+        };
+        assert!(matches!(
+            req.into_submit_input(),
+            Err(EnvelopeConversionError::InvalidAttachmentContentType { .. })
         ));
     }
 

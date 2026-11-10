@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use catapulte_domain::use_case::process_queued_email::ProcessQueuedEmailService;
-use catapulte_domain::use_case::submit_email::SubmitEmailService;
+use catapulte_domain::use_case::submit_email::{SubmitEmailService, SubmitLimits};
 use catapulte_inbound_http::{InboundHttpConfig, InboundHttpServer};
 use catapulte_inbound_nats::server::{InboundNatsConfig, InboundNatsServer};
 use catapulte_inbound_worker::worker::{Worker, WorkerConfig};
@@ -42,6 +42,24 @@ pub struct AppConfig {
     pub include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig,
     pub gc_sweep_interval: Duration,
     pub gc_grace_period: Duration,
+    /// Single limit shared by the submit-time estimate and the SMTP wire-size check.
+    pub max_message_bytes: u64,
+}
+
+const DEFAULT_MAX_MESSAGE_BYTES: u64 = 25 * 1024 * 1024;
+
+fn parse_max_message_bytes(
+    lookup: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> anyhow::Result<u64> {
+    const KEY: &str = "CATAPULTE_MAX_MESSAGE_BYTES";
+    match lookup(KEY) {
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_MAX_MESSAGE_BYTES),
+        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!("{KEY} is not valid unicode"),
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(n) if n > 0 => Ok(n),
+            _ => anyhow::bail!("{KEY} must be a positive integer, got {raw:?}"),
+        },
+    }
 }
 
 impl AppConfig {
@@ -82,6 +100,7 @@ impl AppConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(3600);
         let gc_grace_period = Duration::from_secs(gc_grace_secs);
+        let max_message_bytes = parse_max_message_bytes(|k| std::env::var(k))?;
         Ok(Self {
             storage,
             http,
@@ -96,6 +115,7 @@ impl AppConfig {
             include_loader,
             gc_sweep_interval,
             gc_grace_period,
+            max_message_bytes,
         })
     }
 
@@ -122,7 +142,11 @@ impl AppConfig {
             .await
             .context("building publisher adapter")?;
 
-        let entries = self.smtp.build().context("building smtp transports")?;
+        let entries = self
+            .smtp
+            .with_max_message_bytes(self.max_message_bytes)
+            .build()
+            .context("building smtp transports")?;
         let sender_configs: Vec<catapulte_domain::entity::sender::SenderConfig> = entries
             .iter()
             .map(|e| catapulte_domain::entity::sender::SenderConfig {
@@ -182,13 +206,18 @@ impl AppConfig {
             .build()
             .context("building attachment fetcher adapter")?;
 
-        let submit_email = Arc::new(SubmitEmailService::new(
-            storage.clone(),
-            queue.clone(),
-            publisher.clone(),
-            attachment_store.clone(),
-            attachment_fetcher,
-        ));
+        let submit_email = Arc::new(
+            SubmitEmailService::new(
+                storage.clone(),
+                queue.clone(),
+                publisher.clone(),
+                attachment_store.clone(),
+                attachment_fetcher,
+            )
+            .with_limits(SubmitLimits {
+                max_message_bytes: self.max_message_bytes,
+            }),
+        );
         let mjml_renderer = MjmlRenderer::new(self.include_loader.build());
         let process_queued_email = Arc::new(ProcessQueuedEmailService::new(
             resolver,
@@ -358,5 +387,41 @@ impl Application {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env::VarError;
+
+    use super::parse_max_message_bytes;
+
+    fn lookup(value: Option<&'static str>) -> impl Fn(&str) -> Result<String, VarError> {
+        move |_| value.map(str::to_owned).ok_or(VarError::NotPresent)
+    }
+
+    #[test]
+    fn max_message_bytes_defaults_to_25_mib() {
+        assert_eq!(parse_max_message_bytes(lookup(None)).unwrap(), 26_214_400);
+    }
+
+    #[test]
+    fn max_message_bytes_parses_a_positive_integer() {
+        assert_eq!(
+            parse_max_message_bytes(lookup(Some("1048576"))).unwrap(),
+            1_048_576
+        );
+    }
+
+    #[test]
+    fn max_message_bytes_rejects_zero_invalid_and_non_unicode() {
+        for bad in ["0", "abc", "-1", ""] {
+            assert!(
+                parse_max_message_bytes(lookup(Some(bad))).is_err(),
+                "{bad:?}"
+            );
+        }
+        let non_unicode = |_: &str| Err(VarError::NotUnicode(std::ffi::OsString::from("x")));
+        assert!(parse_max_message_bytes(non_unicode).is_err());
     }
 }

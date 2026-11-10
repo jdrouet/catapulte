@@ -42,9 +42,17 @@ The id is a UUIDv7. The email is queued; delivery happens asynchronously (watch
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `sender` | string | a valid email address |
-| `recipients` | array | non-empty; each `{ "kind": "to" \| "cc" \| "bcc", "address": "<email>" }` |
+| `sender` | string or object | `"noreply@example.com"`, `"Acme <noreply@example.com>"` or `{ "name": "Acme", "address": "noreply@example.com" }` |
+| `recipients` | array | non-empty; each `{ "kind": "to" \| "cc" \| "bcc", "address": "<email>", "name": "<optional display name>" }`; `address` may be `Name <email>` only when `name` is not set |
 | `body` | object | a [body variant](#body-variants) (tagged by `kind`) |
+
+Addresses accept a display name, which is kept in the `From:` and recipient headers
+and RFC 2047-encoded when it is not ASCII. Use the structured form when a name
+contains commas or quotes. SMTP routing, sender-domain matching and the `recipient`
+filter use only the bare address. `GET /emails` returns `sender` and recipient
+addresses in canonical form (`Name <email>` when a name was given). A value that cannot be parsed as a
+mailbox is rejected with `400`, as are display names with control characters and
+addresses with an IP-literal domain or a quoted local part, which the SMTP library cannot put in message headers.
 
 ### Optional fields
 
@@ -111,6 +119,11 @@ URL (exactly one):
 ]
 ```
 
+`content_type` must be a valid MIME type (parameters such as `; charset=utf-8` are fine),
+and `filename` is reduced to its last path segment (after `/` or `\`); an empty name,
+one over 255 bytes, or one with control characters is rejected with `400`. A multipart
+part without a content type defaults to `application/octet-stream`.
+
 Remote URLs are fetched server-side subject to the operator's allow-list; an
 unreachable or disallowed URL fails the submission with `400`.
 
@@ -135,6 +148,10 @@ request timeout so large uploads over slow links are not truncated.
 Pass an `idempotency_key` to make retries safe. If a submission reuses a key that
 already exists, Catapulte returns the **existing** email's id (`200`) and does not
 send a second copy.
+
+If the earlier submission with that key never completed (still in progress, or its
+cleanup failed), Catapulte returns `409` with `submission with this idempotency key is
+incomplete; retry later`. In a batch that item is `rejected`.
 
 ## Submitting a batch
 
@@ -172,7 +189,7 @@ with `500`. Batch items use the inline/remote attachment form (no multipart).
 | Query param | Notes |
 |-------------|-------|
 | `status` | `queued` \| `sent` \| `failed` |
-| `recipient` | filter by recipient address |
+| `recipient` | substring filter on the recipient's bare email address; display names are not matched |
 | `template` | filter by named MJML template name; only matches emails submitted with `kind: mjml_named` |
 | `id` | exact email id (UUID) |
 | `after_ms`, `before_ms` | created-at bounds, Unix epoch ms |
@@ -261,7 +278,13 @@ each event as JSON:
 
 `attempt` counts from 1; `sender_name`/`correlation_id` may be null. `error_class`
 is present on `retrying` / `delivery.failed` only, and is one of `template_resolve`,
-`template_interpolate`, `template_render`, `attachment`, `delivery`, `routing`.
+`template_interpolate`, `template_render`, `attachment`, `delivery`, `rejected`,
+`routing`. `delivery` is a transient delivery failure, retried up to the attempt limit.
+`rejected` is a terminal message-level rejection: a bad recipient or mailbox, content the
+server refuses, or a message that cannot be built locally (which has no SMTP code). It is
+not retried or sent to other routes, but it can follow earlier transient attempts.
+Route-level failures (authentication, policy, size limits) fall back to other routes,
+retry, and end as `delivery`.
 (The pushed payload has no timestamp; the stored events from `GET /events` carry
 `created_at_ms`.) Webhooks are retried a few times on a non-2xx response.
 
@@ -306,6 +329,10 @@ If the operator enables the NATS inbound transport, publish the **same JSON** as
 there is no synchronous tracking id. Supply a `correlation_id` in the payload and
 observe the outcome via lifecycle events.
 
+Always include an `idempotency_key` in NATS submissions. Failed submissions are
+negatively acknowledged and redelivered; the key lets a redelivery recover an email
+whose queue publish was left uncertain instead of creating a second one.
+
 ## Listing senders
 
 `GET /senders` reports the configured upstream SMTP senders and their usage within
@@ -342,6 +369,7 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 |--------|------|
 | `400` | malformed JSON/multipart, validation failure (sender/recipients/body/attachment), bad UUID, unreachable/disallowed remote attachment, batch over 100 |
 | `401` | missing/invalid bearer token |
+| `409` | idempotency key matches a submission that never completed; retry later |
 | `500` | storage / queue / attachment-store failure |
 
 ## Limits
@@ -352,5 +380,15 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 | Max envelope JSON (multipart `envelope` part) | 1 MiB |
 | Max size per attachment | 25 MiB |
 | Max attachments per email | 10 |
+| Max message size | 25 MiB by default (`CATAPULTE_MAX_MESSAGE_BYTES`) |
 | Max emails per batch | 100 |
 | List page size | default 20, max 100 |
+
+The message size limit is checked twice. At submit, Catapulte estimates the size as
+`(attachment bytes + inline body length) × 4/3` and returns `400` (a per-item
+`rejected` in a batch) when it exceeds the limit; the estimate excludes template and
+variable growth, rendering, MIME headers, boundaries and line wrapping, so it is an
+early rejection, not a guarantee. The final check measures the rendered message just
+before sending: a message over the limit is never sent and ends as `delivery.failed`
+with `error_class` `rejected`. To avoid relay-side rejections, set the limit at or
+below your relay's own limit, minus any headers the relay adds.

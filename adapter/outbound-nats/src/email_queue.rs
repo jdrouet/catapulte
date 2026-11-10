@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use async_nats::HeaderMap;
+use async_nats::jetstream::context::PublishErrorKind;
+use async_nats::{HeaderMap, header};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::port::email_queue::{
@@ -12,17 +13,54 @@ use futures_util::StreamExt;
 use crate::NatsAdapter;
 use crate::dto::QueuedEmailPayload;
 
-/// Convert W3C trace-context pairs into a NATS `HeaderMap`.
-/// Returns `None` when the carrier is empty so callers can skip header publish.
-fn pairs_to_header_map(pairs: &[(String, String)]) -> Option<HeaderMap> {
-    if pairs.is_empty() {
-        return None;
-    }
+/// Build the publish headers: `Nats-Msg-Id` (`JetStream` deduplication key)
+/// plus the W3C trace-context pairs.
+fn publish_headers(id: EmailId, pairs: &[(String, String)]) -> HeaderMap {
     let mut map = HeaderMap::new();
+    map.insert(header::NATS_MESSAGE_ID, id.as_uuid().to_string().as_str());
     for (k, v) in pairs {
         map.insert(k.as_str(), v.as_str());
     }
-    Some(map)
+    map
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublishStage {
+    Send,
+    Ack,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueFailure {
+    Definite,
+    Uncertain,
+}
+
+/// Send-stage failures never reached the server. At the ack stage only a
+/// parsed negative acknowledgement is definite; anything else may have been stored.
+fn classify(stage: PublishStage, kind: PublishErrorKind) -> QueueFailure {
+    match (stage, kind) {
+        (PublishStage::Send, _)
+        | (
+            PublishStage::Ack,
+            PublishErrorKind::StreamNotFound
+            | PublishErrorKind::WrongLastMessageId
+            | PublishErrorKind::WrongLastSequence,
+        ) => QueueFailure::Definite,
+        _ => QueueFailure::Uncertain,
+    }
+}
+
+fn publish_failure(
+    stage: PublishStage,
+    err: async_nats::jetstream::context::PublishError,
+) -> EmailQueueError {
+    let failure = classify(stage, err.kind());
+    let source = nats_err(err);
+    match failure {
+        QueueFailure::Definite => EmailQueueError::Storage { source },
+        QueueFailure::Uncertain => EmailQueueError::Uncertain { source },
+    }
 }
 
 /// Extract only the W3C trace-context headers from a NATS `HeaderMap`.
@@ -104,21 +142,14 @@ impl EmailQueue for NatsAdapter {
             .context("serializing envelope")
             .map_err(|source| EmailQueueError::Storage { source })?;
         let trace_pairs = catapulte_telemetry::propagation::inject_current();
-        if let Some(headers) = pairs_to_header_map(&trace_pairs) {
-            self.client()
-                .publish_with_headers(self.subject().to_owned(), headers, bytes.into())
-                .await
-                .map_err(nats_err)
-                .context("publishing to NATS")
-                .map_err(|source| EmailQueueError::Storage { source })?;
-        } else {
-            self.client()
-                .publish(self.subject().to_owned(), bytes.into())
-                .await
-                .map_err(nats_err)
-                .context("publishing to NATS")
-                .map_err(|source| EmailQueueError::Storage { source })?;
-        }
+        let headers = publish_headers(id, &trace_pairs);
+        let ack = self
+            .jetstream()
+            .publish_with_headers(self.subject().to_owned(), headers, bytes.into())
+            .await
+            .map_err(|e| publish_failure(PublishStage::Send, e))?;
+        ack.await
+            .map_err(|e| publish_failure(PublishStage::Ack, e))?;
         Ok(())
     }
 
@@ -279,6 +310,47 @@ mod header_filter_tests {
 }
 
 #[cfg(test)]
+mod classify_tests {
+    use async_nats::jetstream::context::PublishErrorKind as K;
+
+    use super::PublishStage::{Ack, Send};
+    use super::QueueFailure::{Definite, Uncertain};
+    use super::classify;
+
+    #[test]
+    fn send_stage_is_always_definite() {
+        for kind in [
+            K::StreamNotFound,
+            K::WrongLastMessageId,
+            K::WrongLastSequence,
+            K::TimedOut,
+            K::BrokenPipe,
+            K::MaxAckPending,
+            K::MaxPayloadExceeded,
+            K::Other,
+        ] {
+            assert_eq!(classify(Send, kind), Definite, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn ack_stage_table() {
+        for (kind, expected) in [
+            (K::StreamNotFound, Definite),
+            (K::WrongLastMessageId, Definite),
+            (K::WrongLastSequence, Definite),
+            (K::TimedOut, Uncertain),
+            (K::BrokenPipe, Uncertain),
+            (K::MaxAckPending, Uncertain),
+            (K::MaxPayloadExceeded, Uncertain),
+            (K::Other, Uncertain),
+        ] {
+            assert_eq!(classify(Ack, kind), expected, "{kind:?}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod nak_tests {
     use super::nak_payload;
     use std::time::Duration;
@@ -305,7 +377,7 @@ mod tests {
     use catapulte_domain::entity::body::{BodySource, Plain};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::port::email_queue::EmailQueue;
+    use catapulte_domain::port::email_queue::{EmailQueue, EmailQueueError};
     use testcontainers::GenericImage;
     use testcontainers::ImageExt;
     use testcontainers::core::WaitFor;
@@ -422,5 +494,117 @@ mod tests {
 
         let result = tokio::time::timeout(Duration::from_secs(8), adapter.dequeue()).await;
         assert!(result.is_err(), "expected dequeue to time out after ack");
+    }
+
+    async fn stream_messages(adapter: &NatsAdapter) -> u64 {
+        adapter
+            .jetstream()
+            .get_stream("TEST")
+            .await
+            .unwrap()
+            .info()
+            .await
+            .unwrap()
+            .state
+            .messages
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn acked_enqueue_stores_one_stream_message() {
+        let (adapter, _nats) = fresh_adapter().await;
+
+        adapter
+            .enqueue(EmailId::default(), &sample_envelope())
+            .await
+            .unwrap();
+
+        assert_eq!(stream_messages(&adapter).await, 1);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn same_id_twice_is_deduplicated_and_both_succeed() {
+        let (adapter, _nats) = fresh_adapter().await;
+        let id = EmailId::default();
+        let envelope = sample_envelope();
+
+        adapter.enqueue(id, &envelope).await.unwrap();
+        adapter.enqueue(id, &envelope).await.unwrap();
+
+        assert_eq!(stream_messages(&adapter).await, 1);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn enqueue_after_stream_deleted_is_a_definite_failure() {
+        let (adapter, _nats) = fresh_adapter().await;
+        adapter.jetstream().delete_stream("TEST").await.unwrap();
+
+        let err = adapter
+            .enqueue(EmailId::default(), &sample_envelope())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, EmailQueueError::Storage { .. }), "{err:?}");
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn enqueue_stores_msg_id_header_on_the_stream_message() {
+        let (adapter, _nats) = fresh_adapter().await;
+        let id = EmailId::default();
+
+        adapter.enqueue(id, &sample_envelope()).await.unwrap();
+
+        let stream = adapter.jetstream().get_stream("TEST").await.unwrap();
+        let stored = stream.get_raw_message(1).await.unwrap();
+        let got = stored
+            .headers
+            .get(async_nats::header::NATS_MESSAGE_ID)
+            .expect("Nats-Msg-Id missing");
+        assert_eq!(got.as_str(), id.as_uuid().to_string());
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn trace_headers_round_trip_through_the_stream() {
+        let (adapter, _nats) = fresh_adapter().await;
+        let id = EmailId::default();
+        let payload = crate::dto::QueuedEmailPayload::from((&id, &sample_envelope()));
+        let pairs = vec![(
+            "traceparent".to_owned(),
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned(),
+        )];
+
+        adapter
+            .jetstream()
+            .publish_with_headers(
+                "test.queued",
+                super::publish_headers(id, &pairs),
+                serde_json::to_vec(&payload).unwrap().into(),
+            )
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        let dequeued = tokio::time::timeout(Duration::from_secs(10), adapter.dequeue())
+            .await
+            .expect("dequeue timed out")
+            .unwrap();
+
+        assert_eq!(dequeued.trace.into_pairs(), pairs);
+    }
+
+    #[test]
+    fn publish_headers_always_carry_msg_id() {
+        let id = EmailId::default();
+        for pairs in [vec![], vec![("traceparent".to_owned(), "x".to_owned())]] {
+            let headers = super::publish_headers(id, &pairs);
+            let got = headers
+                .get(async_nats::header::NATS_MESSAGE_ID)
+                .expect("Nats-Msg-Id missing");
+            assert_eq!(got.as_str(), id.as_uuid().to_string());
+        }
     }
 }
