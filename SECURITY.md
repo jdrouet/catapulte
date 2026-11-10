@@ -7,7 +7,8 @@ applied only to the latest release.
 
 | Version                          | Supported          |
 | -------------------------------- | ------------------ |
-| Latest `2.x` release             | :white_check_mark: |
+| Latest `3.x` release             | :white_check_mark: |
+| `2.x`                            | :x:                |
 | `< 2.0` (pre-rewrite `0.x` / `1.0.0` alphas) | :x:        |
 
 ## Reporting a vulnerability
