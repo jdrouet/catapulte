@@ -371,5 +371,15 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 | Max envelope JSON (multipart `envelope` part) | 1 MiB |
 | Max size per attachment | 25 MiB |
 | Max attachments per email | 10 |
+| Max message size | 25 MiB by default (`CATAPULTE_MAX_MESSAGE_BYTES`) |
 | Max emails per batch | 100 |
 | List page size | default 20, max 100 |
+
+The message size limit is checked twice. At submit, Catapulte estimates the size as
+`(attachment bytes + inline body length) × 4/3` and returns `400` (a per-item
+`rejected` in a batch) when it exceeds the limit; the estimate excludes template and
+variable growth, rendering, MIME headers, boundaries and line wrapping, so it is an
+early rejection, not a guarantee. The final check measures the rendered message just
+before sending: a message over the limit is never sent and ends as `delivery.failed`
+with `error_class` `rejected`. To avoid relay-side rejections, set the limit at or
+below your relay's own limit, minus any headers the relay adds.

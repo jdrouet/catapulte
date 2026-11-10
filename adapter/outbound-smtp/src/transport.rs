@@ -243,12 +243,16 @@ impl SmtpConfig {
         let builder = build_transport_builder(&self.tls, &self.host)?.port(self.port);
         let builder = apply_credentials(builder, self.username, self.password);
         let transport = builder.build();
-        Ok(SmtpTransport { transport })
+        Ok(SmtpTransport {
+            transport,
+            max_message_bytes: None,
+        })
     }
 }
 
 pub struct SmtpTransport {
     transport: AsyncSmtpTransport<Tokio1Executor>,
+    max_message_bytes: Option<u64>,
 }
 
 /// Message-level rejections (enhanced codes `5.1.x`, `5.2.x`, `5.6.x`) cannot succeed on any
@@ -305,7 +309,15 @@ fn message_error(e: anyhow::Error) -> TransportError {
 }
 
 impl SmtpTransport {
-    pub(crate) async fn send_inner(&self, email: &OutboundEmail) -> Result<(), TransportError> {
+    /// Rejects, as a message-level failure, any rendered message larger than `max` bytes.
+    #[must_use]
+    pub fn with_max_message_bytes(mut self, max: u64) -> Self {
+        self.max_message_bytes = Some(max);
+        self
+    }
+
+    /// Builds the message and its wire bytes, enforcing the size limit on the final bytes.
+    fn prepare(&self, email: &OutboundEmail) -> Result<(Message, Vec<u8>), TransportError> {
         let from = parse_mailbox(&email.sender).map_err(message_error)?;
         let builder = apply_recipients(Message::builder().from(from), &email.recipients)
             .map_err(message_error)?;
@@ -316,8 +328,22 @@ impl SmtpTransport {
             &email.attachments,
         )
         .map_err(message_error)?;
+        let raw = message.formatted();
+        if self
+            .max_message_bytes
+            .is_some_and(|max| raw.len() as u64 > max)
+        {
+            return Err(message_error(anyhow::anyhow!(
+                "rendered message exceeds CATAPULTE_MAX_MESSAGE_BYTES"
+            )));
+        }
+        Ok((message, raw))
+    }
+
+    pub(crate) async fn send_inner(&self, email: &OutboundEmail) -> Result<(), TransportError> {
+        let (message, raw) = self.prepare(email)?;
         self.transport
-            .send(message)
+            .send_raw(message.envelope(), &raw)
             .await
             .map_err(|e| smtp_text_error(e.is_permanent(), &e.to_string()))?;
         Ok(())
@@ -337,6 +363,7 @@ mod tests {
 
     use catapulte_domain::entity::attachment::ResolvedAttachment;
     use catapulte_domain::entity::body::{Plain, RenderedBody};
+    use catapulte_domain::entity::email::RecipientKind;
     use lettre::Address;
 
     use super::{
@@ -636,5 +663,95 @@ mod tests {
 
         assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
         assert_eq!(err.source.to_string().chars().count(), 257);
+    }
+
+    fn local_transport(max: Option<u64>) -> super::SmtpTransport {
+        let transport = SmtpConfig {
+            host: "localhost".into(),
+            port: 2525,
+            username: None,
+            password: None,
+            tls: SmtpTls::None,
+        }
+        .build()
+        .unwrap();
+        match max {
+            Some(max) => transport.with_max_message_bytes(max),
+            None => transport,
+        }
+    }
+
+    fn email_with_attachment(
+        size: usize,
+        kind: RecipientKind,
+    ) -> catapulte_domain::port::email_sender::OutboundEmail {
+        catapulte_domain::port::email_sender::OutboundEmail {
+            sender: "from@example.com".into(),
+            subject: Some("big".into()),
+            recipients: vec![(kind, "to@example.com".into())],
+            body: plain_text_body(),
+            attachments: vec![ResolvedAttachment {
+                filename: "big.bin".into(),
+                content_type: "application/octet-stream".into(),
+                bytes: bytes::Bytes::from(vec![7u8; size]),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn rendered_message_over_max_is_a_message_level_failure() {
+        let transport = local_transport(Some(1000));
+
+        let err = transport
+            .prepare(&email_with_attachment(2000, RecipientKind::To))
+            .unwrap_err();
+
+        assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+        assert!(err.to_string().contains("CATAPULTE_MAX_MESSAGE_BYTES"));
+    }
+
+    #[tokio::test]
+    async fn rendered_message_within_max_is_prepared() {
+        let transport = local_transport(Some(100_000));
+
+        let (_, raw) = transport
+            .prepare(&email_with_attachment(2000, RecipientKind::To))
+            .unwrap();
+
+        assert!(raw.len() <= 100_000);
+    }
+
+    #[tokio::test]
+    async fn bcc_recipient_stays_in_envelope_but_not_in_wire_bytes() {
+        // send_raw(message.envelope(), &raw) is what `send` does internally.
+        let transport = local_transport(None);
+
+        let (message, raw) = transport
+            .prepare(&email_with_attachment(10, RecipientKind::Bcc))
+            .unwrap();
+
+        let to: Vec<String> = message
+            .envelope()
+            .to()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(to, vec!["to@example.com".to_owned()]);
+        let raw = String::from_utf8_lossy(&raw);
+        assert!(!raw.contains("Bcc:"), "Bcc header must not be on the wire");
+    }
+
+    #[tokio::test]
+    async fn huge_rendered_body_over_max_is_a_message_level_failure() {
+        let transport = local_transport(Some(1000));
+        let mut email = email_with_attachment(0, RecipientKind::To);
+        email.attachments.clear();
+        email.body = RenderedBody::new(
+            Plain::try_new(None, Some(format!("<p>{}</p>", "x".repeat(5000)))).unwrap(),
+        );
+
+        let err = transport.prepare(&email).unwrap_err();
+
+        assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
     }
 }

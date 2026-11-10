@@ -188,6 +188,9 @@ send on it fails and is retried through the normal queue retry and alternate-sen
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CATAPULTE_WORKER_CONCURRENCY` | Maximum number of emails the worker processes concurrently | `1` |
+| `CATAPULTE_MAX_MESSAGE_BYTES` | Maximum size of an email on the wire (also used for the early estimate at submit); must be a positive integer | `26214400` (25 MiB) |
+
+**Memory.** A worker holds the resolved attachment bytes, the copy inside the MIME part, the encoded message and its formatted wire bytes, so an email near the limit needs roughly `3.5 × CATAPULTE_MAX_MESSAGE_BYTES` of memory in the worst case, and the worker needs about `CATAPULTE_WORKER_CONCURRENCY × 3.5 × CATAPULTE_MAX_MESSAGE_BYTES` (about 88 MiB per concurrent email with the default). This is an approximation, not a measured bound. Set the limit at or below your relay's own limit, minus any headers the relay adds.
 
 **Choosing a safe concurrency value.** Every in-flight send touches both the DB (event publish, ack/nack, `set_attachments`) and an SMTP connection, so the practical ceiling is `min(SMTP pool size = 10, CATAPULTE_POSTGRES_MAX_CONNECTIONS)` with headroom left for the HTTP submit path and background GC. A formula like `concurrency = pool_size - 2` is a reasonable starting point.
 
