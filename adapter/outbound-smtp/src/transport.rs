@@ -3,7 +3,7 @@ use catapulte_domain::entity::attachment::ResolvedAttachment;
 use catapulte_domain::entity::body::RenderedBody;
 use catapulte_domain::entity::email::RecipientKind;
 use catapulte_domain::port::email_sender::OutboundEmail;
-use catapulte_domain::port::email_transport::EmailTransport;
+use catapulte_domain::port::email_transport::{EmailTransport, TransportError, TransportErrorKind};
 use lettre::message::header::{ContentDisposition, ContentType};
 use lettre::message::{Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
@@ -251,26 +251,81 @@ pub struct SmtpTransport {
     transport: AsyncSmtpTransport<Tokio1Executor>,
 }
 
+/// Message-level rejections (enhanced codes `5.1.x`, `5.2.x`, `5.6.x`) cannot succeed on any
+/// route; every other permanent failure is route-specific. `text` is the lettre error text,
+/// where the enhanced code is the first word after `permanent error (NNN): `.
+#[must_use]
+pub(crate) fn classify(permanent: bool, text: &str) -> TransportErrorKind {
+    if !permanent {
+        return TransportErrorKind::Transient;
+    }
+    let reply = text.split_once("): ").map_or(text, |(_, rest)| rest);
+    let enhanced = reply.split_whitespace().next().and_then(|word| {
+        let mut parts = word.split('.');
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some("5"), Some(subject), Some(detail), None)
+                if [subject, detail].iter().all(|p| {
+                    (1..=3).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit())
+                }) =>
+            {
+                Some((subject, detail))
+            }
+            _ => None,
+        }
+    });
+    match enhanced {
+        Some(("1" | "2" | "6", _)) => TransportErrorKind::PermanentMessage,
+        _ => TransportErrorKind::PermanentRoute,
+    }
+}
+
+const MAX_REPLY_CHARS: usize = 256;
+
+/// Caps remote-controlled reply text before it reaches events and logs.
+fn truncate_reply(text: &str) -> String {
+    match text.char_indices().nth(MAX_REPLY_CHARS) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_owned(),
+    }
+}
+
+/// Classifies on the full text, then caps what is kept, so truncation cannot hide the code.
+fn smtp_text_error(permanent: bool, text: &str) -> TransportError {
+    TransportError {
+        kind: classify(permanent, text),
+        source: anyhow::anyhow!("{}", truncate_reply(text)),
+    }
+}
+
+fn message_error(e: anyhow::Error) -> TransportError {
+    TransportError {
+        kind: TransportErrorKind::PermanentMessage,
+        source: e,
+    }
+}
+
 impl SmtpTransport {
-    pub(crate) async fn send_inner(&self, email: &OutboundEmail) -> anyhow::Result<()> {
-        let from = parse_mailbox(&email.sender)?;
-        let builder = apply_recipients(Message::builder().from(from), &email.recipients)?;
+    pub(crate) async fn send_inner(&self, email: &OutboundEmail) -> Result<(), TransportError> {
+        let from = parse_mailbox(&email.sender).map_err(message_error)?;
+        let builder = apply_recipients(Message::builder().from(from), &email.recipients)
+            .map_err(message_error)?;
         let message = finalize_message(
             builder,
             email.subject.as_deref(),
             &email.body,
             &email.attachments,
-        )?;
+        )
+        .map_err(message_error)?;
         self.transport
             .send(message)
             .await
-            .context("smtp send failed")?;
+            .map_err(|e| smtp_text_error(e.is_permanent(), &e.to_string()))?;
         Ok(())
     }
 }
 
 impl EmailTransport for SmtpTransport {
-    async fn deliver<'a>(&'a self, email: &'a OutboundEmail) -> Result<(), anyhow::Error> {
+    async fn deliver<'a>(&'a self, email: &'a OutboundEmail) -> Result<(), TransportError> {
         self.send_inner(email).await
     }
 }
@@ -284,7 +339,10 @@ mod tests {
     use catapulte_domain::entity::body::{Plain, RenderedBody};
     use lettre::Address;
 
-    use super::{SmtpConfig, SmtpTls, finalize_message, parse_mailbox, parse_port, parse_tls};
+    use super::{
+        SmtpConfig, SmtpTls, TransportErrorKind, classify, finalize_message, message_error,
+        parse_mailbox, parse_port, parse_tls, smtp_text_error, truncate_reply,
+    };
 
     fn make_lookup(
         vars: HashMap<&'static str, &'static str>,
@@ -478,5 +536,105 @@ mod tests {
     #[test]
     fn parse_mailbox_rejects_unparseable_value() {
         assert!(parse_mailbox("not an address").is_err());
+    }
+
+    #[test]
+    fn classify_table() {
+        use TransportErrorKind::{PermanentMessage, PermanentRoute, Transient};
+
+        let cases = [
+            (false, "transient error (451): 4.3.0 try later", Transient),
+            (
+                false,
+                "transient error (421): service unavailable",
+                Transient,
+            ),
+            (
+                true,
+                "permanent error (550): 5.1.1 user unknown",
+                PermanentMessage,
+            ),
+            (
+                true,
+                "permanent error (553): 5.1.3 bad mailbox syntax",
+                PermanentMessage,
+            ),
+            (
+                true,
+                "permanent error (552): 5.2.2 mailbox full",
+                PermanentMessage,
+            ),
+            (
+                true,
+                "permanent error (552): 5.3.4 message too large",
+                PermanentRoute,
+            ),
+            (
+                true,
+                "permanent error (554): 5.6.1 media not supported",
+                PermanentMessage,
+            ),
+            (
+                true,
+                "permanent error (535): 5.7.8 authentication failed",
+                PermanentRoute,
+            ),
+            (
+                true,
+                "permanent error (550): 5.7.1 relay denied",
+                PermanentRoute,
+            ),
+            (
+                true,
+                "permanent error (554): 5.3.0 other mail system",
+                PermanentRoute,
+            ),
+            (
+                true,
+                "permanent error (550): mailbox unavailable",
+                PermanentRoute,
+            ),
+            (true, "permanent error (535): ", PermanentRoute),
+            (true, "5.1.1 user unknown", PermanentMessage),
+            (
+                true,
+                "permanent error (550): 5.1.1.1 too many parts",
+                PermanentRoute,
+            ),
+            (
+                true,
+                "permanent error (550): 4.1.1 wrong class",
+                PermanentRoute,
+            ),
+        ];
+        for (permanent, text, expected) in cases {
+            assert_eq!(classify(permanent, text), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn message_build_errors_are_permanent_message() {
+        let err = message_error(anyhow::anyhow!("invalid address"));
+        assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+    }
+
+    #[test]
+    fn truncate_reply_caps_on_a_char_boundary() {
+        assert_eq!(truncate_reply("short"), "short");
+        let long = "é".repeat(300);
+        let cut = truncate_reply(&long);
+        assert_eq!(cut.chars().count(), 257);
+        assert!(cut.ends_with('…'));
+        assert!(cut.starts_with(&"é".repeat(256)));
+    }
+
+    #[test]
+    fn classification_uses_the_full_text_before_truncation() {
+        let text = format!("{}): 5.1.1 no such user", "x".repeat(300));
+
+        let err = smtp_text_error(true, &text);
+
+        assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+        assert_eq!(err.source.to_string().chars().count(), 257);
     }
 }

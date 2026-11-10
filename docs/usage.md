@@ -269,7 +269,13 @@ each event as JSON:
 
 `attempt` counts from 1; `sender_name`/`correlation_id` may be null. `error_class`
 is present on `retrying` / `delivery.failed` only, and is one of `template_resolve`,
-`template_interpolate`, `template_render`, `attachment`, `delivery`, `routing`.
+`template_interpolate`, `template_render`, `attachment`, `delivery`, `rejected`,
+`routing`. `delivery` is a transient delivery failure, retried up to the attempt limit.
+`rejected` is a terminal message-level rejection: a bad recipient or mailbox, content the
+server refuses, or a message that cannot be built locally (which has no SMTP code). It is
+not retried or sent to other routes, but it can follow earlier transient attempts.
+Route-level failures (authentication, policy, size limits) fall back to other routes,
+retry, and end as `delivery`.
 (The pushed payload has no timestamp; the stored events from `GET /events` carry
 `created_at_ms`.) Webhooks are retried a few times on a non-2xx response.
 

@@ -51,6 +51,9 @@ impl ProcessQueuedEmailError {
             Self::Interpolate(_) => ErrorClass::TemplateInterpolate,
             Self::Render(_) => ErrorClass::TemplateRender,
             Self::AttachmentResolve { .. } => ErrorClass::Attachment,
+            Self::Send(SendError::Send {
+                permanent: true, ..
+            }) => ErrorClass::Rejected,
             Self::Send(SendError::Send { .. }) => ErrorClass::Delivery,
             Self::Send(SendError::NoMatchingRoute { .. }) => ErrorClass::Routing,
         }
@@ -347,6 +350,7 @@ mod tests {
         async fn send(&self, _email: OutboundEmail) -> Result<SenderName, SendError> {
             Err(SendError::Send {
                 sender_name: SenderName::new("failing"),
+                permanent: false,
                 source: anyhow::anyhow!("connection refused"),
             })
         }
@@ -695,6 +699,37 @@ mod tests {
         let envelope = default_envelope(body);
         let err = service.execute(envelope).await.unwrap_err();
         assert_eq!(err.error_class(), ErrorClass::Delivery);
+    }
+
+    struct PermanentSender;
+
+    impl EmailSender for PermanentSender {
+        async fn send(&self, _email: OutboundEmail) -> Result<SenderName, SendError> {
+            Err(SendError::Send {
+                sender_name: SenderName::new("failing"),
+                permanent: true,
+                source: anyhow::anyhow!("550 5.1.1 unknown user"),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn permanent_send_failure_maps_to_rejected_error_class() {
+        use crate::entity::error_class::ErrorClass;
+
+        let service = ProcessQueuedEmailService::new(
+            FakeResolver {
+                inline_mjml: String::new(),
+            },
+            FakeInterpolator,
+            FakeRenderer,
+            PermanentSender,
+            FakeAttachmentStore,
+        );
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let err = service.execute(default_envelope(body)).await.unwrap_err();
+        assert_eq!(err.error_class(), ErrorClass::Rejected);
+        assert!(err.to_string().contains("550"), "{err}");
     }
 
     struct NoMatchingRouteSender;
