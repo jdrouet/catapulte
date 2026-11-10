@@ -636,10 +636,12 @@ dependencies = [
  "async-trait",
  "catapulte-domain",
  "mrml",
+ "reqwest 0.13.5",
  "tempfile",
  "tokio",
  "tracing",
  "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -2268,10 +2270,8 @@ dependencies = [
  "htmlparser",
  "indexmap 2.14.2",
  "itertools",
- "reqwest 0.13.5",
  "rustc-hash",
  "thiserror",
- "url",
 ]
 
 [[package]]

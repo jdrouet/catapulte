@@ -277,7 +277,11 @@ impl AppConfig {
                 allowed_sender_domains: self.allowed_sender_domains.clone(),
             }),
         );
-        let mjml_renderer = MjmlRenderer::new(self.include_loader.build());
+        let mjml_renderer = MjmlRenderer::new(
+            self.include_loader
+                .build()
+                .context("building include loader")?,
+        );
         let ingest_feedback = Arc::new(
             catapulte_domain::use_case::ingest_feedback::IngestFeedbackService::new(
                 storage.clone(),

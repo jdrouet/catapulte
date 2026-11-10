@@ -399,8 +399,9 @@ CATAPULTE_RESOLVER_TOKEN_GITLAB_HEADER_PRIVATE_TOKEN_VALUE=glpat-xxxx
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CATAPULTE_INCLUDE_LOADER_FS_ROOT` | Local root for `<mj-include>` | - |
-| `CATAPULTE_INCLUDE_LOADER_HTTP_ALLOW` | Allowed origins for HTTP includes | - |
-| `CATAPULTE_INCLUDE_LOADER_HTTP_DENY` | Blocked origins for HTTP includes | - |
+| `CATAPULTE_INCLUDE_LOADER_HTTP_ALLOW` | Exact origins allowed for HTTP includes (e.g. `https://example.com`); unset disables HTTP includes | - |
+| `CATAPULTE_INCLUDE_LOADER_HTTP_TIMEOUT_MS` | Total timeout for one HTTP include fetch, in milliseconds; redirects are never followed | `30000` |
+| `CATAPULTE_INCLUDE_LOADER_HTTP_MAX_BYTES` | Maximum size in bytes of an HTTP include response | `1048576` |
 
 ### Attachments
 

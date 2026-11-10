@@ -224,4 +224,79 @@ mod tests {
             "expected RenderError from noop loader, got Ok"
         );
     }
+
+    #[tokio::test]
+    async fn render_with_http_include_resolves_via_built_loader() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<mj-text>Hello http</mj-text>"),
+            )
+            .mount(&server)
+            .await;
+        let vars = std::collections::HashMap::from([(
+            "CATAPULTE_INCLUDE_LOADER_HTTP_ALLOW".to_owned(),
+            server.uri(),
+        )]);
+        let config = crate::include_loader::IncludeLoaderConfig::from_lookup(
+            "CATAPULTE_INCLUDE_LOADER",
+            |k| vars.get(k).cloned().ok_or(std::env::VarError::NotPresent),
+        )
+        .unwrap();
+        let renderer = MjmlRenderer::new(config.build().unwrap());
+
+        let source = format!(
+            r#"<mjml><mj-body><mj-section><mj-column><mj-include path="{}/h.mjml" /></mj-column></mj-section></mj-body></mjml>"#,
+            server.uri()
+        );
+        let result = renderer
+            .render(InterpolatedBody::Mjml(source))
+            .await
+            .unwrap();
+
+        assert!(result.into_plain().html().unwrap().contains("Hello http"));
+    }
+
+    #[tokio::test]
+    async fn nested_include_to_disallowed_origin_sends_no_request() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let target = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<mj-text>no</mj-text>"))
+            .expect(0)
+            .mount(&target)
+            .await;
+        let allowed = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"<mj-text>outer</mj-text><mj-include path="{}/n.mjml" />"#,
+                target.uri()
+            )))
+            .expect(1)
+            .mount(&allowed)
+            .await;
+        let vars = std::collections::HashMap::from([(
+            "CATAPULTE_INCLUDE_LOADER_HTTP_ALLOW".to_owned(),
+            allowed.uri(),
+        )]);
+        let config = crate::include_loader::IncludeLoaderConfig::from_lookup(
+            "CATAPULTE_INCLUDE_LOADER",
+            |k| vars.get(k).cloned().ok_or(std::env::VarError::NotPresent),
+        )
+        .unwrap();
+        let renderer = MjmlRenderer::new(config.build().unwrap());
+        let source = format!(
+            r#"<mjml><mj-body><mj-section><mj-column><mj-include path="{}/o.mjml" /></mj-column></mj-section></mj-body></mjml>"#,
+            allowed.uri()
+        );
+
+        let result = renderer.render(InterpolatedBody::Mjml(source)).await;
+
+        assert!(matches!(result, Err(RenderError::Mjml { .. })));
+    }
 }
