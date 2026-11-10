@@ -199,6 +199,7 @@ send on it fails and is retried through the normal queue retry and alternate-sen
 |----------|-------------|---------|
 | `CATAPULTE_WEBHOOK_URL` | URL to POST lifecycle events to | - |
 | `CATAPULTE_WEBHOOK_TIMEOUT_MS` | Webhook call timeout | `5000` |
+| `CATAPULTE_WEBHOOK_SECRET` | **(Optional)** Shared secret used to sign webhook requests with HMAC-SHA256; see [Verifying webhook signatures](docs/usage.md#verifying-webhook-signatures); treated as secret, never logged | - |
 | `CATAPULTE_NATS_EVENTS_URL` | NATS server for event publishing | - |
 | `CATAPULTE_NATS_EVENTS_SUBJECT` | Subject for lifecycle events | `catapulte.lifecycle` |
 

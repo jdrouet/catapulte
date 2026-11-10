@@ -1,18 +1,49 @@
 use anyhow::Context;
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
 use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
 #[derive(Clone)]
 pub struct WebhookPublisher {
     client: reqwest::Client,
     url: url::Url,
+    secret: Option<String>,
 }
 
 impl WebhookPublisher {
     #[must_use]
     pub fn new(client: reqwest::Client, url: url::Url) -> Self {
-        Self { client, url }
+        Self {
+            client,
+            url,
+            secret: None,
+        }
     }
+
+    /// Signs every request with HMAC-SHA256 over `<timestamp>.<body>` using `secret`.
+    #[must_use]
+    pub fn with_secret(mut self, secret: String) -> Self {
+        self.secret = Some(secret);
+        self
+    }
+}
+
+fn sign(secret: &str, timestamp: u64, body: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b".");
+    mac.update(body);
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .fold(String::from("sha256="), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
 }
 
 fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
@@ -25,7 +56,9 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
 
 impl EventPublisher for WebhookPublisher {
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-        let body = event_to_json(event);
+        let body = serde_json::to_vec(&event_to_json(event))
+            .context("serializing webhook payload")
+            .map_err(|source| EventPublisherError::Publish { source })?;
         let mut delay = std::time::Duration::from_millis(100);
         let mut last_err: Option<anyhow::Error> = None;
         for attempt in 0..3u32 {
@@ -33,10 +66,21 @@ impl EventPublisher for WebhookPublisher {
                 tokio::time::sleep(delay).await;
                 delay = std::time::Duration::from_millis(500);
             }
-            match self
+            let mut request = self
                 .client
                 .post(self.url.clone())
-                .json(&body)
+                .header(reqwest::header::CONTENT_TYPE, "application/json");
+            if let Some(secret) = &self.secret {
+                // A fresh timestamp per attempt keeps retries inside the receiver's window.
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                request = request
+                    .header("X-Catapulte-Timestamp", ts.to_string())
+                    .header("X-Catapulte-Signature", sign(secret, ts, &body));
+            }
+            match request
+                .body(body.clone())
                 .send()
                 .await
                 .context("sending webhook request")
@@ -60,6 +104,7 @@ impl EventPublisher for WebhookPublisher {
 pub struct WebhookConfig {
     pub url: Option<url::Url>,
     pub timeout_ms: u64,
+    pub secret: Option<String>,
 }
 
 impl WebhookConfig {
@@ -75,7 +120,14 @@ impl WebhookConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(5_000u64);
-        Ok(Self { url, timeout_ms })
+        let secret = std::env::var(format!("{prefix}_SECRET"))
+            .ok()
+            .filter(|v| !v.is_empty());
+        Ok(Self {
+            url,
+            timeout_ms,
+            secret,
+        })
     }
 
     /// # Errors
@@ -89,7 +141,11 @@ impl WebhookConfig {
             .timeout(std::time::Duration::from_millis(self.timeout_ms))
             .build()
             .context("building reqwest client")?;
-        Ok(Some(WebhookPublisher::new(client, url)))
+        let publisher = WebhookPublisher::new(client, url);
+        Ok(Some(match self.secret {
+            Some(secret) => publisher.with_secret(secret),
+            None => publisher,
+        }))
     }
 }
 
@@ -101,7 +157,10 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::WebhookPublisher;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    use super::{WebhookConfig, WebhookPublisher};
 
     fn publisher_for(server: &MockServer) -> WebhookPublisher {
         let url = url::Url::parse(&server.uri()).unwrap();
@@ -291,5 +350,124 @@ mod tests {
             },
         });
         assert_eq!(body, expected);
+    }
+
+    fn expected_signature(secret: &str, ts: &str, body: &[u8]) -> String {
+        use std::fmt::Write as _;
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(ts.as_bytes());
+        mac.update(b".");
+        mac.update(body);
+        let mut hex = String::new();
+        for b in mac.finalize().into_bytes() {
+            write!(hex, "{b:02x}").unwrap();
+        }
+        format!("sha256={hex}")
+    }
+
+    fn assert_signed(request: &wiremock::Request, secret: &str) {
+        let ts = request
+            .headers
+            .get("x-catapulte-timestamp")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let signature = request
+            .headers
+            .get("x-catapulte-signature")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(signature, expected_signature(secret, ts, &request.body));
+        assert_eq!(
+            request.headers.get("content-type").unwrap(),
+            "application/json"
+        );
+    }
+
+    fn queued() -> LifecycleEvent {
+        LifecycleEvent::Queued {
+            id: EmailId::default(),
+            correlation_id: None,
+        }
+    }
+
+    async fn ok_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn signed_request_can_be_verified_by_receiver() {
+        let server = ok_server().await;
+
+        publisher_for(&server)
+            .with_secret("s3cret".to_owned())
+            .publish(&queued())
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_signed(&requests[0], "s3cret");
+    }
+
+    #[tokio::test]
+    async fn config_build_with_secret_delivers_signed_requests() {
+        let server = ok_server().await;
+        let publisher = WebhookConfig {
+            url: Some(url::Url::parse(&server.uri()).unwrap()),
+            timeout_ms: 5_000,
+            secret: Some("s3cret".to_owned()),
+        }
+        .build()
+        .unwrap()
+        .unwrap();
+
+        publisher.publish(&queued()).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_signed(&requests[0], "s3cret");
+    }
+
+    #[tokio::test]
+    async fn without_secret_no_signature_headers_are_sent() {
+        let server = ok_server().await;
+
+        publisher_for(&server).publish(&queued()).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert!(!requests[0].headers.contains_key("x-catapulte-timestamp"));
+        assert!(!requests[0].headers.contains_key("x-catapulte-signature"));
+    }
+
+    #[tokio::test]
+    async fn each_retry_is_signed_over_its_own_timestamp() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        publisher_for(&server)
+            .with_secret("s3cret".to_owned())
+            .publish(&queued())
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in &requests {
+            assert_signed(request, "s3cret");
+        }
     }
 }

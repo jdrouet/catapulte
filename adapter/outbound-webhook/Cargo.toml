@@ -12,7 +12,9 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 catapulte-domain = { path = "../../domain" }
-reqwest = { workspace = true, features = ["json"] }
+hmac = "0.12"
+reqwest = { workspace = true }
+sha2 = "0.10"
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
