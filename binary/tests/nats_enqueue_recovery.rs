@@ -267,13 +267,11 @@ impl Harness {
     async fn row_is_enqueued(&self) -> bool {
         let probe = Envelope {
             idempotency_key: Some("recovery-key".to_owned()),
-            correlation_id: None,
-            subject: None,
-            sender: "probe@example.com".to_owned(),
-            recipients: vec![],
-            body: BodySource::Plain(Plain::try_new(Some("x".to_owned()), None).unwrap()),
-            variables: serde_json::Map::new(),
-            attachments: vec![],
+            ..Envelope::new(
+                "probe@example.com",
+                vec![],
+                BodySource::Plain(Plain::try_new(Some("x".to_owned()), None).unwrap()),
+            )
         };
         matches!(
             self.repo.save(EmailId::default(), &probe).await.unwrap(),

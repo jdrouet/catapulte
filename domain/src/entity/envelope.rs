@@ -15,3 +15,25 @@ pub struct Envelope {
     pub variables: serde_json::Map<String, serde_json::Value>,
     pub attachments: Vec<AttachmentRef>,
 }
+
+impl Envelope {
+    /// Builds an envelope with every optional field empty, for tests. Production code
+    /// builds the struct literally so that a new field fails to compile until handled.
+    #[must_use]
+    pub fn new(
+        sender: impl Into<String>,
+        recipients: Vec<(RecipientKind, String)>,
+        body: BodySource,
+    ) -> Self {
+        Self {
+            idempotency_key: None,
+            correlation_id: None,
+            subject: None,
+            sender: sender.into(),
+            recipients,
+            body,
+            variables: serde_json::Map::new(),
+            attachments: vec![],
+        }
+    }
+}

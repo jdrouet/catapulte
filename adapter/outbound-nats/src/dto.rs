@@ -238,14 +238,13 @@ mod tests {
 
         let id = EmailId::default();
         let envelope = Envelope {
-            idempotency_key: None,
-            correlation_id: None,
             subject: Some("Test subject".into()),
-            sender: "sender@example.com".into(),
-            recipients: vec![(RecipientKind::To, "to@example.com".into())],
-            body: BodySource::Plain(Plain::try_new(Some("Hello world".into()), None).unwrap()),
-            variables: serde_json::Map::new(),
             attachments,
+            ..Envelope::new(
+                "sender@example.com",
+                vec![(RecipientKind::To, "to@example.com".into())],
+                BodySource::Plain(Plain::try_new(Some("Hello world".into()), None).unwrap()),
+            )
         };
 
         let payload = QueuedEmailPayload::from((&id, &envelope));

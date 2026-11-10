@@ -381,28 +381,21 @@ mod tests {
     }
 
     fn default_envelope(body: BodySource) -> Envelope {
-        Envelope {
-            idempotency_key: None,
-            correlation_id: None,
-            subject: None,
-            sender: "sender@example.com".into(),
-            recipients: vec![(RecipientKind::To, "to@example.com".into())],
+        Envelope::new(
+            "sender@example.com",
+            vec![(RecipientKind::To, "to@example.com".into())],
             body,
-            variables: Map::new(),
-            attachments: vec![],
-        }
+        )
     }
 
     fn default_envelope_with_vars(body: BodySource, variables: Map<String, Value>) -> Envelope {
         Envelope {
-            idempotency_key: None,
-            correlation_id: None,
-            subject: None,
-            sender: "sender@example.com".into(),
-            recipients: vec![(RecipientKind::To, "to@example.com".into())],
-            body,
             variables,
-            attachments: vec![],
+            ..Envelope::new(
+                "sender@example.com",
+                vec![(RecipientKind::To, "to@example.com".into())],
+                body,
+            )
         }
     }
 
