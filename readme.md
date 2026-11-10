@@ -366,6 +366,8 @@ Apply the same rule to a `reserved` row: quiesce, delete only when the stream re
 |----------|-------------|---------|
 | `CATAPULTE_RESOLVER_ALLOWED_DOMAINS` | Allowed domains for remote MJML fetching | - |
 | `CATAPULTE_RESOLVER_TEMPLATES_DIR` | Directory containing `.mjml` templates | - |
+| `CATAPULTE_RESOLVER_FETCH_TIMEOUT_MS` | Total timeout for one remote template fetch, in milliseconds; redirects are never followed | `30000` |
+| `CATAPULTE_RESOLVER_MAX_BYTES` | Maximum size in bytes of a remote template response | `1048576` |
 | `CATAPULTE_RESOLVER_TOKENS` | Comma-separated names of auth entries (e.g. `github,gitlab`); absent or empty means no auth | - |
 | `CATAPULTE_RESOLVER_TOKEN_<NAME>_HOST` | Exact host the named entry's token is attached to (must also be in `ALLOWED_DOMAINS`) | - |
 | `CATAPULTE_RESOLVER_TOKEN_<NAME>_BEARER_TOKEN` | **(Optional)** Sent as `Authorization: Bearer <token>` only to the matching host; treated as secret, never logged | - |
