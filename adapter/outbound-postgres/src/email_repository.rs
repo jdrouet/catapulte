@@ -2,8 +2,10 @@ use anyhow::Context;
 use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
+use catapulte_domain::entity::lifecycle_event::WORKER_EVENT_TYPES;
 use catapulte_domain::port::email_repository::{
-    EmailRecord, EmailRepository, EmailRepositoryError, EmailStatus, ListEmailsParams, SaveResult,
+    DuplicateState, EmailRecord, EmailRepository, EmailRepositoryError, EmailStatus, EnqueueState,
+    ListEmailsParams, SaveResult,
 };
 use sqlx::QueryBuilder;
 use sqlx::Row;
@@ -35,8 +37,8 @@ impl EmailRepository for PostgresAdapter {
         let recipients_dto = recipients_to_dto(&envelope.recipients);
 
         let result = sqlx::query(
-            "INSERT INTO emails (id, idempotency_key, correlation_id, subject, sender, recipients, body, variables) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+            "INSERT INTO emails (id, idempotency_key, correlation_id, subject, sender, recipients, body, variables, enqueue_state) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'reserved') \
              ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
         )
         .bind(id_uuid)
@@ -64,15 +66,7 @@ impl EmailRepository for PostgresAdapter {
             });
         };
 
-        let existing_uuid: uuid::Uuid =
-            sqlx::query_scalar("SELECT id FROM emails WHERE idempotency_key = $1")
-                .bind(key)
-                .fetch_one(self.pool())
-                .await
-                .context("fetching existing email by idempotency key")
-                .map_err(|source| EmailRepositoryError::Storage { source })?;
-
-        Ok(SaveResult::Duplicate(EmailId::from(existing_uuid)))
+        self.resolve_duplicate(key).await
     }
 
     async fn list_emails(
@@ -158,6 +152,33 @@ impl EmailRepository for PostgresAdapter {
             .map(PostgresAdapter::row_to_email_record)
             .collect::<anyhow::Result<Vec<_>>>()
             .map_err(|source| EmailRepositoryError::Storage { source })
+    }
+
+    async fn set_enqueue_state(
+        &self,
+        id: EmailId,
+        state: EnqueueState,
+    ) -> Result<(), EmailRepositoryError> {
+        let value = match state {
+            EnqueueState::Publishable => "publishable",
+            EnqueueState::Enqueued => "enqueued",
+        };
+        let result = sqlx::query("UPDATE emails SET enqueue_state = $1 WHERE id = $2")
+            .bind(value)
+            .bind(id.as_uuid())
+            .execute(self.pool())
+            .await
+            .context("updating enqueue_state")
+            .map_err(|source| EmailRepositoryError::Storage { source })?;
+        if result.rows_affected() == 0 {
+            return Err(EmailRepositoryError::Storage {
+                source: anyhow::anyhow!(
+                    "email not found for set_enqueue_state: id={}",
+                    id.as_uuid()
+                ),
+            });
+        }
+        Ok(())
     }
 
     async fn set_attachments(
@@ -296,6 +317,79 @@ impl PostgresAdapter {
     }
 }
 
+impl PostgresAdapter {
+    /// Looks the existing row up in one transaction, locking it with `FOR UPDATE` so
+    /// concurrent same-key recoveries serialise. A `publishable` row with worker evidence is
+    /// promoted to `enqueued`; without evidence its envelope is returned for replay.
+    async fn resolve_duplicate(&self, key: &str) -> Result<SaveResult, EmailRepositoryError> {
+        let storage = |source| EmailRepositoryError::Storage { source };
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .context("starting duplicate lookup transaction")
+            .map_err(storage)?;
+
+        let row = sqlx::query(
+            "SELECT id, enqueue_state, idempotency_key, correlation_id, subject, sender, \
+                    recipients, body, variables \
+             FROM emails WHERE idempotency_key = $1 FOR UPDATE",
+        )
+        .bind(key)
+        .fetch_one(&mut *tx)
+        .await
+        .context("fetching existing email by idempotency key")
+        .map_err(storage)?;
+
+        let existing_uuid: uuid::Uuid = row.try_get("id").map_err(|e| storage(e.into()))?;
+        let state: String = row
+            .try_get("enqueue_state")
+            .map_err(|e| storage(e.into()))?;
+
+        let (state, recovery) = match state.as_str() {
+            "reserved" => (DuplicateState::Reserved, None),
+            "enqueued" => (DuplicateState::Complete, None),
+            "publishable" => {
+                let has_evidence: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM lifecycle_events \
+                     WHERE email_id = $1 AND event_type = ANY($2))",
+                )
+                .bind(existing_uuid)
+                .bind(WORKER_EVENT_TYPES)
+                .fetch_one(&mut *tx)
+                .await
+                .context("checking worker evidence")
+                .map_err(storage)?;
+                if has_evidence {
+                    sqlx::query("UPDATE emails SET enqueue_state = 'enqueued' WHERE id = $1")
+                        .bind(existing_uuid)
+                        .execute(&mut *tx)
+                        .await
+                        .context("promoting enqueue_state")
+                        .map_err(storage)?;
+                    (DuplicateState::Complete, None)
+                } else {
+                    let envelope = crate::email_queue::parse_envelope(&row).map_err(storage)?;
+                    (DuplicateState::Complete, Some(envelope))
+                }
+            }
+            other => {
+                return Err(storage(anyhow::anyhow!("unknown enqueue_state {other:?}")));
+            }
+        };
+
+        tx.commit()
+            .await
+            .context("committing duplicate lookup transaction")
+            .map_err(storage)?;
+        Ok(SaveResult::Duplicate {
+            id: EmailId::from(existing_uuid),
+            state,
+            recovery,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
@@ -305,7 +399,8 @@ mod tests {
     use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
     use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::{
-        EmailRepository, EmailRepositoryError, EmailStatus, ListEmailsParams, SaveResult,
+        DuplicateState, EmailRepository, EmailRepositoryError, EmailStatus, EnqueueState,
+        ListEmailsParams, SaveResult,
     };
     use catapulte_domain::port::event_publisher::EventPublisher;
 
@@ -397,9 +492,112 @@ mod tests {
         let id2 = EmailId::default();
         let result2 = adapter.save(id2, &envelope).await.unwrap();
         match result2 {
-            SaveResult::Duplicate(existing_id) => assert_eq!(existing_id, id1),
+            SaveResult::Duplicate { id, .. } => assert_eq!(id, id1),
             SaveResult::Created(_) => panic!("expected Duplicate, got Created"),
         }
+    }
+
+    async fn keyed_row(adapter: &PostgresAdapter, state: Option<EnqueueState>) -> EmailId {
+        let id = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.idempotency_key = Some("key-abc".to_owned());
+        envelope.sender = "stored@example.com".to_owned();
+        adapter.save(id, &envelope).await.unwrap();
+        if let Some(state) = state {
+            adapter.set_enqueue_state(id, state).await.unwrap();
+        }
+        id
+    }
+
+    async fn add_event(adapter: &PostgresAdapter, id: EmailId, event_type: &str) {
+        sqlx::query("INSERT INTO lifecycle_events (id, email_id, event_type) VALUES ($1, $2, $3)")
+            .bind(uuid::Uuid::now_v7())
+            .bind(id.as_uuid())
+            .bind(event_type)
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+    }
+
+    async fn state_of(adapter: &PostgresAdapter, id: EmailId) -> String {
+        sqlx::query_scalar("SELECT enqueue_state FROM emails WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn duplicate(adapter: &PostgresAdapter) -> (EmailId, DuplicateState, Option<Envelope>) {
+        let mut envelope = sample_envelope();
+        envelope.idempotency_key = Some("key-abc".to_owned());
+        match adapter.save(EmailId::default(), &envelope).await.unwrap() {
+            SaveResult::Duplicate {
+                id,
+                state,
+                recovery,
+            } => (id, state, recovery),
+            SaveResult::Created(_) => panic!("expected Duplicate"),
+        }
+    }
+
+    #[tokio::test]
+    async fn publishable_duplicate_without_events_returns_the_stored_envelope() {
+        let (adapter, _container) = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+
+        let (found, _, recovery) = duplicate(&adapter).await;
+
+        assert_eq!(found, id);
+        assert_eq!(recovery.unwrap().sender, "stored@example.com");
+        assert_eq!(state_of(&adapter, id).await, "publishable");
+    }
+
+    #[tokio::test]
+    async fn publishable_duplicate_with_only_informational_events_still_returns_the_envelope() {
+        let (adapter, _container) = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+        add_event(&adapter, id, "queued").await;
+        add_event(&adapter, id, "suppressed").await;
+
+        let (_, _, recovery) = duplicate(&adapter).await;
+
+        assert!(recovery.is_some());
+        assert_eq!(state_of(&adapter, id).await, "publishable");
+    }
+
+    #[tokio::test]
+    async fn publishable_duplicate_with_a_worker_event_becomes_enqueued() {
+        let (adapter, _container) = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+        add_event(&adapter, id, "sending").await;
+
+        let (_, state, recovery) = duplicate(&adapter).await;
+
+        assert!(recovery.is_none());
+        assert_eq!(state, DuplicateState::Complete);
+        assert_eq!(state_of(&adapter, id).await, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn reserved_duplicate_is_never_replayed() {
+        let (adapter, _container) = fresh_adapter().await;
+        keyed_row(&adapter, None).await;
+
+        let (_, state, recovery) = duplicate(&adapter).await;
+
+        assert!(recovery.is_none());
+        assert_eq!(state, DuplicateState::Reserved);
+    }
+
+    #[tokio::test]
+    async fn enqueued_duplicate_returns_no_recovery() {
+        let (adapter, _container) = fresh_adapter().await;
+        keyed_row(&adapter, Some(EnqueueState::Enqueued)).await;
+
+        let (_, state, recovery) = duplicate(&adapter).await;
+
+        assert!(recovery.is_none());
+        assert_eq!(state, DuplicateState::Complete);
     }
 
     #[tokio::test]

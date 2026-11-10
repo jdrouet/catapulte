@@ -275,7 +275,8 @@ mod tests {
         AckToken, DequeuedEmail, EmailQueue, EmailQueueError, TraceCarrier,
     };
     use catapulte_domain::port::email_repository::{
-        EmailRecord, EmailRepository, EmailRepositoryError, ListEmailsParams, SaveResult,
+        EmailRecord, EmailRepository, EmailRepositoryError, EnqueueState, ListEmailsParams,
+        SaveResult,
     };
     use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
     use catapulte_domain::use_case::process_queued_email::{
@@ -428,6 +429,14 @@ mod tests {
             Ok(())
         }
 
+        async fn set_enqueue_state(
+            &self,
+            _: EmailId,
+            _: EnqueueState,
+        ) -> Result<(), EmailRepositoryError> {
+            Ok(())
+        }
+
         async fn delete(&self, _: EmailId) -> Result<(), EmailRepositoryError> {
             unimplemented!()
         }
@@ -460,6 +469,14 @@ mod tests {
             &self,
             _: EmailId,
             _: &[AttachmentRef],
+        ) -> Result<(), EmailRepositoryError> {
+            Ok(())
+        }
+
+        async fn set_enqueue_state(
+            &self,
+            _: EmailId,
+            _: EnqueueState,
         ) -> Result<(), EmailRepositoryError> {
             Ok(())
         }

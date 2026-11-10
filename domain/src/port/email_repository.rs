@@ -4,9 +4,35 @@ use crate::entity::attachment::{AttachmentRef, BlobRef};
 use crate::entity::email::{EmailId, RecipientKind};
 use crate::entity::envelope::Envelope;
 
+/// Where an email stands on its way into the queue. A freshly saved row is
+/// `Reserved`; the transitions below are the only ones callers may request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnqueueState {
+    Publishable,
+    Enqueued,
+}
+
+/// State of an existing row found by idempotency key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DuplicateState {
+    /// The submission never reached the publish step.
+    Reserved,
+    /// The submission got past the reservation: the row is publishable,
+    /// queued, or predates enqueue states.
+    Complete,
+}
+
+#[allow(clippy::large_enum_variant)] // one short-lived value per save
 pub enum SaveResult {
     Created(EmailId),
-    Duplicate(EmailId),
+    /// An email with the same idempotency key exists. `recovery` holds the
+    /// stored envelope when the original publish outcome is unknown and the
+    /// caller must publish it again.
+    Duplicate {
+        id: EmailId,
+        state: DuplicateState,
+        recovery: Option<Envelope>,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -53,6 +79,16 @@ pub trait EmailRepository: Send + Sync + 'static {
         &self,
         id: EmailId,
         attachments: &[AttachmentRef],
+    ) -> impl std::future::Future<Output = Result<(), EmailRepositoryError>> + Send;
+
+    /// # Errors
+    ///
+    /// Returns `EmailRepositoryError::Storage` if the row is missing or the
+    /// update fails.
+    fn set_enqueue_state(
+        &self,
+        id: EmailId,
+        state: EnqueueState,
     ) -> impl std::future::Future<Output = Result<(), EmailRepositoryError>> + Send;
 
     /// # Errors
