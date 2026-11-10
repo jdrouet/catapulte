@@ -31,9 +31,9 @@ publish = false
 
 [workspace.dependencies]
 anyhow = { version = "1.0" }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 url = { version = "2.5" }
-minijinja = { version = "2.0", default-features = false, features = ["builtins", "serde"] }
+minijinja = { version = "3.1", default-features = false, features = ["builtins", "serde"] }
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname", "pool"] }
 axum = { version = "0.8" }
 serde_json = { version = "1.0" }
@@ -44,11 +44,11 @@ tokio-util = { version = "0.7" }
 tower-http = { version = "0.7", features = ["trace"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-opentelemetry = { version = "0.32" }
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-client", "metrics"] }
-opentelemetry-semantic-conventions = { version = "0.32" }
-tracing-opentelemetry = { version = "0.33" }
+opentelemetry = { version = "0.33" }
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-client", "metrics"] }
+opentelemetry-semantic-conventions = { version = "0.33" }
+tracing-opentelemetry = { version = "0.34" }
 uuid = { version = "1.23", default-features = false, features = ["std", "v7"] }
 
 [workspace.lints.rust]
