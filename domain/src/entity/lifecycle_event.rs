@@ -2,6 +2,15 @@ use crate::entity::email::EmailId;
 use crate::entity::error_class::ErrorClass;
 use crate::entity::sender::SenderName;
 
+/// Event types a worker emits; each proves the queue stored the message.
+/// Informational events (`queued`, `suppressed`, `bounced`, `complained`) do not.
+pub const WORKER_EVENT_TYPES: &[&str] = &[
+    "sending",
+    "retrying",
+    "delivery.succeeded",
+    "delivery.failed",
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LifecycleEvent {
     Queued {

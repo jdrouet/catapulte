@@ -70,7 +70,10 @@ pub async fn submit_email_batch<S: HttpServerState>(
                 Ok(id) => results.push(BatchItemResultDto::Accepted {
                     id: id.as_uuid().to_string(),
                 }),
-                Err(e @ SubmitEmailError::MessageTooLarge { .. }) => {
+                Err(
+                    e @ (SubmitEmailError::MessageTooLarge { .. }
+                    | SubmitEmailError::ReservationIncomplete { .. }),
+                ) => {
                     results.push(BatchItemResultDto::Rejected {
                         error: e.to_string(),
                     });
@@ -296,6 +299,11 @@ mod tests {
         async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
             if input.subject.as_deref() == Some("too-large") {
                 return Err(SubmitEmailError::MessageTooLarge { max_bytes: 10 });
+            }
+            if input.subject.as_deref() == Some("incomplete") {
+                return Err(SubmitEmailError::ReservationIncomplete {
+                    id: EmailId::default(),
+                });
             }
             for att in input.attachments {
                 if let catapulte_domain::use_case::submit_email::AttachmentInput::Inline {
@@ -1038,6 +1046,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn single_submit_with_incomplete_reservation_returns_409() {
+        let app = make_router();
+        let mut payload = valid_email_payload("r@x.y");
+        payload["subject"] = serde_json::json!("incomplete");
+        let response = app
+            .oneshot(post_json(serde_json::to_vec(&payload).unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json["error"].as_str(),
+            Some("submission with this idempotency key is incomplete; retry later")
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_item_with_incomplete_reservation_is_rejected_while_others_are_accepted() {
+        let app = make_router();
+        let mut incomplete = valid_email_payload("r2@x.y");
+        incomplete["subject"] = serde_json::json!("incomplete");
+        let payload = serde_json::json!({
+            "emails": [valid_email_payload("r1@x.y"), incomplete, valid_email_payload("r3@x.y")]
+        });
+        let response = app
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().expect("results array");
+        assert_eq!(results[0]["status"].as_str(), Some("accepted"));
+        assert_eq!(results[1]["status"].as_str(), Some("rejected"));
+        assert!(results[1]["error"].as_str().unwrap().contains("incomplete"));
+        assert_eq!(results[2]["status"].as_str(), Some("accepted"));
     }
 
     #[tokio::test]

@@ -149,6 +149,10 @@ Pass an `idempotency_key` to make retries safe. If a submission reuses a key tha
 already exists, Catapulte returns the **existing** email's id (`200`) and does not
 send a second copy.
 
+If the earlier submission with that key never completed (still in progress, or its
+cleanup failed), Catapulte returns `409` with `submission with this idempotency key is
+incomplete; retry later`. In a batch that item is `rejected`.
+
 ## Submitting a batch
 
 `POST /emails/batch` accepts up to **100** emails and reports per-email outcomes
@@ -325,6 +329,10 @@ If the operator enables the NATS inbound transport, publish the **same JSON** as
 there is no synchronous tracking id. Supply a `correlation_id` in the payload and
 observe the outcome via lifecycle events.
 
+Always include an `idempotency_key` in NATS submissions. Failed submissions are
+negatively acknowledged and redelivered; the key lets a redelivery recover an email
+whose queue publish was left uncertain instead of creating a second one.
+
 ## Listing senders
 
 `GET /senders` reports the configured upstream SMTP senders and their usage within
@@ -361,6 +369,7 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 |--------|------|
 | `400` | malformed JSON/multipart, validation failure (sender/recipients/body/attachment), bad UUID, unreachable/disallowed remote attachment, batch over 100 |
 | `401` | missing/invalid bearer token |
+| `409` | idempotency key matches a submission that never completed; retry later |
 | `500` | storage / queue / attachment-store failure |
 
 ## Limits

@@ -45,6 +45,10 @@ impl IntoResponse for AppError {
             | Self::Submit(
                 SubmitEmailError::AttachmentFetch { .. } | SubmitEmailError::MessageTooLarge { .. },
             ) => (StatusCode::BAD_REQUEST, "invalid request"),
+            Self::Submit(SubmitEmailError::ReservationIncomplete { .. }) => (
+                StatusCode::CONFLICT,
+                "submission with this idempotency key is incomplete; retry later",
+            ),
             Self::Submit(
                 SubmitEmailError::Persist(_)
                 | SubmitEmailError::Enqueue(_)
