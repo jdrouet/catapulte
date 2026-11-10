@@ -225,6 +225,8 @@ fn input_with(
             content_type: "text/plain".to_owned(),
             reader: Box::pin(std::io::Cursor::new(attachment.to_vec())),
         }],
+        reply_to: vec![format!("Reply <{correlation_id}@reply.example.com>")],
+        headers: vec![("X-Corr".to_owned(), correlation_id.to_owned())],
     }
 }
 
@@ -293,6 +295,8 @@ fn assert_same_envelope(got: &Envelope, published: &Envelope) {
     assert_eq!(format!("{:?}", got.body), format!("{:?}", published.body));
     assert_eq!(got.variables, published.variables);
     assert_eq!(got.attachments, published.attachments);
+    assert_eq!(got.reply_to, published.reply_to);
+    assert_eq!(got.headers, published.headers);
 }
 
 #[tokio::test]

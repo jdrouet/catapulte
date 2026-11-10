@@ -1,5 +1,6 @@
 use axum::Json;
 use axum::body::Body;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Multipart, Query, Request, State};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::port::email_repository::ListEmailsParams;
@@ -50,11 +51,13 @@ pub async fn submit_email<S: HttpServerState>(
 /// # Errors
 ///
 /// Returns `AppError::BadRequestRaw` when the batch exceeds the maximum size limit.
-#[tracing::instrument(skip_all, fields(batch_size = request.emails.len()))]
+#[tracing::instrument(skip_all, fields(batch_size = tracing::field::Empty))]
 pub async fn submit_email_batch<S: HttpServerState>(
     State(state): State<S>,
-    Json(request): Json<BatchSubmitEmailRequest>,
+    payload: Result<Json<BatchSubmitEmailRequest>, JsonRejection>,
 ) -> Result<Json<BatchSubmitEmailResponse>, AppError> {
+    let Json(request) = payload?;
+    tracing::Span::current().record("batch_size", request.emails.len());
     if request.emails.len() > MAX_EMAILS_PER_BATCH {
         return Err(AppError::BadRequestRaw(format!(
             "batch exceeds maximum of {MAX_EMAILS_PER_BATCH} emails"
@@ -1449,5 +1452,197 @@ mod tests {
         let app = make_router();
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn envelope_with(extra: &serde_json::Value) -> serde_json::Value {
+        let mut env = valid_email_payload("r@x.y");
+        for (k, v) in extra.as_object().unwrap() {
+            env[k] = v.clone();
+        }
+        env
+    }
+
+    fn invalid_extras() -> Vec<(&'static str, serde_json::Value)> {
+        let eleven: serde_json::Map<String, serde_json::Value> = (0..11)
+            .map(|i| (format!("X-H{i}"), serde_json::json!("v")))
+            .collect();
+        vec![
+            (
+                "crlf",
+                serde_json::json!({"headers": {"X-A": "a\r\nBcc: x@y.z"}}),
+            ),
+            (
+                "long name",
+                serde_json::json!({"headers": {"X".repeat(77): "v"}}),
+            ),
+            (
+                "reserved",
+                serde_json::json!({"headers": {"message-ID": "v"}}),
+            ),
+            (
+                "content-*",
+                serde_json::json!({"headers": {"Content-Type": "v"}}),
+            ),
+            ("11 headers", serde_json::json!({ "headers": eleven })),
+            ("colon", serde_json::json!({"headers": {"X:A": "v"}})),
+            (
+                "bad reply_to",
+                serde_json::json!({"reply_to": "not an address"}),
+            ),
+            (
+                "reply_to control",
+                serde_json::json!({"reply_to": "A\u{1}B <a@b.c>"}),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn json_submit_rejects_invalid_reply_to_and_headers() {
+        for (label, extra) in invalid_extras() {
+            let body = serde_json::to_vec(&envelope_with(&extra)).unwrap();
+            let response = make_router().oneshot(post_json(body)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn multipart_submit_rejects_invalid_reply_to_and_headers() {
+        for (label, extra) in invalid_extras() {
+            let boundary = "extrasboundary01";
+            let envelope = serde_json::to_vec(&envelope_with(&extra)).unwrap();
+            let body = multipart_body(
+                boundary,
+                &[("envelope", None, Some("application/json"), &envelope)],
+            );
+            let response = make_router()
+                .oneshot(post_multipart(boundary, body))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn json_and_multipart_accept_valid_reply_to_and_headers() {
+        let extra = serde_json::json!({
+            "reply_to": ["Support <help@x.y>", {"name": "Ops", "address": "ops@x.y"}],
+            "headers": {"X-Order-Id": "42", "In-Reply-To": "<a@b.c>"}
+        });
+        let json = serde_json::to_vec(&envelope_with(&extra)).unwrap();
+        let response = make_router()
+            .oneshot(post_json(json.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let boundary = "extrasboundary02";
+        let body = multipart_body(
+            boundary,
+            &[("envelope", None, Some("application/json"), &json)],
+        );
+        let response = make_router()
+            .oneshot(post_multipart(boundary, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn batch_item_with_invalid_header_is_rejected() {
+        let payload = serde_json::json!({
+            "emails": [
+                envelope_with(&serde_json::json!({"headers": {"Subject": "x"}})),
+                valid_email_payload("r@x.y"),
+            ]
+        });
+        let response = make_router()
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["results"][0]["status"], "rejected");
+        assert_eq!(json["results"][1]["status"], "accepted");
+    }
+
+    const DUPLICATE_HEADER_JSON: &str = r#"{"sender":"a@b.c",
+        "recipients":[{"kind":"to","address":"r@x.y"}],
+        "body":{"kind":"plain","text":"hi"},
+        "headers":{"X-A":"one","X-A":"two"}}"#;
+
+    #[tokio::test]
+    async fn json_submit_rejects_a_repeated_header_name() {
+        let response = make_router()
+            .oneshot(post_json(DUPLICATE_HEADER_JSON))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn multipart_submit_rejects_a_repeated_header_name() {
+        let boundary = "dupheaderbound01";
+        let body = multipart_body(
+            boundary,
+            &[(
+                "envelope",
+                None,
+                Some("application/json"),
+                DUPLICATE_HEADER_JSON.as_bytes(),
+            )],
+        );
+        let response = make_router()
+            .oneshot(post_multipart(boundary, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn json_and_multipart_reject_an_over_long_header_line() {
+        let extra = serde_json::json!({"headers": {"X-A": "v".repeat(994)}});
+        let json = serde_json::to_vec(&envelope_with(&extra)).unwrap();
+        let response = make_router()
+            .oneshot(post_json(json.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let boundary = "longlinebound001";
+        let body = multipart_body(
+            boundary,
+            &[("envelope", None, Some("application/json"), &json)],
+        );
+        let response = make_router()
+            .oneshot(post_multipart(boundary, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn batch_with_a_repeated_header_name_returns_400_like_the_single_endpoint() {
+        let raw = format!(r#"{{"emails":[{DUPLICATE_HEADER_JSON}]}}"#);
+        let response = make_router()
+            .oneshot(post_batch_json(Body::from(raw)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn batch_and_single_agree_on_a_body_that_does_not_deserialize() {
+        let single = make_router()
+            .oneshot(post_json(r#"{"sender": 1}"#))
+            .await
+            .unwrap();
+        let batch = make_router()
+            .oneshot(post_batch_json(Body::from(r#"{"emails":[{"sender": 1}]}"#)))
+            .await
+            .unwrap();
+        assert_eq!(single.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(batch.status(), single.status());
     }
 }

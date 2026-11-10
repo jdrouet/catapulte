@@ -86,6 +86,39 @@ fn apply_recipients(
     Ok(builder)
 }
 
+fn apply_reply_to_and_headers(
+    mut builder: lettre::message::MessageBuilder,
+    reply_to: &[String],
+    headers: &[(String, String)],
+) -> anyhow::Result<lettre::message::MessageBuilder> {
+    use lettre::message::header::{HeaderName, HeaderValue};
+    for address in reply_to {
+        builder = builder.reply_to(parse_mailbox(address)?);
+    }
+    for (name, value) in headers {
+        let name = HeaderName::new_from_ascii(name.clone())
+            .map_err(|_| anyhow::anyhow!("invalid header name: {name}"))?;
+        builder = builder.raw_header(HeaderValue::new(name, value.clone()));
+    }
+    Ok(builder)
+}
+
+/// Rejects a message whose top-level header block has a physical line over 998 characters
+/// (RFC 5322). lettre folds only at whitespace, so a long unbroken value stays one line.
+fn check_header_line_lengths(raw: &[u8]) -> anyhow::Result<()> {
+    let end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(raw.len());
+    let longest = raw[..end]
+        .split(|b| *b == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line).len())
+        .max()
+        .unwrap_or(0);
+    anyhow::ensure!(longest <= 998, "a header line exceeds 998 characters");
+    Ok(())
+}
+
 fn build_body_part(body: &RenderedBody) -> MultiPart {
     match (body.text(), body.html()) {
         (Some(text), Some(html)) => MultiPart::alternative()
@@ -320,6 +353,7 @@ impl SmtpTransport {
     fn prepare(&self, email: &OutboundEmail) -> Result<(Message, Vec<u8>), TransportError> {
         let from = parse_mailbox(&email.sender).map_err(message_error)?;
         let builder = apply_recipients(Message::builder().from(from), &email.recipients)
+            .and_then(|b| apply_reply_to_and_headers(b, &email.reply_to, &email.headers))
             .map_err(message_error)?;
         let message = finalize_message(
             builder,
@@ -329,6 +363,7 @@ impl SmtpTransport {
         )
         .map_err(message_error)?;
         let raw = message.formatted();
+        check_header_line_lengths(&raw).map_err(message_error)?;
         if self
             .max_message_bytes
             .is_some_and(|max| raw.len() as u64 > max)
@@ -695,6 +730,8 @@ mod tests {
                 content_type: "application/octet-stream".into(),
                 bytes: bytes::Bytes::from(vec![7u8; size]),
             }],
+            reply_to: vec![],
+            headers: vec![],
         }
     }
 
@@ -753,5 +790,189 @@ mod tests {
         let err = transport.prepare(&email).unwrap_err();
 
         assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+    }
+
+    fn plain_email() -> catapulte_domain::port::email_sender::OutboundEmail {
+        catapulte_domain::port::email_sender::OutboundEmail {
+            sender: "from@example.com".into(),
+            subject: Some("hi".into()),
+            recipients: vec![(RecipientKind::To, "to@example.com".into())],
+            body: plain_text_body(),
+            attachments: vec![],
+            reply_to: vec![],
+            headers: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn reply_to_and_custom_headers_appear_in_the_message() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.reply_to = vec![
+            "Support <help@example.com>".into(),
+            "ops@example.com".into(),
+        ];
+        email.headers = vec![
+            ("X-Order-Id".into(), "42".into()),
+            ("In-Reply-To".into(), "<a@b.c>".into()),
+        ];
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            text.contains("Reply-To: Support <help@example.com>, ops@example.com"),
+            "{text}"
+        );
+        assert!(text.contains("X-Order-Id: 42"), "{text}");
+        assert!(text.contains("In-Reply-To: <a@b.c>"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn non_ascii_header_value_is_encoded_not_sent_raw() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.headers = vec![("X-Note".into(), "caf\u{e9}".into())];
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        assert!(
+            String::from_utf8_lossy(&raw)
+                .to_ascii_lowercase()
+                .contains("x-note: =?utf-8?"),
+            "non-ASCII value must be RFC 2047 encoded"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_header_name_or_reply_to_is_a_message_level_failure() {
+        let transport = local_transport(None);
+        let mut bad_name = plain_email();
+        bad_name.headers = vec![("Bad Name".into(), "v".into())];
+        let mut bad_reply_to = plain_email();
+        bad_reply_to.reply_to = vec!["not an address".into()];
+
+        for email in [bad_name, bad_reply_to] {
+            let err = transport.prepare(&email).unwrap_err();
+            assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+        }
+    }
+
+    #[tokio::test]
+    async fn header_line_limit_is_enforced_on_the_final_message() {
+        let transport = local_transport(None);
+        let with_value = |n: usize| {
+            let mut email = plain_email();
+            email.headers = vec![("X-A".into(), "v".repeat(n))];
+            email
+        };
+
+        assert!(transport.prepare(&with_value(993)).is_ok());
+        let err = transport.prepare(&with_value(994)).unwrap_err();
+        assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+
+        let mut long_name = plain_email();
+        long_name.headers = vec![("N".repeat(76), "v".repeat(920))];
+        assert!(transport.prepare(&long_name).is_ok());
+        long_name.headers = vec![("N".repeat(76), "v".repeat(921))];
+        assert!(transport.prepare(&long_name).is_err());
+    }
+
+    fn header_block(raw: &[u8]) -> &[u8] {
+        let end = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("header block end");
+        &raw[..end]
+    }
+
+    #[tokio::test]
+    async fn space_separated_long_value_is_folded_within_the_line_limit() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        // 76 + 2 + 949 characters would be 1027 on one line.
+        email.headers = vec![("N".repeat(76), "word ".repeat(190).trim_end().to_owned())];
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let headers = header_block(&raw);
+        let text = String::from_utf8_lossy(headers);
+        assert!(
+            text.contains("\r\n\t") || text.contains("\r\n "),
+            "no fold: {text}"
+        );
+        assert!(
+            headers
+                .split(|b| *b == b'\n')
+                .all(|l| l.strip_suffix(b"\r").unwrap_or(l).len() <= 998)
+        );
+    }
+
+    #[tokio::test]
+    async fn tab_separated_long_value_is_not_folded_and_fails() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.headers = vec![("N".repeat(76), "word\t".repeat(190))];
+
+        assert!(transport.prepare(&email).is_err());
+    }
+
+    #[tokio::test]
+    async fn over_long_subject_and_names_fail_while_just_under_builds() {
+        let transport = local_transport(None);
+        for (label, long, under) in [
+            ("subject", "s".repeat(1000), "s".repeat(900)),
+            ("sender", "n".repeat(1000), "n".repeat(900)),
+            ("recipient", "n".repeat(1000), "n".repeat(900)),
+        ] {
+            let build = |v: &str| {
+                let mut email = plain_email();
+                match label {
+                    "subject" => email.subject = Some(v.to_owned()),
+                    "sender" => email.sender = format!("{v} <from@example.com>"),
+                    _ => {
+                        email.recipients =
+                            vec![(RecipientKind::To, format!("{v} <to@example.com>"))];
+                    }
+                }
+                transport.prepare(&email)
+            };
+            assert!(build(&under).is_ok(), "{label} under the limit");
+            assert_eq!(
+                build(&long).unwrap_err().kind,
+                TransportErrorKind::PermanentMessage,
+                "{label} over the limit"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn long_body_line_and_long_mime_part_header_do_not_trip_the_top_level_check() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.body = RenderedBody::new(Plain::try_new(Some("b".repeat(5000)), None).unwrap());
+        email.attachments = vec![ResolvedAttachment {
+            filename: "f".repeat(1200),
+            content_type: "text/plain".to_owned(),
+            bytes: bytes::Bytes::from_static(b"data"),
+        }];
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let top_ok = header_block(&raw)
+            .split(|b| *b == b'\n')
+            .all(|l| l.strip_suffix(b"\r").unwrap_or(l).len() <= 998);
+        assert!(top_ok);
+    }
+
+    #[test]
+    fn line_check_looks_only_at_the_top_level_header_block() {
+        let long = "x".repeat(2000);
+        let body_long = format!("Subject: hi\r\n\r\n{long}\r\n");
+        let part_header_long = format!("Subject: hi\r\n\r\n--b\r\nContent-Disposition: {long}\r\n");
+        let header_long = format!("Subject: {long}\r\n\r\nbody");
+        assert!(super::check_header_line_lengths(body_long.as_bytes()).is_ok());
+        assert!(super::check_header_line_lengths(part_header_long.as_bytes()).is_ok());
+        assert!(super::check_header_line_lengths(header_long.as_bytes()).is_err());
     }
 }

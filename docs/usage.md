@@ -63,6 +63,42 @@ addresses with an IP-literal domain or a quoted local part, which the SMTP libra
 | `correlation_id` | string | echoed back on lifecycle events; use it to correlate without a synchronous id |
 | `variables` | object | template variables; defaults to `{}` |
 | `attachments` | array | see [Attachments](#attachments); defaults to `[]` |
+| `reply_to` | string, `{ name, address }`, or an array of either | `Reply-To` mailboxes, validated like the sender (see [Reply-To and custom headers](#reply-to-and-custom-headers)) |
+| `headers` | object of string to string | custom headers (see [Reply-To and custom headers](#reply-to-and-custom-headers)) |
+
+### Reply-To and custom headers
+
+`reply_to` takes one mailbox or a list of at most 10. Each entry follows the sender rules:
+a bare address, `Name <address>`, or `{ "name", "address" }`, and display names with
+control characters are rejected with `400`. The formatted `Reply-To` header must not
+have a line over 998 characters.
+
+`headers` is an object of header name to value. An invalid set returns `400` (a per-item
+`rejected` in a batch) on every submission path (JSON, multipart, batch and NATS):
+
+- at most 10 headers;
+- names use printable ASCII (33-126) without `:`, at most 76 bytes, and are unique
+  ignoring case;
+- values are at most 998 bytes and contain no CR, LF or other control characters (a tab is
+  allowed); non-ASCII values are RFC 2047 encoded;
+- no formatted header line, name and `: ` included, may exceed 998 characters. Headers
+  are folded only at spaces (not tabs), so an unbroken value longer than 993 characters
+  (for a 3-character name) is rejected. The same limit applies to the `Subject`, `From`,
+  `To`/`Cc` and `Reply-To` lines, and a violation returns `400`;
+- a JSON object that repeats a header name is rejected with `400`;
+- these names are reserved, compared case-insensitively: `From`, `To`, `Cc`, `Bcc`,
+  `Subject`, `Date`, `Message-ID`, `MIME-Version`, `Content-*`, `Return-Path`,
+  `DKIM-Signature`, `Reply-To`, `Sender`, `Received`, `Authentication-Results`,
+  `Return-Receipt-To`, `Disposition-Notification-To`, `Resent-*`, and
+  `List-Unsubscribe*`. Use `reply_to` for `Reply-To`. `Precedence`, `Auto-Submitted`
+  and `X-Mailer` are allowed.
+
+```json
+{
+  "reply_to": ["Support <help@example.com>"],
+  "headers": { "X-Order-Id": "42", "In-Reply-To": "<abc@example.com>" }
+}
+```
 
 ### Body variants
 
@@ -367,7 +403,7 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 
 | Status | When |
 |--------|------|
-| `400` | malformed JSON/multipart, validation failure (sender/recipients/body/attachment), bad UUID, unreachable/disallowed remote attachment, batch over 100 |
+| `400` | malformed JSON/multipart, validation failure (sender/recipients/reply_to/headers/body/attachment), bad UUID, unreachable/disallowed remote attachment, batch over 100 |
 | `401` | missing/invalid bearer token |
 | `409` | idempotency key matches a submission that never completed; retry later |
 | `500` | storage / queue / attachment-store failure |

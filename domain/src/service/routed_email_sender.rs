@@ -336,6 +336,8 @@ mod tests {
                 Plain::try_new(None, Some("<p>hi</p>".into())).expect("valid body"),
             ),
             attachments: vec![],
+            reply_to: vec![],
+            headers: vec![],
         }
     }
 
@@ -527,6 +529,8 @@ mod tests {
                 Plain::try_new(None, Some("<p>hi</p>".into())).expect("valid body"),
             ),
             attachments: vec![],
+            reply_to: vec![],
+            headers: vec![],
         }
     }
 

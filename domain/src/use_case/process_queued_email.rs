@@ -107,6 +107,8 @@ where
             body,
             variables,
             attachments,
+            reply_to,
+            headers,
             ..
         } = envelope;
         let resolved = self.resolver.resolve(body).await?;
@@ -122,6 +124,8 @@ where
                 recipients,
                 body: rendered,
                 attachments: resolved_attachments,
+                reply_to,
+                headers,
             })
             .await?;
         Ok(sender_name)

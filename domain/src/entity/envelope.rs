@@ -14,6 +14,10 @@ pub struct Envelope {
     pub body: BodySource,
     pub variables: serde_json::Map<String, serde_json::Value>,
     pub attachments: Vec<AttachmentRef>,
+    /// Canonical mailbox strings, validated at intake.
+    pub reply_to: Vec<String>,
+    /// Validated custom headers, in name order.
+    pub headers: Vec<(String, String)>,
 }
 
 impl Envelope {
@@ -34,6 +38,8 @@ impl Envelope {
             body,
             variables: serde_json::Map::new(),
             attachments: vec![],
+            reply_to: vec![],
+            headers: vec![],
         }
     }
 }

@@ -15,6 +15,7 @@ crate::e2e_matrix! {
         batch_submit_delivers_multiple_emails,
         list_emails_returns_submitted,
         display_name_sender,
+        reply_to_and_headers,
     ],
     backends: [sqlite_storage, sqlite_memory, sqlite_nats, postgres_storage, postgres_memory, postgres_nats],
 }

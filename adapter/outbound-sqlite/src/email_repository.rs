@@ -14,7 +14,8 @@ use sqlx::types::Json;
 
 use crate::SqliteAdapter;
 use crate::dto::{
-    AttachmentRefDto, BodySourceDto, EnvelopeBodyDto, EnvelopeBodyDtoDeser, recipients_to_dto,
+    AttachmentRefDto, BodySourceDto, EnvelopeBodyDto, EnvelopeBodyDtoDeser, EnvelopeExtrasDto,
+    recipients_to_dto,
 };
 
 impl EmailRepository for SqliteAdapter {
@@ -36,10 +37,14 @@ impl EmailRepository for SqliteAdapter {
                 .collect(),
         };
         let recipients_dto = recipients_to_dto(&envelope.recipients);
+        let extras_dto = EnvelopeExtrasDto {
+            reply_to: envelope.reply_to.clone(),
+            headers: envelope.headers.clone(),
+        };
 
         let result = sqlx::query(
-            "INSERT OR IGNORE INTO emails (id, idempotency_key, correlation_id, subject, sender, recipients, body, variables, enqueue_state) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved')",
+            "INSERT OR IGNORE INTO emails (id, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, enqueue_state) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved')",
         )
         .bind(&id_bytes)
         .bind(envelope.idempotency_key.as_deref())
@@ -49,6 +54,7 @@ impl EmailRepository for SqliteAdapter {
         .bind(Json(&recipients_dto))
         .bind(Json(&body_dto))
         .bind(Json(&envelope.variables))
+        .bind(Json(&extras_dto))
         .execute(self.pool())
         .await
         .context("inserting email")
@@ -340,7 +346,7 @@ impl SqliteAdapter {
 
         let row = sqlx::query(
             "SELECT id, enqueue_state, idempotency_key, correlation_id, subject, sender, \
-                    recipients, body, variables \
+                    recipients, body, variables, extras \
              FROM emails WHERE idempotency_key = ?",
         )
         .bind(key)
@@ -596,6 +602,44 @@ mod tests {
 
         assert!(recovery.is_none());
         assert_eq!(state, DuplicateState::Reserved);
+    }
+
+    #[tokio::test]
+    async fn reply_to_and_headers_survive_save_and_recovery() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.idempotency_key = Some("key-abc".to_owned());
+        envelope.reply_to = vec!["Support <help@example.com>".to_owned()];
+        envelope.headers = vec![("X-Order-Id".to_owned(), "42".to_owned())];
+        adapter.save(id, &envelope).await.unwrap();
+        adapter
+            .set_enqueue_state(id, EnqueueState::Publishable)
+            .await
+            .unwrap();
+
+        let (_, _, recovery) = duplicate(&adapter).await;
+
+        let recovered = recovery.unwrap();
+        assert_eq!(recovered.reply_to, envelope.reply_to);
+        assert_eq!(recovered.headers, envelope.headers);
+    }
+
+    #[tokio::test]
+    async fn row_without_extras_recovers_with_empty_reply_to_and_headers() {
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+        sqlx::query("UPDATE emails SET extras = NULL WHERE id = ?")
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        let (_, _, recovery) = duplicate(&adapter).await;
+
+        let recovered = recovery.unwrap();
+        assert!(recovered.reply_to.is_empty());
+        assert!(recovered.headers.is_empty());
     }
 
     #[tokio::test]

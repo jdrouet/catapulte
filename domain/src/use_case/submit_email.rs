@@ -39,6 +39,8 @@ pub struct SubmitEmailInput {
     pub body: crate::entity::body::BodySource,
     pub variables: serde_json::Map<String, serde_json::Value>,
     pub attachments: Vec<AttachmentInput>,
+    pub reply_to: Vec<String>,
+    pub headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Error)]
@@ -287,6 +289,8 @@ where
             body: input.body.clone(),
             variables: input.variables.clone(),
             attachments: vec![],
+            reply_to: input.reply_to.clone(),
+            headers: input.headers.clone(),
         };
 
         let result = self.repository.save(id, &envelope_for_reservation).await?;
@@ -315,6 +319,8 @@ where
             body,
             variables,
             attachments,
+            reply_to,
+            headers,
         } = input;
 
         let mut written_refs: Vec<AttachmentRef> = Vec::with_capacity(attachments.len());
@@ -390,6 +396,8 @@ where
             body,
             variables,
             attachments: written_refs,
+            reply_to,
+            headers,
         };
 
         if let Err(e) = self
@@ -477,6 +485,8 @@ mod tests {
             ),
             variables: serde_json::Map::new(),
             attachments: vec![],
+            reply_to: vec![],
+            headers: vec![],
         }
     }
 

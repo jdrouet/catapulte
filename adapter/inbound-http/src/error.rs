@@ -1,4 +1,5 @@
 use axum::Json;
+use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -16,6 +17,8 @@ pub enum AppError {
     BadRequest(#[from] EnvelopeConversionError),
     #[error("bad request: {0}")]
     BadRequestRaw(String),
+    #[error(transparent)]
+    JsonBody(#[from] axum::extract::rejection::JsonRejection),
     #[error(transparent)]
     Submit(#[from] SubmitEmailError),
     #[error(transparent)]
@@ -38,6 +41,12 @@ struct ErrorBody<'a> {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
+            // A body that does not deserialize is a client error (400), like the single
+            // endpoint; other rejections (content type, size) keep their own status.
+            Self::JsonBody(JsonRejection::JsonDataError(_)) => {
+                (StatusCode::BAD_REQUEST, "invalid request")
+            }
+            Self::JsonBody(other) => (other.status(), "invalid request"),
             Self::BadRequest(_)
             | Self::BadRequestRaw(_)
             | Self::InvalidEmailId

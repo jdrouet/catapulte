@@ -283,3 +283,12 @@ mod tests {
         );
     }
 }
+
+/// Optional envelope fields stored in the `extras` column; a NULL column reads as the default.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct EnvelopeExtrasDto {
+    #[serde(default)]
+    pub reply_to: Vec<String>,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+}

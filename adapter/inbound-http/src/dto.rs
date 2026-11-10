@@ -16,6 +16,11 @@ pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024; // 1 MiB
 // Worst case: 10 attachments × 25 MiB = 250 MiB binary, base64-inflated to ~333 MiB, plus ~1 MiB envelope.
 pub const MAX_REQUEST_BODY_BYTES: usize = 352 * 1024 * 1024; // 352 MiB
 pub const MAX_EMAILS_PER_BATCH: usize = 100;
+pub const MAX_HEADERS_PER_EMAIL: usize = 10;
+pub const MAX_HEADER_VALUE_BYTES: usize = 998;
+pub const MAX_REPLY_TO_PER_EMAIL: usize = 10;
+/// RFC 5322 limit on a physical header line, excluding CRLF.
+const MAX_HEADER_LINE_CHARS: usize = 998;
 
 #[derive(Debug, Deserialize)]
 pub struct BatchSubmitEmailRequest {
@@ -62,6 +67,14 @@ pub enum MailboxDto {
         name: Option<String>,
         address: String,
     },
+}
+
+/// One mailbox or a list of mailboxes.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ReplyToDto {
+    Many(Vec<MailboxDto>),
+    One(MailboxDto),
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +137,12 @@ pub enum EnvelopeConversionError {
     Body(#[from] BodyConversionError),
     #[error("invalid sender address")]
     InvalidSender(#[source] anyhow::Error),
+    #[error("subject line is too long")]
+    InvalidSubject,
+    #[error("invalid reply_to address")]
+    InvalidReplyTo(#[source] anyhow::Error),
+    #[error("invalid header: {0}")]
+    InvalidHeader(&'static str),
     #[error("recipients must not be empty")]
     EmptyRecipients,
     #[error("invalid recipient address")]
@@ -199,13 +218,160 @@ fn structured_mailbox(name: Option<String>, address: &str) -> Result<Mailbox, an
     Ok(Mailbox::new(name.filter(|n| !n.is_empty()), address))
 }
 
-fn validate_sender(sender: MailboxDto) -> Result<String, EnvelopeConversionError> {
-    match sender {
+fn validate_mailbox(mailbox: MailboxDto) -> Result<String, anyhow::Error> {
+    match mailbox {
         MailboxDto::Text(text) => parse_mailbox(&text),
         MailboxDto::Structured { name, address } => structured_mailbox(name, &address),
     }
     .and_then(|m| canonical_mailbox(&m))
-    .map_err(EnvelopeConversionError::InvalidSender)
+}
+
+fn validate_sender(sender: MailboxDto) -> Result<String, EnvelopeConversionError> {
+    validate_mailbox(sender).map_err(EnvelopeConversionError::InvalidSender)
+}
+
+fn validate_reply_to(reply_to: Option<ReplyToDto>) -> Result<Vec<String>, EnvelopeConversionError> {
+    let mailboxes = match reply_to {
+        None => return Ok(vec![]),
+        Some(ReplyToDto::One(m)) => vec![m],
+        Some(ReplyToDto::Many(ms)) => ms,
+    };
+    if mailboxes.len() > MAX_REPLY_TO_PER_EMAIL {
+        return Err(EnvelopeConversionError::InvalidReplyTo(anyhow::anyhow!(
+            "too many reply_to addresses"
+        )));
+    }
+    mailboxes
+        .into_iter()
+        .map(|m| validate_mailbox(m).map_err(EnvelopeConversionError::InvalidReplyTo))
+        .collect()
+}
+
+/// Builds the message headers exactly as the SMTP adapter does (same lettre builder calls
+/// in the same order: from, recipients, reply-to, custom headers, subject) and rejects any
+/// physical header line over 998 characters. lettre folds only at whitespace, so a long
+/// unbroken value stays one line. The adapter repeats the check on the final bytes.
+fn check_header_lines(
+    sender: &str,
+    recipients: &[(RecipientKind, String)],
+    subject: Option<&str>,
+    reply_to: &[String],
+    headers: &[(String, String)],
+) -> Result<(), EnvelopeConversionError> {
+    use EnvelopeConversionError::InvalidHeader;
+    use lettre::message::header::{HeaderName, HeaderValue};
+    let unbuildable = || InvalidHeader("cannot build message headers");
+    let mut builder =
+        lettre::Message::builder().from(parse_mailbox(sender).map_err(|_| unbuildable())?);
+    for (kind, address) in recipients {
+        let mailbox = parse_mailbox(address).map_err(|_| unbuildable())?;
+        builder = match kind {
+            RecipientKind::To => builder.to(mailbox),
+            RecipientKind::Cc => builder.cc(mailbox),
+            RecipientKind::Bcc => builder.bcc(mailbox),
+        };
+    }
+    for address in reply_to {
+        builder = builder.reply_to(parse_mailbox(address).map_err(|_| unbuildable())?);
+    }
+    for (name, value) in headers {
+        let name = HeaderName::new_from_ascii(name.clone()).map_err(|_| unbuildable())?;
+        builder = builder.raw_header(HeaderValue::new(name, value.clone()));
+    }
+    if let Some(subject) = subject {
+        builder = builder.subject(subject);
+    }
+    let raw = builder
+        .body(String::new())
+        .map_err(|_| unbuildable())?
+        .formatted();
+
+    let mut current = String::new();
+    for line in raw.split(|b| *b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.is_empty() {
+            break;
+        }
+        if !matches!(line[0], b' ' | b'\t') {
+            current = String::from_utf8_lossy(line.split(|b| *b == b':').next().unwrap_or(line))
+                .to_ascii_lowercase();
+        }
+        if line.len() > MAX_HEADER_LINE_CHARS {
+            return Err(match current.as_str() {
+                "from" => EnvelopeConversionError::InvalidSender(anyhow::anyhow!(
+                    "a header line exceeds {MAX_HEADER_LINE_CHARS} characters"
+                )),
+                "to" | "cc" | "bcc" => EnvelopeConversionError::InvalidRecipient(anyhow::anyhow!(
+                    "a header line exceeds {MAX_HEADER_LINE_CHARS} characters"
+                )),
+                "reply-to" => EnvelopeConversionError::InvalidReplyTo(anyhow::anyhow!(
+                    "a header line exceeds {MAX_HEADER_LINE_CHARS} characters"
+                )),
+                "subject" => EnvelopeConversionError::InvalidSubject,
+                _ => InvalidHeader("header line too long"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Headers Catapulte or the transport owns; compared case-insensitively.
+const RESERVED_HEADERS: &[&str] = &[
+    "from",
+    "to",
+    "cc",
+    "bcc",
+    "subject",
+    "date",
+    "message-id",
+    "mime-version",
+    "return-path",
+    "dkim-signature",
+    "reply-to",
+    "sender",
+    "received",
+    "authentication-results",
+    "return-receipt-to",
+    "disposition-notification-to",
+];
+
+fn is_reserved_header(lower: &str) -> bool {
+    RESERVED_HEADERS.contains(&lower)
+        || lower.starts_with("content-")
+        || lower.starts_with("list-unsubscribe")
+        || lower.starts_with("resent-")
+}
+
+fn validate_headers(
+    headers: std::collections::BTreeMap<String, String>,
+) -> Result<Vec<(String, String)>, EnvelopeConversionError> {
+    use EnvelopeConversionError::InvalidHeader;
+    if headers.len() > MAX_HEADERS_PER_EMAIL {
+        return Err(InvalidHeader("too many headers"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (name, value) in &headers {
+        if !name.bytes().all(|b| (33..=126).contains(&b) && b != b':')
+            || lettre::message::header::HeaderName::new_from_ascii(name.clone()).is_err()
+        {
+            return Err(InvalidHeader("invalid header name"));
+        }
+        let lower = name.to_ascii_lowercase();
+        if is_reserved_header(&lower) {
+            return Err(InvalidHeader("reserved header name"));
+        }
+        if !seen.insert(lower) {
+            return Err(InvalidHeader("duplicate header name"));
+        }
+        if value.len() > MAX_HEADER_VALUE_BYTES {
+            return Err(InvalidHeader("header value too long"));
+        }
+        if value.chars().any(|c| c.is_control() && c != '\t') {
+            return Err(InvalidHeader("header value contains control characters"));
+        }
+    }
+    let headers: Vec<(String, String)> = headers.into_iter().collect();
+    Ok(headers)
 }
 
 fn validate_recipients(
@@ -355,6 +521,44 @@ pub struct EnvelopeCoreDto {
     pub body: BodyDto,
     #[serde(default)]
     pub variables: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub reply_to: Option<ReplyToDto>,
+    #[serde(default, deserialize_with = "deserialize_headers")]
+    pub headers: std::collections::BTreeMap<String, String>,
+}
+
+/// Rejects a JSON object that repeats a header name, which a plain map would silently
+/// resolve to the last value.
+fn deserialize_headers<'de, D>(
+    deserializer: D,
+) -> Result<std::collections::BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Visitor;
+
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = std::collections::BTreeMap<String, String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an object of header names to string values")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = std::collections::BTreeMap::new();
+            while let Some((name, value)) = map.next_entry::<String, String>()? {
+                if out.insert(name, value).is_some() {
+                    return Err(serde::de::Error::custom("duplicate header name"));
+                }
+            }
+            Ok(out)
+        }
+    }
+
+    deserializer.deserialize_map(Visitor)
 }
 
 impl EnvelopeCoreDto {
@@ -369,6 +573,15 @@ impl EnvelopeCoreDto {
     ) -> Result<SubmitEmailInput, EnvelopeConversionError> {
         let sender = validate_sender(self.sender)?;
         let recipients = validate_recipients(self.recipients)?;
+        let reply_to = validate_reply_to(self.reply_to)?;
+        let headers = validate_headers(self.headers)?;
+        check_header_lines(
+            &sender,
+            &recipients,
+            self.subject.as_deref(),
+            &reply_to,
+            &headers,
+        )?;
         let body = self.body.try_into()?;
         Ok(SubmitEmailInput {
             idempotency_key: self.idempotency_key,
@@ -379,6 +592,8 @@ impl EnvelopeCoreDto {
             body,
             variables: self.variables,
             attachments,
+            reply_to,
+            headers,
         })
     }
 }
@@ -446,6 +661,8 @@ mod tests {
                 html: None,
             },
             variables: serde_json::Map::new(),
+            reply_to: None,
+            headers: std::collections::BTreeMap::new(),
         }
     }
 
@@ -454,6 +671,230 @@ mod tests {
             core: base_core(),
             attachments: vec![],
         }
+    }
+
+    fn convert_with(
+        extra: serde_json::Value,
+    ) -> Result<catapulte_domain::use_case::submit_email::SubmitEmailInput, EnvelopeConversionError>
+    {
+        let mut env = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"}
+        });
+        let serde_json::Value::Object(extra) = extra else {
+            panic!("extra must be an object");
+        };
+        for (k, v) in extra {
+            env[k] = v;
+        }
+        serde_json::from_value::<SubmitEmailRequest>(env)
+            .unwrap()
+            .into_submit_input()
+    }
+
+    #[test]
+    fn reply_to_accepts_one_or_many_and_canonicalises() {
+        let one = convert_with(serde_json::json!({"reply_to": "Help <h@x.y>"})).unwrap();
+        assert_eq!(one.reply_to, vec!["Help <h@x.y>".to_owned()]);
+        let many = convert_with(serde_json::json!({
+            "reply_to": ["a@x.y", {"name": "B", "address": "b@x.y"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            many.reply_to,
+            vec!["a@x.y".to_owned(), "B <b@x.y>".to_owned()]
+        );
+    }
+
+    #[test]
+    fn reply_to_with_control_characters_in_the_name_is_rejected() {
+        let err = convert_with(serde_json::json!({
+            "reply_to": {"name": "A\r\nB", "address": "a@x.y"}
+        }))
+        .err()
+        .expect("must be rejected");
+        assert!(matches!(err, EnvelopeConversionError::InvalidReplyTo(_)));
+    }
+
+    #[test]
+    fn headers_are_kept_in_name_order() {
+        let input =
+            convert_with(serde_json::json!({"headers": {"X-B": "2", "X-A": "1\t2"}})).unwrap();
+        assert_eq!(
+            input.headers,
+            vec![("X-A".into(), "1\t2".into()), ("X-B".into(), "2".into())]
+        );
+    }
+
+    #[test]
+    fn header_rules_reject_bad_names_values_and_counts() {
+        let long_value = "v".repeat(999);
+        let cases = [
+            serde_json::json!({"headers": {"X-A": long_value}}),
+            serde_json::json!({"headers": {"X-A": "a\nb"}}),
+            serde_json::json!({"headers": {"X-A": "a\rb"}}),
+            serde_json::json!({"headers": {"X-A": "a\u{7f}b"}}),
+            serde_json::json!({"headers": {"X A": "v"}}),
+            serde_json::json!({"headers": {"X-\u{e9}": "v"}}),
+            serde_json::json!({"headers": {"": "v"}}),
+            serde_json::json!({"headers": {"X".repeat(77): "v"}}),
+            serde_json::json!({"headers": {"X-A": "1", "x-a": "2"}}),
+        ];
+        for case in cases {
+            let err = convert_with(case.clone()).err().expect("must be rejected");
+            assert!(
+                matches!(err, EnvelopeConversionError::InvalidHeader(_)),
+                "{case}"
+            );
+        }
+        assert!(convert_with(serde_json::json!({"headers": {"X".repeat(76): "v"}})).is_ok());
+    }
+
+    #[test]
+    fn header_line_limit_is_998_characters_including_the_name() {
+        // "X-A: " is 5 characters, so 993 unbroken characters fill the line exactly.
+        let value = |n: usize| serde_json::json!({"headers": {"X-A": "v".repeat(n)}});
+        assert!(convert_with(value(993)).is_ok());
+        assert!(convert_with(value(994)).is_err());
+        let long_name = "N".repeat(76);
+        // name + ": " is 78 characters.
+        let named = |n: usize| serde_json::json!({"headers": {long_name.clone(): "v".repeat(n)}});
+        assert!(convert_with(named(920)).is_ok());
+        assert!(convert_with(named(921)).is_err());
+    }
+
+    #[test]
+    fn long_value_with_spaces_is_folded_and_accepted_but_tabs_are_not_fold_points() {
+        // 76 + 2 + 949 characters would be 1027 on one line, so acceptance proves folding.
+        let spaced = "word ".repeat(190).trim_end().to_owned();
+        assert!(spaced.len() <= super::MAX_HEADER_VALUE_BYTES);
+        assert!(convert_with(serde_json::json!({"headers": {"N".repeat(76): spaced}})).is_ok());
+        // lettre does not fold at HTAB, so the same shape with tabs stays one long line.
+        let tabbed = "word\t".repeat(190);
+        assert!(convert_with(serde_json::json!({"headers": {"N".repeat(76): tabbed}})).is_err());
+    }
+
+    #[test]
+    fn over_long_subject_sender_and_recipient_names_are_rejected_under_the_limit_accepted() {
+        let long = "n".repeat(1000);
+        let under = "n".repeat(900);
+        let subject = |s: &str| serde_json::json!({"subject": s});
+        let sender = |n: &str| serde_json::json!({"sender": {"name": n, "address": "a@b.c"}});
+        let recipient = |n: &str| serde_json::json!({"recipients": [{"kind": "to", "name": n, "address": "t@x.y"}]});
+        assert!(matches!(
+            convert_with(subject(&long))
+                .err()
+                .expect("must be rejected"),
+            EnvelopeConversionError::InvalidSubject
+        ));
+        assert!(matches!(
+            convert_with(sender(&long)).err().expect("must be rejected"),
+            EnvelopeConversionError::InvalidSender(_)
+        ));
+        assert!(matches!(
+            convert_with(recipient(&long))
+                .err()
+                .expect("must be rejected"),
+            EnvelopeConversionError::InvalidRecipient(_)
+        ));
+        assert!(convert_with(subject(&under)).is_ok());
+        assert!(convert_with(sender(&under)).is_ok());
+        assert!(convert_with(recipient(&under)).is_ok());
+    }
+
+    #[test]
+    fn over_long_reply_to_header_line_is_rejected() {
+        let name = "n".repeat(1200);
+        let result = convert_with(serde_json::json!({
+            "reply_to": {"name": name, "address": "a@x.y"}
+        }));
+        assert!(matches!(
+            result.err().expect("must be rejected"),
+            EnvelopeConversionError::InvalidReplyTo(_)
+        ));
+    }
+
+    #[test]
+    fn at_most_ten_reply_to_entries_are_accepted() {
+        let many = |n: usize| serde_json::json!({"reply_to": (0..n).map(|i| format!("r{i}@x.y")).collect::<Vec<_>>()});
+        assert!(convert_with(many(10)).is_ok());
+        assert!(matches!(
+            convert_with(many(11)).err().expect("must be rejected"),
+            EnvelopeConversionError::InvalidReplyTo(_)
+        ));
+    }
+
+    #[test]
+    fn repeated_header_name_in_raw_json_is_rejected() {
+        let raw = r#"{"sender":"a@b.c","recipients":[{"kind":"to","address":"t@x.y"}],
+            "body":{"kind":"plain","text":"hi"},"headers":{"X-A":"one","X-A":"two"}}"#;
+        assert!(serde_json::from_str::<SubmitEmailRequest>(raw).is_err());
+        let ok = r#"{"sender":"a@b.c","recipients":[{"kind":"to","address":"t@x.y"}],
+            "body":{"kind":"plain","text":"hi"},"headers":{"X-A":"one","X-B":"two"}}"#;
+        assert!(serde_json::from_str::<SubmitEmailRequest>(ok).is_ok());
+    }
+
+    #[test]
+    fn newly_reserved_names_are_rejected_and_hints_stay_allowed() {
+        for name in [
+            "Received",
+            "Authentication-Results",
+            "Resent-From",
+            "resent-date",
+            "Return-Receipt-To",
+            "Disposition-Notification-To",
+        ] {
+            assert!(
+                convert_with(serde_json::json!({"headers": {name: "v"}})).is_err(),
+                "{name}"
+            );
+        }
+        for name in ["Precedence", "Auto-Submitted", "X-Mailer"] {
+            assert!(
+                convert_with(serde_json::json!({"headers": {name: "bulk"}})).is_ok(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_headers_are_rejected_case_insensitively() {
+        for name in [
+            "From",
+            "to",
+            "CC",
+            "Bcc",
+            "Subject",
+            "Date",
+            "Message-ID",
+            "MIME-Version",
+            "Content-Type",
+            "content-transfer-encoding",
+            "Return-Path",
+            "DKIM-Signature",
+            "Reply-To",
+            "Sender",
+            "List-Unsubscribe",
+            "List-Unsubscribe-Post",
+        ] {
+            let err = convert_with(serde_json::json!({"headers": {name: "v"}}))
+                .err()
+                .expect("must be rejected");
+            assert!(
+                matches!(err, EnvelopeConversionError::InvalidHeader(_)),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn at_most_ten_headers_are_accepted() {
+        let headers = |n: usize| -> serde_json::Value {
+            serde_json::json!({"headers": (0..n).map(|i| (format!("X-H{i}"), "v".to_owned())).collect::<std::collections::BTreeMap<_, _>>()})
+        };
+        assert!(convert_with(headers(10)).is_ok());
+        assert!(convert_with(headers(11)).is_err());
     }
 
     #[test]
