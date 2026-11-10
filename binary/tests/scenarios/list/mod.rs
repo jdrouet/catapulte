@@ -6,6 +6,7 @@ pub mod inline_attachment_is_delivered;
 pub mod inline_cid_image;
 pub mod lifecycle_events;
 pub mod list_emails_returns_submitted;
+pub mod list_unsubscribe;
 pub mod mjml_inline_renders_with_variables;
 pub mod plain_email;
 pub mod reply_to_and_headers;

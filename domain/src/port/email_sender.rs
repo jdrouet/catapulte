@@ -46,6 +46,7 @@ pub struct OutboundEmail {
     pub attachments: Vec<crate::entity::attachment::ResolvedAttachment>,
     pub reply_to: Vec<String>,
     pub headers: Vec<(String, String)>,
+    pub unsubscribe: Option<crate::entity::envelope::Unsubscribe>,
 }
 
 #[derive(Debug)]

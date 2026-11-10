@@ -11,7 +11,7 @@ use async_nats::jetstream;
 use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::body::{BodySource, Plain};
 use catapulte_domain::entity::email::{EmailId, RecipientKind};
-use catapulte_domain::entity::envelope::Envelope;
+use catapulte_domain::entity::envelope::{Envelope, Unsubscribe};
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
 use catapulte_domain::port::email_queue::{AckToken, DequeuedEmail, EmailQueue, EmailQueueError};
 use catapulte_domain::port::email_repository::{
@@ -228,6 +228,14 @@ fn input_with(
         }],
         reply_to: vec![format!("Reply <{correlation_id}@reply.example.com>")],
         headers: vec![("X-Corr".to_owned(), correlation_id.to_owned())],
+        unsubscribe: Some(Unsubscribe {
+            url: Some(
+                format!("https://example.com/u/{correlation_id}")
+                    .parse()
+                    .unwrap(),
+            ),
+            mailto: Some(format!("unsub-{correlation_id}@example.com")),
+        }),
     }
 }
 
@@ -298,6 +306,7 @@ fn assert_same_envelope(got: &Envelope, published: &Envelope) {
     assert_eq!(got.attachments, published.attachments);
     assert_eq!(got.reply_to, published.reply_to);
     assert_eq!(got.headers, published.headers);
+    assert_eq!(got.unsubscribe, published.unsubscribe);
 }
 
 #[tokio::test]

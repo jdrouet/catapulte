@@ -44,6 +44,7 @@ pub struct SubmitEmailInput {
     pub attachments: Vec<AttachmentInput>,
     pub reply_to: Vec<String>,
     pub headers: Vec<(String, String)>,
+    pub unsubscribe: Option<crate::entity::envelope::Unsubscribe>,
 }
 
 #[derive(Debug, Error)]
@@ -294,6 +295,7 @@ where
             attachments: vec![],
             reply_to: input.reply_to.clone(),
             headers: input.headers.clone(),
+            unsubscribe: input.unsubscribe.clone(),
         };
 
         let result = self.repository.save(id, &envelope_for_reservation).await?;
@@ -324,6 +326,7 @@ where
             attachments,
             reply_to,
             headers,
+            unsubscribe,
         } = input;
 
         let mut written_refs: Vec<AttachmentRef> = Vec::with_capacity(attachments.len());
@@ -406,6 +409,7 @@ where
             attachments: written_refs,
             reply_to,
             headers,
+            unsubscribe,
         };
 
         if let Err(e) = self
@@ -495,6 +499,7 @@ mod tests {
             attachments: vec![],
             reply_to: vec![],
             headers: vec![],
+            unsubscribe: None,
         }
     }
 

@@ -18,6 +18,7 @@ crate::e2e_matrix! {
         display_name_sender,
         delivery_receipt,
         reply_to_and_headers,
+        list_unsubscribe,
     ],
     backends: [sqlite_storage, sqlite_memory, sqlite_nats, postgres_storage, postgres_memory, postgres_nats],
 }

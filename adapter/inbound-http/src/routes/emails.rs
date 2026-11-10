@@ -1599,6 +1599,19 @@ mod tests {
                 "bad reply_to",
                 serde_json::json!({"reply_to": "not an address"}),
             ),
+            ("empty unsubscribe", serde_json::json!({"unsubscribe": {}})),
+            (
+                "http unsubscribe url",
+                serde_json::json!({"unsubscribe": {"url": "http://example.com/u"}}),
+            ),
+            (
+                "bad unsubscribe mailto",
+                serde_json::json!({"unsubscribe": {"mailto": "nope"}}),
+            ),
+            (
+                "long unsubscribe url",
+                serde_json::json!({"unsubscribe": {"url": format!("https://e.com/{}", "a".repeat(1100))}}),
+            ),
             (
                 "reply_to control",
                 serde_json::json!({"reply_to": "A\u{1}B <a@b.c>"}),

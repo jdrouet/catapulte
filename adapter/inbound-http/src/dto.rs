@@ -2,6 +2,7 @@ use anyhow::Context;
 use base64::Engine;
 use catapulte_domain::entity::body::{BodySource, InvalidPlainBody, MjmlSource, Plain};
 use catapulte_domain::entity::email::{EmailId, RecipientKind};
+use catapulte_domain::entity::envelope::Unsubscribe;
 use catapulte_domain::use_case::submit_email::{AttachmentInput, SubmitEmailInput};
 use lettre::Address;
 use lettre::message::Mailbox;
@@ -146,6 +147,8 @@ pub enum EnvelopeConversionError {
     InvalidReplyTo(#[source] anyhow::Error),
     #[error("invalid header: {0}")]
     InvalidHeader(&'static str),
+    #[error("invalid unsubscribe: {0}")]
+    InvalidUnsubscribe(&'static str),
     #[error("recipients must not be empty")]
     EmptyRecipients,
     #[error("invalid recipient address")]
@@ -254,6 +257,48 @@ fn validate_reply_to(reply_to: Option<ReplyToDto>) -> Result<Vec<String>, Envelo
         .collect()
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnsubscribeDto {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub mailto: Option<String>,
+}
+
+fn validate_unsubscribe(
+    dto: Option<UnsubscribeDto>,
+) -> Result<Option<Unsubscribe>, EnvelopeConversionError> {
+    use EnvelopeConversionError::InvalidUnsubscribe;
+    let Some(dto) = dto else {
+        return Ok(None);
+    };
+    if dto.url.is_none() && dto.mailto.is_none() {
+        return Err(InvalidUnsubscribe("set at least one of url or mailto"));
+    }
+    let url = dto
+        .url
+        .map(|raw| {
+            url::Url::parse(&raw)
+                .ok()
+                .filter(|u| u.scheme() == "https")
+                .ok_or(InvalidUnsubscribe("url must be a valid https URL"))
+        })
+        .transpose()?;
+    let mailto = dto
+        .mailto
+        .map(|raw| {
+            raw.parse::<Address>()
+                .ok()
+                .and_then(|a| Unsubscribe::normalize_mailto(a.as_ref()))
+                .ok_or(InvalidUnsubscribe(
+                    "mailto must be an address with only letters, digits and . _ + - in the local part",
+                ))
+        })
+        .transpose()?;
+    Ok(Some(Unsubscribe { url, mailto }))
+}
+
 /// Builds the message headers exactly as the SMTP adapter does (same lettre builder calls
 /// in the same order: from, recipients, reply-to, custom headers, subject) and rejects any
 /// physical header line over 998 characters. lettre folds only at whitespace, so a long
@@ -264,6 +309,7 @@ fn check_header_lines(
     subject: Option<&str>,
     reply_to: &[String],
     headers: &[(String, String)],
+    unsubscribe: Option<&Unsubscribe>,
 ) -> Result<(), EnvelopeConversionError> {
     use EnvelopeConversionError::InvalidHeader;
     use lettre::message::header::{HeaderName, HeaderValue};
@@ -284,6 +330,10 @@ fn check_header_lines(
     for (name, value) in headers {
         let name = HeaderName::new_from_ascii(name.clone()).map_err(|_| unbuildable())?;
         builder = builder.raw_header(HeaderValue::new(name, value.clone()));
+    }
+    for (name, value) in unsubscribe.map(Unsubscribe::headers).unwrap_or_default() {
+        let name = HeaderName::new_from_ascii(name.to_owned()).map_err(|_| unbuildable())?;
+        builder = builder.raw_header(HeaderValue::new(name, value));
     }
     if let Some(subject) = subject {
         builder = builder.subject(subject);
@@ -568,6 +618,8 @@ pub struct EnvelopeCoreDto {
     pub reply_to: Option<ReplyToDto>,
     #[serde(default, deserialize_with = "deserialize_headers")]
     pub headers: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub unsubscribe: Option<UnsubscribeDto>,
 }
 
 /// Rejects a JSON object that repeats a header name, which a plain map would silently
@@ -618,12 +670,14 @@ impl EnvelopeCoreDto {
         let recipients = validate_recipients(self.recipients)?;
         let reply_to = validate_reply_to(self.reply_to)?;
         let headers = validate_headers(self.headers)?;
+        let unsubscribe = validate_unsubscribe(self.unsubscribe)?;
         check_header_lines(
             &sender,
             &recipients,
             self.subject.as_deref(),
             &reply_to,
             &headers,
+            unsubscribe.as_ref(),
         )?;
         let body = self.body.try_into()?;
         let mut seen = std::collections::HashSet::new();
@@ -648,6 +702,7 @@ impl EnvelopeCoreDto {
             attachments,
             reply_to,
             headers,
+            unsubscribe,
         })
     }
 }
@@ -716,6 +771,7 @@ mod tests {
             },
             variables: serde_json::Map::new(),
             reply_to: None,
+            unsubscribe: None,
             headers: std::collections::BTreeMap::new(),
         }
     }
@@ -855,6 +911,71 @@ mod tests {
         assert!(convert_with(subject(&under)).is_ok());
         assert!(convert_with(sender(&under)).is_ok());
         assert!(convert_with(recipient(&under)).is_ok());
+    }
+
+    #[test]
+    fn unsubscribe_is_validated() {
+        let ok = convert_with(serde_json::json!({
+            "unsubscribe": {"url": "https://example.com/u/1", "mailto": "u@example.com"}
+        }))
+        .unwrap()
+        .unsubscribe
+        .unwrap();
+        assert_eq!(ok.url.unwrap().as_str(), "https://example.com/u/1");
+        assert_eq!(ok.mailto.as_deref(), Some("u@example.com"));
+        assert!(
+            convert_with(serde_json::json!({"unsubscribe": {"mailto": "u@example.com"}})).is_ok()
+        );
+
+        let long_url = format!("https://example.com/{}", "a".repeat(1100));
+        let bad = [
+            serde_json::json!({}),
+            serde_json::json!({"url": "http://example.com/u"}),
+            serde_json::json!({"url": "not a url"}),
+            serde_json::json!({"mailto": "not an address"}),
+            serde_json::json!({"url": long_url}),
+        ];
+        for case in bad {
+            let err = convert_with(serde_json::json!({"unsubscribe": case.clone()}))
+                .err()
+                .expect("must be rejected");
+            assert!(
+                matches!(
+                    err,
+                    EnvelopeConversionError::InvalidUnsubscribe(_)
+                        | EnvelopeConversionError::InvalidHeader(_)
+                ),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsubscribe_mailto_charset_is_enforced_and_idn_is_punycoded() {
+        let mailto = |m: &str| convert_with(serde_json::json!({"unsubscribe": {"mailto": m}}));
+        for bad in [
+            "\"x>, <https://evil\"@e.com",
+            "\"a b\"@e.com",
+            "a?subject=x@e.com",
+            "a%41@e.com",
+            "a&b@e.com",
+            "a,b@e.com",
+        ] {
+            assert!(
+                matches!(
+                    mailto(bad).err().expect("must be rejected"),
+                    EnvelopeConversionError::InvalidUnsubscribe(_)
+                ),
+                "{bad}"
+            );
+        }
+        for good in ["unsubscribe+list-1@example.com", "a.b_c-d@example.com"] {
+            let got = mailto(good).unwrap().unsubscribe.unwrap();
+            assert_eq!(got.mailto.as_deref(), Some(good));
+        }
+        let idn = mailto("u@bücher.de").unwrap().unsubscribe.unwrap();
+        assert_eq!(idn.mailto.as_deref(), Some("u@xn--bcher-kva.de"));
+        assert_eq!(idn.headers()[0].1, "<mailto:u@xn--bcher-kva.de>");
     }
 
     #[test]

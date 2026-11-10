@@ -2,7 +2,7 @@ use anyhow::Context;
 use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain};
 use catapulte_domain::entity::email::{EmailId, RecipientKind};
-use catapulte_domain::entity::envelope::Envelope;
+use catapulte_domain::entity::envelope::{Envelope, Unsubscribe};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -73,6 +73,8 @@ pub struct EnvelopeDto {
     pub reply_to: Vec<String>,
     #[serde(default)]
     pub headers: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsubscribe: Option<UnsubscribeDto>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -187,6 +189,7 @@ impl From<(&EmailId, &Envelope)> for QueuedEmailPayload {
                     .collect(),
                 reply_to: envelope.reply_to.clone(),
                 headers: envelope.headers.clone(),
+                unsubscribe: envelope.unsubscribe.as_ref().map(UnsubscribeDto::from),
             },
         }
     }
@@ -220,8 +223,45 @@ impl TryFrom<QueuedEmailPayload> for (EmailId, Envelope) {
             attachments,
             reply_to: payload.envelope.reply_to,
             headers: payload.envelope.headers,
+            unsubscribe: payload
+                .envelope
+                .unsubscribe
+                .map(Unsubscribe::try_from)
+                .transpose()?,
         };
         Ok((EmailId::from(payload.id), envelope))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UnsubscribeDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailto: Option<String>,
+}
+
+impl From<&Unsubscribe> for UnsubscribeDto {
+    fn from(u: &Unsubscribe) -> Self {
+        Self {
+            url: u.url.as_ref().map(ToString::to_string),
+            mailto: u.mailto.clone(),
+        }
+    }
+}
+
+impl TryFrom<UnsubscribeDto> for Unsubscribe {
+    type Error = anyhow::Error;
+
+    fn try_from(dto: UnsubscribeDto) -> Result<Self, Self::Error> {
+        Ok(Self {
+            url: dto
+                .url
+                .map(|u| u.parse())
+                .transpose()
+                .context("parsing unsubscribe url")?,
+            mailto: dto.mailto,
+        })
     }
 }
 
@@ -325,5 +365,42 @@ mod tests {
             AttachmentRef::from(back).content_id.as_deref(),
             Some("logo")
         );
+    }
+
+    #[test]
+    fn unsubscribe_round_trips_and_legacy_payload_loads() {
+        use catapulte_domain::entity::envelope::Unsubscribe;
+
+        let id = EmailId::default();
+        let unsubscribe = Unsubscribe {
+            url: Some("https://example.com/u/1".parse().unwrap()),
+            mailto: Some("u@example.com".to_owned()),
+        };
+        let envelope = Envelope {
+            unsubscribe: Some(unsubscribe.clone()),
+            ..Envelope::new(
+                "sender@example.com",
+                vec![(RecipientKind::To, "to@example.com".into())],
+                BodySource::Plain(Plain::try_new(Some("hi".into()), None).unwrap()),
+            )
+        };
+        let bytes = serde_json::to_vec(&QueuedEmailPayload::from((&id, &envelope))).unwrap();
+        let (_, back) = <(EmailId, Envelope)>::try_from(
+            serde_json::from_slice::<QueuedEmailPayload>(&bytes).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(back.unsubscribe, Some(unsubscribe));
+
+        let legacy = serde_json::json!({
+            "id": uuid::Uuid::nil(),
+            "envelope": {
+                "idempotency_key": null, "subject": null, "sender": "a@b.c",
+                "recipients": [], "body": {"kind": "plain", "text": "x", "html": null},
+                "variables": {}
+            }
+        });
+        let payload: QueuedEmailPayload = serde_json::from_value(legacy).unwrap();
+        let (_, env) = <(EmailId, Envelope)>::try_from(payload).unwrap();
+        assert!(env.unsubscribe.is_none());
     }
 }

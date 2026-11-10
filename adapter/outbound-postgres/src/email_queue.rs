@@ -57,6 +57,11 @@ pub(crate) fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Enve
         attachments,
         reply_to: extras.reply_to,
         headers: extras.headers,
+        unsubscribe: extras
+            .unsubscribe
+            .map(catapulte_domain::entity::envelope::Unsubscribe::try_from)
+            .transpose()
+            .context("parsing unsubscribe")?,
     })
 }
 

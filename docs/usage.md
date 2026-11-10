@@ -65,6 +65,7 @@ addresses with an IP-literal domain or a quoted local part, which the SMTP libra
 | `attachments` | array | see [Attachments](#attachments); defaults to `[]` |
 | `reply_to` | string, `{ name, address }`, or an array of either | `Reply-To` mailboxes, validated like the sender (see [Reply-To and custom headers](#reply-to-and-custom-headers)) |
 | `headers` | object of string to string | custom headers (see [Reply-To and custom headers](#reply-to-and-custom-headers)) |
+| `unsubscribe` | object `{ url?, mailto? }` | `List-Unsubscribe` and one-click unsubscribe (see [Unsubscribe](#unsubscribe)) |
 
 ### Reply-To and custom headers
 
@@ -99,6 +100,20 @@ have a line over 998 characters.
   "headers": { "X-Order-Id": "42", "In-Reply-To": "<abc@example.com>" }
 }
 ```
+
+### Unsubscribe
+
+`unsubscribe` sets the `List-Unsubscribe` header (RFC 2369) and, when `url` is set, the
+one-click header `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058):
+
+```json
+"unsubscribe": { "url": "https://example.com/unsubscribe/42", "mailto": "unsub@example.com" }
+```
+
+At least one of `url` and `mailto` is required. `url` must be a valid `https` URL and
+`mailto` a valid email address; otherwise the request fails with `400`, as it does when the
+resulting header line exceeds 998 characters. The header lists `url` first, then `mailto`.
+The `mailto` local part may only contain letters, digits and `. _ + -`; an international domain is converted to punycode. Catapulte only sets the headers; your service must handle the unsubscribe request.
 
 ### Body variants
 

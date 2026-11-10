@@ -147,6 +147,7 @@ where
             attachments,
             reply_to,
             headers,
+            unsubscribe,
             ..
         } = envelope;
         let resolved = self.resolver.resolve(body).await?;
@@ -166,6 +167,7 @@ where
                 attachments: resolved_attachments,
                 reply_to,
                 headers,
+                unsubscribe,
             })
             .await?;
         Ok(ProcessedEmail {

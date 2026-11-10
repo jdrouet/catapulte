@@ -2,6 +2,7 @@ use anyhow::Context;
 use catapulte_domain::entity::attachment::ResolvedAttachment;
 use catapulte_domain::entity::body::RenderedBody;
 use catapulte_domain::entity::email::RecipientKind;
+use catapulte_domain::entity::envelope::Unsubscribe;
 use catapulte_domain::port::email_sender::OutboundEmail;
 use catapulte_domain::port::email_transport::{
     DeliveryReceipt, EmailTransport, TransportError, TransportErrorKind,
@@ -92,6 +93,7 @@ fn apply_reply_to_and_headers(
     mut builder: lettre::message::MessageBuilder,
     reply_to: &[String],
     headers: &[(String, String)],
+    unsubscribe: Option<&Unsubscribe>,
 ) -> anyhow::Result<lettre::message::MessageBuilder> {
     use lettre::message::header::{HeaderName, HeaderValue};
     for address in reply_to {
@@ -101,6 +103,11 @@ fn apply_reply_to_and_headers(
         let name = HeaderName::new_from_ascii(name.clone())
             .map_err(|_| anyhow::anyhow!("invalid header name: {name}"))?;
         builder = builder.raw_header(HeaderValue::new(name, value.clone()));
+    }
+    for (name, value) in unsubscribe.map(Unsubscribe::headers).unwrap_or_default() {
+        let name = HeaderName::new_from_ascii(name.to_owned())
+            .map_err(|_| anyhow::anyhow!("invalid header name: {name}"))?;
+        builder = builder.raw_header(HeaderValue::new(name, value));
     }
     Ok(builder)
 }
@@ -401,7 +408,14 @@ impl SmtpTransport {
             .from(from)
             .message_id(Some(email.message_id.clone()));
         let builder = apply_recipients(builder, &email.recipients)
-            .and_then(|b| apply_reply_to_and_headers(b, &email.reply_to, &email.headers))
+            .and_then(|b| {
+                apply_reply_to_and_headers(
+                    b,
+                    &email.reply_to,
+                    &email.headers,
+                    email.unsubscribe.as_ref(),
+                )
+            })
             .map_err(message_error)?;
         let message = finalize_message(
             builder,
@@ -900,6 +914,7 @@ mod tests {
             }],
             reply_to: vec![],
             headers: vec![],
+            unsubscribe: None,
             message_id: "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>".into(),
         }
     }
@@ -970,6 +985,7 @@ mod tests {
             attachments: vec![],
             reply_to: vec![],
             headers: vec![],
+            unsubscribe: None,
             message_id: "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>".into(),
         }
     }
@@ -996,6 +1012,52 @@ mod tests {
         );
         assert!(text.contains("X-Order-Id: 42"), "{text}");
         assert!(text.contains("In-Reply-To: <a@b.c>"), "{text}");
+    }
+
+    fn unsubscribe_message(url: Option<&str>, mailto: Option<&str>) -> String {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.unsubscribe = Some(super::Unsubscribe {
+            url: url.map(|u| u.parse().unwrap()),
+            mailto: mailto.map(str::to_owned),
+        });
+        let (_, raw) = transport.prepare(&email).unwrap();
+        String::from_utf8_lossy(&raw).into_owned()
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_url_emits_list_unsubscribe_and_one_click_post() {
+        let text = unsubscribe_message(Some("https://example.com/u/1"), None);
+        assert!(
+            text.contains("List-Unsubscribe: <https://example.com/u/1>\r\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_mailto_only_has_no_post_header() {
+        let text = unsubscribe_message(None, Some("unsub@example.com"));
+        assert!(
+            text.contains("List-Unsubscribe: <mailto:unsub@example.com>\r\n"),
+            "{text}"
+        );
+        assert!(!text.contains("List-Unsubscribe-Post"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_with_both_lists_url_then_mailto_and_post_header() {
+        let text = unsubscribe_message(Some("https://example.com/u/1"), Some("unsub@example.com"));
+        assert!(
+            text.contains(
+                "List-Unsubscribe: <https://example.com/u/1>, <mailto:unsub@example.com>\r\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("List-Unsubscribe-Post: List-Unsubscribe=One-Click"));
     }
 
     #[tokio::test]

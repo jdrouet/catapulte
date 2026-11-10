@@ -15,7 +15,7 @@ use sqlx::types::Json;
 use crate::SqliteAdapter;
 use crate::dto::{
     AttachmentRefDto, BodySourceDto, EnvelopeBodyDto, EnvelopeBodyDtoDeser, EnvelopeExtrasDto,
-    recipients_to_dto,
+    UnsubscribeDto, recipients_to_dto,
 };
 
 impl EmailRepository for SqliteAdapter {
@@ -40,6 +40,7 @@ impl EmailRepository for SqliteAdapter {
         let extras_dto = EnvelopeExtrasDto {
             reply_to: envelope.reply_to.clone(),
             headers: envelope.headers.clone(),
+            unsubscribe: envelope.unsubscribe.as_ref().map(UnsubscribeDto::from),
         };
 
         let result = sqlx::query(

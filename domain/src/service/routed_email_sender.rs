@@ -366,6 +366,7 @@ mod tests {
             attachments: vec![],
             reply_to: vec![],
             headers: vec![],
+            unsubscribe: None,
             message_id: "<id@example.com>".into(),
         }
     }
@@ -608,6 +609,7 @@ mod tests {
             attachments: vec![],
             reply_to: vec![],
             headers: vec![],
+            unsubscribe: None,
             message_id: "<id@example.com>".into(),
         }
     }
