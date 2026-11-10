@@ -173,6 +173,8 @@ send on it fails and is retried through the normal queue retry and alternate-sen
 | `CATAPULTE_QUEUE_BACKEND` | `storage`, `memory`, or `nats` | `storage` |
 
 #### NATS Queue (if backend is `nats`)
+Enqueue waits for the JetStream publish acknowledgement before it succeeds.
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CATAPULTE_QUEUE_URL` | **(Required)** NATS server URL | - |

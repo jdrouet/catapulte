@@ -13,6 +13,7 @@ pub struct NatsAdapter {
 
 struct NatsAdapterInner {
     client: async_nats::Client,
+    jetstream: jetstream::Context,
     consumer: jetstream::consumer::PullConsumer,
     subject: String,
 }
@@ -72,6 +73,7 @@ impl NatsAdapter {
         Ok(Self {
             inner: std::sync::Arc::new(NatsAdapterInner {
                 client,
+                jetstream: js,
                 consumer,
                 subject: config.subject.clone(),
             }),
@@ -96,6 +98,10 @@ impl NatsAdapter {
 
     pub(crate) fn client(&self) -> &async_nats::Client {
         &self.inner.client
+    }
+
+    pub(crate) fn jetstream(&self) -> &jetstream::Context {
+        &self.inner.jetstream
     }
 
     pub(crate) fn consumer(&self) -> &jetstream::consumer::PullConsumer {
