@@ -39,6 +39,8 @@ Within each persona, stories are ordered by priority (most important first).
 
 ## Quick Start
 
+The compose files are for local development and testing only; do not deploy them as is. Their default credentials (`catapulte`) can be overridden with `POSTGRES_PASSWORD` and `MINIO_ROOT_PASSWORD` (a Postgres password must be URL-safe: letters, digits, `-._~`, because it is embedded in `CATAPULTE_POSTGRES_URL`), and the MinIO and Redis ports are published on `127.0.0.1` only.
+
 The easiest way to run Catapulte is using Docker Compose. Several examples are provided in the [compose](./compose) directory:
 
 - **Local Development**: `docker-compose -f compose/local-dev.yml up`

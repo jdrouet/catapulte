@@ -1,3 +1,8 @@
+# Local use only, do not deploy as is. The default database password is for
+# development; set POSTGRES_PASSWORD to override it. An overriding
+# value must be URL-safe (letters, digits, -._~) because it is embedded in
+# CATAPULTE_POSTGRES_URL.
+#
 # Multi-replica load test.
 #
 # N catapulte replicas share Postgres (storage) and NATS (queue) and deliver to
@@ -22,7 +27,7 @@ services:
     environment:
       - "CATAPULTE_HTTP_ADDRESS=0.0.0.0:3000"
       - "CATAPULTE_STORAGE_BACKEND=postgres"
-      - "CATAPULTE_POSTGRES_URL=postgres://catapulte:catapulte@postgres:5432/catapulte"
+      - "CATAPULTE_POSTGRES_URL=postgres://catapulte:${POSTGRES_PASSWORD:-catapulte}@postgres:5432/catapulte"
       - "CATAPULTE_QUEUE_BACKEND=nats"
       - "CATAPULTE_QUEUE_URL=nats://nats:4222"
       - "CATAPULTE_SENDERS=mailpit"
@@ -53,7 +58,7 @@ services:
     image: postgres:16-alpine
     environment:
       - "POSTGRES_USER=catapulte"
-      - "POSTGRES_PASSWORD=catapulte"
+      - "POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-catapulte}"
       - "POSTGRES_DB=catapulte"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U catapulte"]

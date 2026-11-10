@@ -1,3 +1,5 @@
+# Local use only, do not deploy as is. The default MinIO password is for
+# development; set MINIO_ROOT_PASSWORD to override it. Ports bind to loopback.
 services:
   catapulte:
     build:
@@ -18,7 +20,7 @@ services:
       - "CATAPULTE_ATTACHMENT_S3_REGION=us-east-1"
       - "CATAPULTE_ATTACHMENT_S3_BUCKET=catapulte"
       - "CATAPULTE_ATTACHMENT_S3_ACCESS_KEY_ID=catapulte"
-      - "CATAPULTE_ATTACHMENT_S3_SECRET_ACCESS_KEY=catapulte"
+      - "CATAPULTE_ATTACHMENT_S3_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-catapulte}"
       - "CATAPULTE_ATTACHMENT_S3_PATH_STYLE=true"
     healthcheck:
       test: ["CMD", "catapulte", "healthcheck"]
@@ -37,10 +39,10 @@ services:
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       - "MINIO_ROOT_USER=catapulte"
-      - "MINIO_ROOT_PASSWORD=catapulte"
+      - "MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-catapulte}"
     ports:
-      - "9000:9000" # S3 API
-      - "9001:9001" # Web console
+      - "127.0.0.1:9000:9000" # S3 API
+      - "127.0.0.1:9001:9001" # Web console
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
@@ -51,9 +53,11 @@ services:
 
   minio-init:
     image: minio/mc
+    environment:
+      - "MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-catapulte}"
     entrypoint: >
       /bin/sh -c "
-        mc alias set local http://minio:9000 catapulte catapulte &&
+        mc alias set local http://minio:9000 catapulte \"$$MINIO_ROOT_PASSWORD\" &&
         mc mb --ignore-existing local/catapulte
       "
     depends_on:
