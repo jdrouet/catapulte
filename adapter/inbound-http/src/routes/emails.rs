@@ -10,9 +10,10 @@ use futures_util::TryStreamExt;
 use crate::HttpServerState;
 use crate::dto::{
     BatchItemResultDto, BatchSubmitEmailRequest, BatchSubmitEmailResponse, DEFAULT_EMAILS_LIMIT,
-    EmailRecordDto, EnvelopeCoreDto, ListEmailsQuery, ListEmailsResponse, MAX_ATTACHMENT_BYTES,
-    MAX_ATTACHMENTS_PER_EMAIL, MAX_EMAILS_LIMIT, MAX_EMAILS_PER_BATCH, MAX_ENVELOPE_BYTES,
-    MAX_REQUEST_BODY_BYTES, SubmitEmailRequest, SubmitEmailResponse,
+    EmailRecordDto, EnvelopeConversionError, EnvelopeCoreDto, ListEmailsQuery, ListEmailsResponse,
+    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_EMAIL, MAX_EMAILS_LIMIT, MAX_EMAILS_PER_BATCH,
+    MAX_ENVELOPE_BYTES, MAX_REQUEST_BODY_BYTES, SubmitEmailRequest, SubmitEmailResponse,
+    validate_attachment_meta,
 };
 use crate::error::AppError;
 use crate::limited_reader::LimitedReader;
@@ -131,10 +132,20 @@ async fn handle_multipart(
                     })?
                     .to_owned();
 
-                let content_type = field
-                    .content_type()
-                    .unwrap_or("application/octet-stream")
-                    .to_owned();
+                // Read the raw header: the parsed `content_type()` silently drops invalid values.
+                let content_type = match field.headers().get(axum::http::header::CONTENT_TYPE) {
+                    None => "application/octet-stream".to_owned(),
+                    Some(raw) => raw
+                        .to_str()
+                        .map_err(|_| {
+                            AppError::BadRequest(
+                                EnvelopeConversionError::InvalidAttachmentContentType {
+                                    filename: filename.clone(),
+                                },
+                            )
+                        })?
+                        .to_owned(),
+                };
 
                 // Buffer through LimitedReader to enforce the per-attachment size cap.
                 // The axum Field borrows from Multipart and cannot be made 'static, so
@@ -149,6 +160,7 @@ async fn handle_multipart(
                         AppError::BadRequestRaw(format!("attachment too large or read error: {e}"))
                     })?;
 
+                let (filename, content_type) = validate_attachment_meta(&filename, &content_type)?;
                 attachments.push(AttachmentInput::Inline {
                     filename,
                     content_type,
@@ -267,11 +279,27 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
-    struct FakeSubmit;
+    #[derive(Clone, Default)]
+    struct FakeSubmit {
+        /// `(filename, content_type)` of every inline attachment received.
+        attachments: Arc<Mutex<Vec<(String, String)>>>,
+    }
 
     impl SubmitEmailUseCase for FakeSubmit {
-        async fn execute(&self, _input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
+        async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
+            for att in input.attachments {
+                if let catapulte_domain::use_case::submit_email::AttachmentInput::Inline {
+                    filename,
+                    content_type,
+                    ..
+                } = att
+                {
+                    self.attachments
+                        .lock()
+                        .unwrap()
+                        .push((filename, content_type));
+                }
+            }
             Ok(EmailId::default())
         }
     }
@@ -432,7 +460,7 @@ mod tests {
     fn make_router() -> axum::Router {
         router(
             TestState {
-                submit: Arc::new(FakeSubmit),
+                submit: Arc::new(FakeSubmit::default()),
                 list_emails: Arc::new(FakeListEmails::new()),
             },
             None,
@@ -549,7 +577,7 @@ mod tests {
         let list_emails = Arc::new(FakeListEmails::with_records(vec![sample_email_record()]));
         let app = router(
             TestState {
-                submit: Arc::new(FakeSubmit),
+                submit: Arc::new(FakeSubmit::default()),
                 list_emails,
             },
             None,
@@ -576,7 +604,7 @@ mod tests {
         let captured = list_emails.captured_params.clone();
         let app = router(
             TestState {
-                submit: Arc::new(FakeSubmit),
+                submit: Arc::new(FakeSubmit::default()),
                 list_emails,
             },
             None,
@@ -593,7 +621,7 @@ mod tests {
         let captured = list_emails.captured_params.clone();
         let app = router(
             TestState {
-                submit: Arc::new(FakeSubmit),
+                submit: Arc::new(FakeSubmit::default()),
                 list_emails,
             },
             None,
@@ -610,7 +638,7 @@ mod tests {
         let captured = list_emails.captured_params.clone();
         let app = router(
             TestState {
-                submit: Arc::new(FakeSubmit),
+                submit: Arc::new(FakeSubmit::default()),
                 list_emails,
             },
             None,
@@ -630,7 +658,7 @@ mod tests {
         let captured = list_emails.captured_params.clone();
         let app = router(
             TestState {
-                submit: Arc::new(FakeSubmit),
+                submit: Arc::new(FakeSubmit::default()),
                 list_emails,
             },
             None,
@@ -647,7 +675,7 @@ mod tests {
         let captured = list_emails.captured_params.clone();
         let app = router(
             TestState {
-                submit: Arc::new(FakeSubmit),
+                submit: Arc::new(FakeSubmit::default()),
                 list_emails,
             },
             None,
@@ -662,7 +690,7 @@ mod tests {
     async fn list_emails_500_when_repository_errors() {
         let app = router(
             FailingEmailRepoState {
-                submit: Arc::new(FakeSubmit),
+                submit: Arc::new(FakeSubmit::default()),
             },
             None,
             std::time::Duration::from_secs(30),
@@ -1202,6 +1230,50 @@ mod tests {
         let app = make_router();
         let response = app.oneshot(post_multipart(boundary, body)).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_multipart_attachment_with_bad_content_type_returns_400() {
+        let boundary = "badtypeboundary";
+        let envelope = envelope_json();
+        let body = multipart_body(
+            boundary,
+            &[
+                ("envelope", None, Some("application/json"), &envelope),
+                ("attachment", Some("file.pdf"), Some("pdf"), b"data"),
+            ],
+        );
+        let app = make_router();
+        let response = app.oneshot(post_multipart(boundary, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_multipart_attachment_without_type_defaults_and_is_accepted() {
+        let boundary = "notypeboundary";
+        let envelope = envelope_json();
+        let body = multipart_body(
+            boundary,
+            &[
+                ("envelope", None, Some("application/json"), &envelope),
+                ("attachment", Some("../file.bin"), None, b"data"),
+            ],
+        );
+        let submit = Arc::new(FakeSubmit::default());
+        let app = router(
+            TestState {
+                submit: submit.clone(),
+                list_emails: Arc::new(FakeListEmails::new()),
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        let response = app.oneshot(post_multipart(boundary, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            *submit.attachments.lock().unwrap(),
+            vec![("file.bin".to_owned(), "application/octet-stream".to_owned())]
+        );
     }
 
     #[tokio::test]

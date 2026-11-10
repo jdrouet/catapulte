@@ -5,10 +5,12 @@ use catapulte_domain::entity::email::{EmailId, RecipientKind};
 use catapulte_domain::use_case::submit_email::{AttachmentInput, SubmitEmailInput};
 use lettre::Address;
 use lettre::message::Mailbox;
+use lettre::message::header::ContentType;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
 pub const MAX_ATTACHMENTS_PER_EMAIL: usize = 10;
+pub const MAX_ATTACHMENT_FILENAME_BYTES: usize = 255;
 pub const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024; // 25 MiB
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024; // 1 MiB
 // Worst case: 10 attachments × 25 MiB = 250 MiB binary, base64-inflated to ~333 MiB, plus ~1 MiB envelope.
@@ -140,6 +142,10 @@ pub enum EnvelopeConversionError {
         #[source]
         source: anyhow::Error,
     },
+    #[error("invalid attachment content type")]
+    InvalidAttachmentContentType { filename: String },
+    #[error("invalid attachment filename")]
+    InvalidAttachmentFilename { filename: String },
     #[error("too many attachments")]
     TooManyAttachments,
     #[error("attachment too large")]
@@ -223,7 +229,56 @@ fn validate_recipients(
         .collect::<Result<Vec<_>, EnvelopeConversionError>>()
 }
 
+/// Bidi and zero-width format characters (Unicode category Cf), rejected to prevent
+/// filename spoofing such as `invoice\u{202E}fdp.exe`.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+    )
+}
+
+/// Returns the filename's last path segment and the content type unchanged, so the SMTP
+/// adapter's `ContentType::parse` sees exactly what was validated here.
+///
+/// # Errors
+///
+/// Returns an error when the content type does not parse, or the filename is empty after
+/// stripping directories, longer than 255 bytes, or contains control characters.
+pub fn validate_attachment_meta(
+    filename: &str,
+    content_type: &str,
+) -> Result<(String, String), EnvelopeConversionError> {
+    let name = filename
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.len() > MAX_ATTACHMENT_FILENAME_BYTES
+        || name.chars().any(|c| c.is_control() || is_format_char(c))
+    {
+        return Err(EnvelopeConversionError::InvalidAttachmentFilename {
+            filename: filename.to_owned(),
+        });
+    }
+    ContentType::parse(content_type).map_err(|_| {
+        EnvelopeConversionError::InvalidAttachmentContentType {
+            filename: filename.to_owned(),
+        }
+    })?;
+    Ok((name.to_owned(), content_type.to_owned()))
+}
+
 fn attachment_dto_to_input(a: AttachmentDto) -> Result<AttachmentInput, EnvelopeConversionError> {
+    let (filename, content_type) = validate_attachment_meta(&a.filename, &a.content_type)?;
+    let a = AttachmentDto {
+        filename,
+        content_type,
+        ..a
+    };
     match (a.inline_base64, a.url) {
         (Some(b64), None) => {
             // Reject before decoding so an oversized payload is never allocated.
@@ -779,6 +834,116 @@ mod tests {
             let delivered = catapulte_outbound_smtp::transport::parse_mailbox(&stored).unwrap();
             assert_eq!(delivered.to_string(), stored, "{label}");
         }
+    }
+
+    fn attachment_with(filename: &str, content_type: &str) -> SubmitEmailRequest {
+        SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: filename.into(),
+                content_type: content_type.into(),
+                inline_base64: Some("aGk=".into()),
+                url: None,
+            }],
+            ..base_request()
+        }
+    }
+
+    #[test]
+    fn invalid_attachment_content_types_are_rejected() {
+        for ct in ["pdf", "application/pdf; x", ""] {
+            let result = attachment_with("a.pdf", ct).into_submit_input();
+            assert!(
+                matches!(
+                    result,
+                    Err(EnvelopeConversionError::InvalidAttachmentContentType { .. })
+                ),
+                "{ct:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn content_type_with_parameters_is_accepted_unchanged() {
+        let (_, ct) =
+            super::validate_attachment_meta("a.txt", "text/plain; charset=utf-8").unwrap();
+        assert_eq!(ct, "text/plain; charset=utf-8");
+        assert!(
+            attachment_with("a.txt", "text/plain; charset=utf-8")
+                .into_submit_input()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn attachment_filenames_are_reduced_to_their_last_segment() {
+        for (given, expected) in [
+            ("../../invoice.pdf", "invoice.pdf"),
+            ("C:\\x\\a.pdf", "a.pdf"),
+            ("  report.pdf  ", "report.pdf"),
+            ("plain.pdf", "plain.pdf"),
+        ] {
+            let (name, _) = super::validate_attachment_meta(given, "application/pdf").unwrap();
+            assert_eq!(name, expected, "{given:?}");
+        }
+        let input = attachment_with("../../invoice.pdf", "application/pdf")
+            .into_submit_input()
+            .unwrap();
+        let catapulte_domain::use_case::submit_email::AttachmentInput::Inline { filename, .. } =
+            &input.attachments[0]
+        else {
+            panic!("expected Inline variant");
+        };
+        assert_eq!(filename, "invoice.pdf");
+    }
+
+    #[test]
+    fn invalid_attachment_filenames_are_rejected() {
+        let too_long = "a".repeat(256);
+        for name in [
+            "",
+            "   ",
+            "/",
+            "dir/",
+            ".",
+            "..",
+            "a/..",
+            "invoice\u{202E}fdp.exe",
+            "a\u{200B}b",
+            "\u{FEFF}a",
+            "a\u{200F}",
+            "a\u{0}b",
+            "a\nb",
+            "a\u{7f}b",
+            too_long.as_str(),
+        ] {
+            let result = super::validate_attachment_meta(name, "application/pdf");
+            assert!(
+                matches!(
+                    result,
+                    Err(EnvelopeConversionError::InvalidAttachmentFilename { .. })
+                ),
+                "{name:?}"
+            );
+        }
+        let max = "a".repeat(255);
+        assert!(super::validate_attachment_meta(&max, "application/pdf").is_ok());
+    }
+
+    #[test]
+    fn remote_attachment_content_type_is_validated() {
+        let req = SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: "remote.pdf".into(),
+                content_type: "pdf".into(),
+                inline_base64: None,
+                url: Some("https://example.com/a.pdf".into()),
+            }],
+            ..base_request()
+        };
+        assert!(matches!(
+            req.into_submit_input(),
+            Err(EnvelopeConversionError::InvalidAttachmentContentType { .. })
+        ));
     }
 
     #[test]

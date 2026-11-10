@@ -119,6 +119,11 @@ URL (exactly one):
 ]
 ```
 
+`content_type` must be a valid MIME type (parameters such as `; charset=utf-8` are fine),
+and `filename` is reduced to its last path segment (after `/` or `\`); an empty name,
+one over 255 bytes, or one with control characters is rejected with `400`. A multipart
+part without a content type defaults to `application/octet-stream`.
+
 Remote URLs are fetched server-side subject to the operator's allow-list; an
 unreachable or disallowed URL fails the submission with `400`.
 
