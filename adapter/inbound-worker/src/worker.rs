@@ -1344,4 +1344,95 @@ mod tests {
             "in-flight task must complete (not be abandoned) on graceful drain"
         );
     }
+
+    struct PermanentSendProcessor;
+
+    impl ProcessQueuedEmailUseCase for PermanentSendProcessor {
+        async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+            Err(ProcessQueuedEmailError::Send(
+                catapulte_domain::port::email_sender::SendError::Send {
+                    sender_name: SenderName::new("primary"),
+                    permanent: true,
+                    source: anyhow::anyhow!(
+                        "smtp send failed: permanent error (550): 5.1.1 no such user"
+                    ),
+                },
+            ))
+        }
+    }
+
+    #[derive(Clone)]
+    struct PermanentSendState {
+        queue: TrackingQueue,
+        publisher: CapturingEventPublisher,
+    }
+
+    impl WorkerState for PermanentSendState {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &PermanentSendProcessor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &self.queue
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &self.publisher
+        }
+
+        fn attachment_store(&self) -> &impl AttachmentStore {
+            &NoopStore
+        }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            &NoopRepository
+        }
+    }
+
+    #[tokio::test]
+    async fn permanent_send_failure_on_first_attempt_is_rejected_without_retry() {
+        let queue = TrackingQueue::default();
+        let publisher = CapturingEventPublisher::default();
+        let state = PermanentSendState {
+            queue: queue.clone(),
+            publisher: publisher.clone(),
+        };
+
+        process_one(
+            &state,
+            EmailId::default(),
+            sample_envelope(),
+            1,
+            AckToken::new(vec![0u8; 8]),
+            TraceCarrier::default(),
+        )
+        .await;
+
+        assert_eq!(*queue.acked.lock().unwrap(), 1);
+        assert_eq!(*queue.nacked.lock().unwrap(), 0);
+        let events = publisher.events.lock().unwrap();
+        let failed = events
+            .iter()
+            .find_map(|e| match e {
+                LifecycleEvent::Failed {
+                    attempt,
+                    reason,
+                    error_class,
+                    ..
+                } => Some((*attempt, reason.clone(), error_class.clone())),
+                _ => None,
+            })
+            .expect("expected a delivery.failed event");
+        assert_eq!(failed.0, 1);
+        assert!(failed.1.contains("550"), "reason: {}", failed.1);
+        assert_eq!(
+            failed.2,
+            catapulte_domain::entity::error_class::ErrorClass::Rejected
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, LifecycleEvent::Retrying { .. }))
+        );
+    }
 }
