@@ -169,6 +169,12 @@ fn validate_recipients(
 fn attachment_dto_to_input(a: AttachmentDto) -> Result<AttachmentInput, EnvelopeConversionError> {
     match (a.inline_base64, a.url) {
         (Some(b64), None) => {
+            // Reject before decoding so an oversized payload is never allocated.
+            if b64.len() as u64 > MAX_ATTACHMENT_BYTES.div_ceil(3) * 4 + 4 {
+                return Err(EnvelopeConversionError::AttachmentTooLarge {
+                    filename: a.filename,
+                });
+            }
             let decoded = base64::engine::general_purpose::STANDARD
                 .decode(&b64)
                 .context(format!("decoding base64 for attachment '{}'", a.filename))
@@ -525,6 +531,25 @@ mod tests {
                 filename: "big.bin".into(),
                 content_type: "application/octet-stream".into(),
                 inline_base64: Some(encoded),
+                url: None,
+            }],
+            ..base_request()
+        };
+        assert!(matches!(
+            req.into_submit_input(),
+            Err(EnvelopeConversionError::AttachmentTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn overlong_invalid_base64_is_rejected_before_decoding() {
+        use super::MAX_ATTACHMENT_BYTES;
+        let len = usize::try_from(MAX_ATTACHMENT_BYTES.div_ceil(3) * 4 + 5).unwrap();
+        let req = SubmitEmailRequest {
+            attachments: vec![AttachmentDto {
+                filename: "big.bin".into(),
+                content_type: "application/octet-stream".into(),
+                inline_base64: Some("!".repeat(len)),
                 url: None,
             }],
             ..base_request()

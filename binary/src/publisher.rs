@@ -98,6 +98,7 @@ impl PublisherAdapterConfig {
             webhook: WebhookConfig {
                 url: None,
                 timeout_ms: 5_000,
+                secret: None,
             },
             nats_events: NatsEventConfig {
                 url: None,
@@ -112,6 +113,7 @@ impl PublisherAdapterConfig {
             webhook: WebhookConfig {
                 url: None,
                 timeout_ms: 5_000,
+                secret: None,
             },
             nats_events: NatsEventConfig {
                 url: Some(url),

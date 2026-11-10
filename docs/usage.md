@@ -265,6 +265,40 @@ is present on `retrying` / `delivery.failed` only, and is one of `template_resol
 (The pushed payload has no timestamp; the stored events from `GET /events` carry
 `created_at_ms`.) Webhooks are retried a few times on a non-2xx response.
 
+#### Verifying webhook signatures
+
+When the operator sets `CATAPULTE_WEBHOOK_SECRET`, each webhook request carries
+`X-Catapulte-Timestamp` (unix seconds) and `X-Catapulte-Signature`
+(`sha256=` followed by the lowercase hex HMAC-SHA256 of `<timestamp>.<raw body>`,
+keyed with the secret). The timestamp is refreshed on every retry. A receiver
+should:
+
+1. Reject the request if the timestamp differs from the current time by more
+   than 300 seconds.
+2. Recompute the HMAC over the timestamp, a `.` and the raw request body bytes,
+   before any JSON parsing or re-serialisation.
+3. Compare the result with the header in constant time.
+4. Optionally keep the `(timestamp, signature)` pairs seen within the window and
+   reject repeats to block replays.
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: bytes, timestamp: str | None, signature: str | None, raw_body: bytes) -> bool:
+    try:
+        if abs(time.time() - int(timestamp)) > 300:
+            return False
+        expected = "sha256=" + hmac.new(
+            secret, timestamp.encode() + b"." + raw_body, hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(expected.encode(), signature.encode())
+    except (TypeError, ValueError, AttributeError, OverflowError):
+        return False
+```
+
+Without a secret, no signature headers are sent and anyone who knows the URL can
+post forged events, so keep the URL private or set a secret.
+
 ## Submitting over NATS (fire-and-forget)
 
 If the operator enables the NATS inbound transport, publish the **same JSON** as

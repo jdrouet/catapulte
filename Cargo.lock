@@ -724,8 +724,10 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
+ "hmac 0.12.1",
  "reqwest 0.13.5",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
  "url",

@@ -39,6 +39,8 @@ Within each persona, stories are ordered by priority (most important first).
 
 ## Quick Start
 
+The compose files are for local development and testing only; do not deploy them as is. Their default credentials (`catapulte`) can be overridden with `POSTGRES_PASSWORD` and `MINIO_ROOT_PASSWORD` (a Postgres password must be URL-safe: letters, digits, `-._~`, because it is embedded in `CATAPULTE_POSTGRES_URL`), and the MinIO and Redis ports are published on `127.0.0.1` only.
+
 The easiest way to run Catapulte is using Docker Compose. Several examples are provided in the [compose](./compose) directory:
 
 - **Local Development**: `docker-compose -f compose/local-dev.yml up`
@@ -199,6 +201,7 @@ send on it fails and is retried through the normal queue retry and alternate-sen
 |----------|-------------|---------|
 | `CATAPULTE_WEBHOOK_URL` | URL to POST lifecycle events to | - |
 | `CATAPULTE_WEBHOOK_TIMEOUT_MS` | Webhook call timeout | `5000` |
+| `CATAPULTE_WEBHOOK_SECRET` | **(Optional)** Shared secret used to sign webhook requests with HMAC-SHA256; see [Verifying webhook signatures](docs/usage.md#verifying-webhook-signatures); treated as secret, never logged | - |
 | `CATAPULTE_NATS_EVENTS_URL` | NATS server for event publishing | - |
 | `CATAPULTE_NATS_EVENTS_SUBJECT` | Subject for lifecycle events | `catapulte.lifecycle` |
 
