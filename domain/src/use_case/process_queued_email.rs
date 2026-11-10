@@ -732,6 +732,73 @@ mod tests {
         assert!(err.to_string().contains("550"), "{err}");
     }
 
+    /// Refuses, as a message-level failure, rendered bodies larger than `max`.
+    struct SizeLimitedTransport {
+        max: usize,
+    }
+
+    impl crate::port::email_transport::EmailTransport for SizeLimitedTransport {
+        async fn deliver<'a>(
+            &'a self,
+            email: &'a OutboundEmail,
+        ) -> Result<(), crate::port::email_transport::TransportError> {
+            let size =
+                email.body.html().map_or(0, str::len) + email.body.text().map_or(0, str::len);
+            if size > self.max {
+                return Err(crate::port::email_transport::TransportError {
+                    kind: crate::port::email_transport::TransportErrorKind::PermanentMessage,
+                    source: anyhow::anyhow!("rendered message exceeds CATAPULTE_MAX_MESSAGE_BYTES"),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    /// Chain below the worker: a small template with a huge variable renders past the limit,
+    /// the size-enforcing transport refuses it, and the result is a terminal `rejected` error
+    /// (the worker acks non-transient errors and emits `delivery.failed`, see its tests).
+    #[tokio::test]
+    async fn huge_variable_in_small_template_ends_as_terminal_rejected() {
+        use crate::entity::error_class::ErrorClass;
+        use crate::port::clock::SystemClock;
+        use crate::service::routed_email_sender::{
+            NoopSenderUsage, RoutedEmailSender, SenderRoute,
+        };
+
+        let sender = RoutedEmailSender::new(
+            vec![SenderRoute {
+                name: SenderName::new("primary"),
+                priority: 1,
+                quota: None,
+                match_sender_domain: None,
+                transport: SizeLimitedTransport { max: 1000 },
+            }],
+            NoopSenderUsage,
+            SystemClock,
+        )
+        .unwrap();
+        let service = ProcessQueuedEmailService::new(
+            FakeResolver {
+                inline_mjml: String::new(),
+            },
+            FakeInterpolator,
+            FakeRenderer,
+            sender,
+            FakeAttachmentStore,
+        );
+        let body = BodySource::Mjml(MjmlSource::Inline("<mj-text>{{ big }}</mj-text>".into()));
+        let mut vars = Map::new();
+        vars.insert("big".into(), Value::String("x".repeat(10_000)));
+
+        let err = service
+            .execute(default_envelope_with_vars(body, vars))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.error_class(), ErrorClass::Rejected);
+        assert!(matches!(&err, ProcessQueuedEmailError::Send(s) if !s.is_transient()));
+    }
+
     struct NoMatchingRouteSender;
 
     impl EmailSender for NoMatchingRouteSender {

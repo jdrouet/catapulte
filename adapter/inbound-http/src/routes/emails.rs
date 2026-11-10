@@ -4,7 +4,9 @@ use axum::extract::{FromRequest, Multipart, Query, Request, State};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::port::email_repository::ListEmailsParams;
 use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
-use catapulte_domain::use_case::submit_email::{AttachmentInput, SubmitEmailUseCase};
+use catapulte_domain::use_case::submit_email::{
+    AttachmentInput, SubmitEmailError, SubmitEmailUseCase,
+};
 use futures_util::TryStreamExt;
 
 use crate::HttpServerState;
@@ -64,12 +66,17 @@ pub async fn submit_email_batch<S: HttpServerState>(
             Err(validation_err) => results.push(BatchItemResultDto::Rejected {
                 error: validation_err.to_string(),
             }),
-            Ok(input) => {
-                let id = state.submit_email().execute(input).await?;
-                results.push(BatchItemResultDto::Accepted {
+            Ok(input) => match state.submit_email().execute(input).await {
+                Ok(id) => results.push(BatchItemResultDto::Accepted {
                     id: id.as_uuid().to_string(),
-                });
-            }
+                }),
+                Err(e @ SubmitEmailError::MessageTooLarge { .. }) => {
+                    results.push(BatchItemResultDto::Rejected {
+                        error: e.to_string(),
+                    });
+                }
+                Err(e) => return Err(e.into()),
+            },
         }
     }
     Ok(Json(BatchSubmitEmailResponse { results }))
@@ -287,6 +294,9 @@ mod tests {
 
     impl SubmitEmailUseCase for FakeSubmit {
         async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
+            if input.subject.as_deref() == Some("too-large") {
+                return Err(SubmitEmailError::MessageTooLarge { max_bytes: 10 });
+            }
             for att in input.attachments {
                 if let catapulte_domain::use_case::submit_email::AttachmentInput::Inline {
                     filename,
@@ -992,6 +1002,42 @@ mod tests {
             results[1]["error"].as_str().is_some_and(|e| !e.is_empty()),
             "rejected entry should have a non-empty error message"
         );
+    }
+
+    #[tokio::test]
+    async fn batch_item_over_message_limit_is_rejected_while_others_are_accepted() {
+        let app = make_router();
+        let mut too_large = valid_email_payload("r2@x.y");
+        too_large["subject"] = serde_json::json!("too-large");
+        let payload = serde_json::json!({
+            "emails": [valid_email_payload("r1@x.y"), too_large, valid_email_payload("r3@x.y")]
+        });
+        let response = app
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().expect("results array");
+        assert_eq!(results[0]["status"].as_str(), Some("accepted"));
+        assert_eq!(results[1]["status"].as_str(), Some("rejected"));
+        assert!(results[1]["error"].as_str().unwrap().contains("exceeds"));
+        assert_eq!(results[2]["status"].as_str(), Some("accepted"));
+    }
+
+    #[tokio::test]
+    async fn single_submit_over_message_limit_returns_400() {
+        let app = make_router();
+        let mut payload = valid_email_payload("r@x.y");
+        payload["subject"] = serde_json::json!("too-large");
+        let response = app
+            .oneshot(post_json(serde_json::to_vec(&payload).unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

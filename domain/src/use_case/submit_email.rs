@@ -55,6 +55,8 @@ pub enum SubmitEmailError {
         #[source]
         source: anyhow::Error,
     },
+    #[error("estimated message size exceeds the configured maximum of {max_bytes} bytes")]
+    MessageTooLarge { max_bytes: u64 },
 }
 
 impl SubmitEmailError {
@@ -69,7 +71,7 @@ impl SubmitEmailError {
             Self::Persist(_) | Self::Enqueue(_) | Self::AttachmentStore { .. } => true,
             // Remote URL fetch errors are almost always permanent for the given
             // URL (404, 410, blocked domain, oversize). Don't retry.
-            Self::AttachmentFetch { .. } => false,
+            Self::AttachmentFetch { .. } | Self::MessageTooLarge { .. } => false,
         }
     }
 }
@@ -80,10 +82,58 @@ pub trait SubmitEmailUseCase: Send + Sync + 'static {
     /// Returns `SubmitEmailError::Persist` when saving the envelope fails.
     /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
     /// Returns `SubmitEmailError::AttachmentStore` when blob upload fails.
+    /// Returns `SubmitEmailError::MessageTooLarge` when the estimated size exceeds the limit.
     fn execute(
         &self,
         input: SubmitEmailInput,
     ) -> impl std::future::Future<Output = Result<EmailId, SubmitEmailError>> + Send;
+}
+
+/// Limits applied at submit time.
+#[derive(Clone, Copy, Debug)]
+pub struct SubmitLimits {
+    /// Early-rejection threshold for the estimated wire size; the SMTP adapter enforces the
+    /// final size on the rendered message.
+    pub max_message_bytes: u64,
+}
+
+impl Default for SubmitLimits {
+    fn default() -> Self {
+        Self {
+            max_message_bytes: 25 * 1024 * 1024,
+        }
+    }
+}
+
+/// Renders an error and its sources as `a: b: c`.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        source = s.source();
+    }
+    out
+}
+
+/// Estimated base64 wire size of the attachments plus inline body. Excludes template and
+/// variable growth, rendering, MIME headers, boundaries and line wrapping.
+fn estimate_message_bytes(
+    attachments: &[AttachmentRef],
+    body: &crate::entity::body::BodySource,
+) -> u64 {
+    use crate::entity::body::{BodySource, MjmlSource};
+
+    let body_len = match body {
+        BodySource::Plain(p) => p.text().map_or(0, str::len) + p.html().map_or(0, str::len),
+        BodySource::Mjml(MjmlSource::Inline(s)) => s.len(),
+        BodySource::Mjml(_) => 0,
+    };
+    let total = attachments
+        .iter()
+        .fold(body_len as u128, |acc, a| acc + u128::from(a.size_bytes));
+    u64::try_from(total * 4 / 3).unwrap_or(u64::MAX)
 }
 
 pub struct SubmitEmailService<R, Q, P, A, F> {
@@ -92,6 +142,7 @@ pub struct SubmitEmailService<R, Q, P, A, F> {
     event_publisher: P,
     attachment_store: A,
     attachment_fetcher: F,
+    limits: SubmitLimits,
 }
 
 impl<R, Q, P, A, F> SubmitEmailService<R, Q, P, A, F>
@@ -116,6 +167,45 @@ where
             event_publisher,
             attachment_store,
             attachment_fetcher,
+            limits: SubmitLimits::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_limits(mut self, limits: SubmitLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Removes the stored blobs and the reserved row, and returns the error to report.
+    ///
+    /// Blob failures are logged and ignored (GC sweeps orphans). If the row delete fails the
+    /// reservation survives, so the transient error replaces `original`: no permanent rejection.
+    async fn rollback(
+        &self,
+        id: EmailId,
+        written: &[AttachmentRef],
+        original: SubmitEmailError,
+    ) -> SubmitEmailError {
+        for r in written {
+            if let Err(e) = self.attachment_store.delete(&r.blob).await {
+                tracing::warn!(
+                    error = %error_chain(&e),
+                    blob_key = %r.blob.key,
+                    "failed to delete attachment blob during rollback"
+                );
+            }
+        }
+        match self.repository.delete(id).await {
+            Ok(()) => original,
+            Err(e) => {
+                tracing::error!(
+                    error = %error_chain(&original),
+                    email_id = %id.as_uuid(),
+                    "rollback failed; original submit error"
+                );
+                SubmitEmailError::Persist(e)
+            }
         }
     }
 
@@ -179,7 +269,7 @@ where
                 } => (
                     filename,
                     content_type,
-                    Box::pin(std::io::Cursor::new(bytes.to_vec())) as AttachmentReader,
+                    Box::pin(std::io::Cursor::new(bytes)) as AttachmentReader,
                 ),
                 AttachmentInput::Stream {
                     filename,
@@ -193,13 +283,10 @@ where
                 } => match self.attachment_fetcher.fetch(&url).await {
                     Ok(r) => (filename, content_type, r),
                     Err(fetch_err) => {
-                        for r in &written_refs {
-                            let _ = self.attachment_store.delete(&r.blob).await;
-                        }
-                        let _ = self.repository.delete(id).await;
-                        return Err(SubmitEmailError::AttachmentFetch {
+                        let original = SubmitEmailError::AttachmentFetch {
                             source: anyhow::Error::new(fetch_err),
-                        });
+                        };
+                        return Err(self.rollback(id, &written_refs, original).await);
                     }
                 },
             };
@@ -213,25 +300,27 @@ where
                     });
                 }
                 Err(store_err) => {
-                    for r in &written_refs {
-                        let _ = self.attachment_store.delete(&r.blob).await;
-                    }
-                    let _ = self.repository.delete(id).await;
-                    return Err(SubmitEmailError::AttachmentStore {
+                    let original = SubmitEmailError::AttachmentStore {
                         source: anyhow::Error::new(store_err),
-                    });
+                    };
+                    return Err(self.rollback(id, &written_refs, original).await);
                 }
             }
+        }
+
+        if estimate_message_bytes(&written_refs, &body) > self.limits.max_message_bytes {
+            let original = SubmitEmailError::MessageTooLarge {
+                max_bytes: self.limits.max_message_bytes,
+            };
+            return Err(self.rollback(id, &written_refs, original).await);
         }
 
         if !written_refs.is_empty()
             && let Err(e) = self.repository.set_attachments(id, &written_refs).await
         {
-            for r in &written_refs {
-                let _ = self.attachment_store.delete(&r.blob).await;
-            }
-            let _ = self.repository.delete(id).await;
-            return Err(SubmitEmailError::Persist(e));
+            return Err(self
+                .rollback(id, &written_refs, SubmitEmailError::Persist(e))
+                .await);
         }
 
         let envelope = Envelope {
@@ -246,11 +335,8 @@ where
         };
 
         if let Err(enqueue_err) = self.queue.enqueue(id, &envelope).await {
-            for r in &envelope.attachments {
-                let _ = self.attachment_store.delete(&r.blob).await;
-            }
-            let _ = self.repository.delete(id).await;
-            return Err(SubmitEmailError::Enqueue(enqueue_err));
+            let original = SubmitEmailError::Enqueue(enqueue_err);
+            return Err(self.rollback(id, &envelope.attachments, original).await);
         }
         if let Err(e) = self
             .event_publisher
@@ -299,7 +385,9 @@ mod tests {
     use crate::port::email_repository::{EmailRepository, EmailRepositoryError, SaveResult};
     use crate::port::event_publisher::{EventPublisher, EventPublisherError};
 
-    use super::{AttachmentInput, SubmitEmailError, SubmitEmailInput, SubmitEmailService};
+    use super::{
+        AttachmentInput, SubmitEmailError, SubmitEmailInput, SubmitEmailService, SubmitLimits,
+    };
 
     fn make_input(sender: &str) -> SubmitEmailInput {
         SubmitEmailInput {
@@ -773,6 +861,255 @@ mod tests {
             spy.published.lock().unwrap().is_empty(),
             "no event must be published when enqueue fails"
         );
+    }
+
+    fn input_with_attachment(size: usize) -> SubmitEmailInput {
+        let mut input = make_input("sender@example.com");
+        input.attachments.push(AttachmentInput::Inline {
+            filename: "big.bin".into(),
+            content_type: "application/octet-stream".into(),
+            bytes: bytes::Bytes::from(vec![0u8; size]),
+        });
+        input
+    }
+
+    #[tokio::test]
+    async fn estimate_over_limit_rejects_cleans_up_and_does_not_enqueue() {
+        let repo = FakeRepository::new();
+        let queue = FakeQueue::new();
+        let store = FakeAttachmentStore::new();
+        let spy = FakeEventPublisher::new();
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            spy.clone(),
+            store.clone(),
+            FakeFetcher,
+        )
+        .with_limits(SubmitLimits {
+            max_message_bytes: 100,
+        });
+
+        let err = service
+            .execute(input_with_attachment(100))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            SubmitEmailError::MessageTooLarge { max_bytes: 100 }
+        ));
+        assert!(!err.is_transient());
+        assert_eq!(repo.live_count(), 0, "row must be deleted");
+        assert_eq!(store.outstanding_blobs(), 0, "blobs must be deleted");
+        assert!(queue.enqueued.lock().unwrap().is_empty());
+        assert!(spy.published.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn estimate_under_limit_is_accepted() {
+        let queue = FakeQueue::new();
+        let service = SubmitEmailService::new(
+            FakeRepository::new(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+            FakeFetcher,
+        )
+        .with_limits(SubmitLimits {
+            max_message_bytes: 100,
+        });
+
+        service.execute(input_with_attachment(50)).await.unwrap();
+
+        assert_eq!(queue.enqueued.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn huge_variable_is_not_part_of_the_submit_estimate() {
+        // Variable growth is only caught by the final wire-size check in the SMTP adapter.
+        let queue = FakeQueue::new();
+        let service = SubmitEmailService::new(
+            FakeRepository::new(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+            FakeFetcher,
+        )
+        .with_limits(SubmitLimits {
+            max_message_bytes: 100,
+        });
+        let mut input = make_input("sender@example.com");
+        input
+            .variables
+            .insert("huge".into(), serde_json::Value::String("x".repeat(10_000)));
+
+        service.execute(input).await.unwrap();
+
+        assert_eq!(queue.enqueued.lock().unwrap().len(), 1);
+    }
+
+    type KeyedRows = Arc<Mutex<Vec<(EmailId, Option<String>)>>>;
+
+    /// Repository with real idempotency-key semantics and a switchable failing delete.
+    #[derive(Clone)]
+    struct KeyedRepository {
+        rows: KeyedRows,
+        fail_delete: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl KeyedRepository {
+        fn new() -> Self {
+            Self {
+                rows: Arc::new(Mutex::new(Vec::new())),
+                fail_delete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            }
+        }
+    }
+
+    #[allow(async_fn_in_trait)]
+    impl EmailRepository for KeyedRepository {
+        async fn save(
+            &self,
+            id: EmailId,
+            envelope: &Envelope,
+        ) -> Result<SaveResult, EmailRepositoryError> {
+            let mut rows = self.rows.lock().unwrap();
+            if let Some(key) = &envelope.idempotency_key
+                && let Some((existing, _)) = rows.iter().find(|(_, k)| k.as_ref() == Some(key))
+            {
+                return Ok(SaveResult::Duplicate(*existing));
+            }
+            rows.push((id, envelope.idempotency_key.clone()));
+            Ok(SaveResult::Created(id))
+        }
+
+        async fn list_emails(
+            &self,
+            _params: crate::port::email_repository::ListEmailsParams,
+        ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
+            Ok(vec![])
+        }
+
+        async fn set_attachments(
+            &self,
+            _id: EmailId,
+            _attachments: &[AttachmentRef],
+        ) -> Result<(), EmailRepositoryError> {
+            Ok(())
+        }
+
+        async fn delete(&self, id: EmailId) -> Result<(), EmailRepositoryError> {
+            if self.fail_delete.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(EmailRepositoryError::Storage {
+                    source: anyhow::anyhow!("delete failed"),
+                });
+            }
+            self.rows.lock().unwrap().retain(|(i, _)| *i != id);
+            Ok(())
+        }
+
+        async fn list_all_attachment_blobs(
+            &self,
+        ) -> Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError> {
+            Ok(vec![])
+        }
+    }
+
+    fn keyed_input(key: &str, attachment_size: usize) -> SubmitEmailInput {
+        let mut input = input_with_attachment(attachment_size);
+        input.idempotency_key = Some(key.to_owned());
+        input
+    }
+
+    #[tokio::test]
+    async fn failed_row_delete_replaces_message_too_large_with_a_transient_error() {
+        let repo = KeyedRepository::new();
+        repo.fail_delete
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let queue = FakeQueue::new();
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+            FakeFetcher,
+        )
+        .with_limits(SubmitLimits {
+            max_message_bytes: 100,
+        });
+
+        let err = service.execute(keyed_input("k", 100)).await.unwrap_err();
+
+        assert!(matches!(err, SubmitEmailError::Persist(_)), "{err}");
+        assert!(err.is_transient());
+        assert!(queue.enqueued.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn successful_cleanup_lets_a_same_key_retry_be_accepted_as_new() {
+        let repo = KeyedRepository::new();
+        let queue = FakeQueue::new();
+        let service = SubmitEmailService::new(
+            repo,
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+            FakeFetcher,
+        )
+        .with_limits(SubmitLimits {
+            max_message_bytes: 100,
+        });
+
+        let err = service.execute(keyed_input("k", 100)).await.unwrap_err();
+        assert!(matches!(err, SubmitEmailError::MessageTooLarge { .. }));
+        let id = service.execute(keyed_input("k", 10)).await.unwrap();
+
+        let enqueued = queue.enqueued.lock().unwrap();
+        assert_eq!(enqueued.len(), 1);
+        assert_eq!(enqueued[0], id, "retry must be a new row, not a Duplicate");
+    }
+
+    #[tokio::test]
+    async fn failed_row_delete_after_fetch_failure_is_also_transient() {
+        let repo = KeyedRepository::new();
+        repo.fail_delete
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let service = SubmitEmailService::new(
+            repo,
+            FakeQueue::new(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+            FailingFetcher,
+        );
+        let mut input = make_input("sender@example.com");
+        input.attachments.push(AttachmentInput::Remote {
+            filename: "r.bin".into(),
+            content_type: "application/octet-stream".into(),
+            url: url::Url::parse("https://example.com/r.bin").unwrap(),
+        });
+
+        let err = service.execute(input).await.unwrap_err();
+
+        assert!(matches!(err, SubmitEmailError::Persist(_)), "{err}");
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn estimate_saturates_instead_of_overflowing() {
+        use crate::entity::attachment::BlobRef;
+        let refs = vec![AttachmentRef {
+            filename: "x".into(),
+            content_type: "x/y".into(),
+            size_bytes: u64::MAX,
+            blob: BlobRef {
+                backend: "t".into(),
+                key: "k".into(),
+            },
+        }];
+        let body =
+            crate::entity::body::BodySource::Plain(Plain::try_new(Some("a".into()), None).unwrap());
+        assert_eq!(super::estimate_message_bytes(&refs, &body), u64::MAX);
     }
 
     #[tokio::test]
