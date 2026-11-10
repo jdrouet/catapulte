@@ -10,6 +10,7 @@ pub struct AttachmentRef {
     pub content_type: String,
     pub size_bytes: u64,
     pub blob: BlobRef,
+    pub content_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -17,4 +18,5 @@ pub struct ResolvedAttachment {
     pub filename: String,
     pub content_type: String,
     pub bytes: bytes::Bytes,
+    pub content_id: Option<String>,
 }

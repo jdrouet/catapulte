@@ -991,6 +991,7 @@ mod tests {
 
         let attachments = vec![
             AttachmentRef {
+                content_id: None,
                 filename: "invoice.pdf".to_owned(),
                 content_type: "application/pdf".to_owned(),
                 size_bytes: 1024,
@@ -1000,6 +1001,7 @@ mod tests {
                 },
             },
             AttachmentRef {
+                content_id: None,
                 filename: "photo.png".to_owned(),
                 content_type: "image/png".to_owned(),
                 size_bytes: 2048,
@@ -1059,6 +1061,7 @@ mod tests {
         .unwrap();
 
         let attachments = vec![AttachmentRef {
+            content_id: None,
             filename: "doc.pdf".to_owned(),
             content_type: "application/pdf".to_owned(),
             size_bytes: 512,
@@ -1170,6 +1173,7 @@ mod tests {
                 id2,
                 &[
                     AttachmentRef {
+                        content_id: None,
                         filename: "a.pdf".into(),
                         content_type: "application/pdf".into(),
                         size_bytes: 1,
@@ -1179,6 +1183,7 @@ mod tests {
                         },
                     },
                     AttachmentRef {
+                        content_id: None,
                         filename: "b.pdf".into(),
                         content_type: "application/pdf".into(),
                         size_bytes: 2,
@@ -1199,6 +1204,7 @@ mod tests {
             .set_attachments(
                 id3,
                 &[AttachmentRef {
+                    content_id: None,
                     filename: "sent.pdf".into(),
                     content_type: "application/pdf".into(),
                     size_bytes: 3,
@@ -1228,6 +1234,7 @@ mod tests {
             .set_attachments(
                 id4,
                 &[AttachmentRef {
+                    content_id: None,
                     filename: "failed.pdf".into(),
                     content_type: "application/pdf".into(),
                     size_bytes: 4,

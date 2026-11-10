@@ -17,16 +17,19 @@ pub enum AttachmentInput {
         filename: String,
         content_type: String,
         bytes: bytes::Bytes,
+        content_id: Option<String>,
     },
     Stream {
         filename: String,
         content_type: String,
         reader: crate::port::attachment_store::AttachmentReader,
+        content_id: Option<String>,
     },
     Remote {
         filename: String,
         content_type: String,
         url: url::Url,
+        content_id: Option<String>,
     },
 }
 
@@ -325,27 +328,31 @@ where
 
         let mut written_refs: Vec<AttachmentRef> = Vec::with_capacity(attachments.len());
         for att in attachments {
-            let (filename, content_type, reader) = match att {
+            let (filename, content_type, reader, content_id) = match att {
                 AttachmentInput::Inline {
                     filename,
                     content_type,
                     bytes,
+                    content_id,
                 } => (
                     filename,
                     content_type,
                     Box::pin(std::io::Cursor::new(bytes)) as AttachmentReader,
+                    content_id,
                 ),
                 AttachmentInput::Stream {
                     filename,
                     content_type,
                     reader,
-                } => (filename, content_type, reader),
+                    content_id,
+                } => (filename, content_type, reader, content_id),
                 AttachmentInput::Remote {
                     filename,
                     content_type,
                     url,
+                    content_id,
                 } => match self.attachment_fetcher.fetch(&url).await {
-                    Ok(r) => (filename, content_type, r),
+                    Ok(r) => (filename, content_type, r, content_id),
                     Err(fetch_err) => {
                         let original = SubmitEmailError::AttachmentFetch {
                             source: anyhow::Error::new(fetch_err),
@@ -361,6 +368,7 @@ where
                         content_type,
                         size_bytes: put_result.size_bytes,
                         blob: put_result.blob,
+                        content_id,
                     });
                 }
                 Err(store_err) => {
@@ -945,6 +953,7 @@ mod tests {
         let spy = FakeEventPublisher::new();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Inline {
+            content_id: None,
             filename: "attach.txt".into(),
             content_type: "text/plain".into(),
             bytes: bytes::Bytes::from_static(b"data"),
@@ -980,6 +989,7 @@ mod tests {
     fn input_with_attachment(size: usize) -> SubmitEmailInput {
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Inline {
+            content_id: None,
             filename: "big.bin".into(),
             content_type: "application/octet-stream".into(),
             bytes: bytes::Bytes::from(vec![0u8; size]),
@@ -1358,6 +1368,7 @@ mod tests {
         );
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Remote {
+            content_id: None,
             filename: "r.bin".into(),
             content_type: "application/octet-stream".into(),
             url: url::Url::parse("https://example.com/r.bin").unwrap(),
@@ -1561,6 +1572,7 @@ mod tests {
     fn estimate_saturates_instead_of_overflowing() {
         use crate::entity::attachment::BlobRef;
         let refs = vec![AttachmentRef {
+            content_id: None,
             filename: "x".into(),
             content_type: "x/y".into(),
             size_bytes: u64::MAX,
@@ -1690,6 +1702,7 @@ mod tests {
         let queue = FakeQueue::new();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Inline {
+            content_id: None,
             filename: "file.txt".into(),
             content_type: "text/plain".into(),
             bytes: bytes::Bytes::from_static(b"hello"),
@@ -1714,6 +1727,7 @@ mod tests {
         let put_count = store.put_count.clone();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Inline {
+            content_id: None,
             filename: "test.txt".into(),
             content_type: "text/plain".into(),
             bytes: bytes::Bytes::from_static(b"attachment content"),
@@ -1738,6 +1752,7 @@ mod tests {
         let put_count = store.put_count.clone();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Remote {
+            content_id: None,
             filename: "remote.txt".into(),
             content_type: "text/plain".into(),
             url: url::Url::parse("https://example.com/file.txt").unwrap(),
@@ -1760,6 +1775,7 @@ mod tests {
         let queue = FakeQueue::new();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Remote {
+            content_id: None,
             filename: "remote.txt".into(),
             content_type: "text/plain".into(),
             url: url::Url::parse("https://example.com/file.txt").unwrap(),
@@ -1837,6 +1853,7 @@ mod tests {
         let captured = store.captured.clone();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Stream {
+            content_id: None,
             filename: "streamed.txt".into(),
             content_type: "text/plain".into(),
             reader: Box::pin(std::io::Cursor::new(b"streamed bytes".to_vec())),
@@ -1894,6 +1911,7 @@ mod tests {
         let put_count = store.put_count.clone();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Inline {
+            content_id: None,
             filename: "idem.txt".into(),
             content_type: "text/plain".into(),
             bytes: bytes::Bytes::from_static(b"x"),

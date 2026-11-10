@@ -16,7 +16,7 @@ use crate::dto::{
     EmailRecordDto, EnvelopeConversionError, EnvelopeCoreDto, ListEmailsQuery, ListEmailsResponse,
     MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_EMAIL, MAX_EMAILS_LIMIT, MAX_EMAILS_PER_BATCH,
     MAX_ENVELOPE_BYTES, MAX_REQUEST_BODY_BYTES, SubmitEmailRequest, SubmitEmailResponse,
-    validate_attachment_meta,
+    validate_attachment_meta, validate_content_id,
 };
 use crate::error::AppError;
 use crate::limited_reader::LimitedReader;
@@ -160,6 +160,24 @@ async fn handle_multipart(
                         .to_owned(),
                 };
 
+                let content_id = field
+                    .headers()
+                    .get("content-id")
+                    .map(|raw| {
+                        let raw = raw.to_str().map_err(|_| {
+                            AppError::BadRequest(EnvelopeConversionError::InvalidContentId(
+                                "must be ASCII",
+                            ))
+                        })?;
+                        let raw = raw
+                            .strip_prefix('<')
+                            .and_then(|r| r.strip_suffix('>'))
+                            .unwrap_or(raw);
+                        Ok::<_, AppError>(raw.to_owned())
+                    })
+                    .transpose()?;
+                let content_id = validate_content_id(content_id)?;
+
                 // Buffer through LimitedReader to enforce the per-attachment size cap.
                 // The axum Field borrows from Multipart and cannot be made 'static, so
                 // we must drain it here before advancing to the next field.
@@ -178,6 +196,7 @@ async fn handle_multipart(
                     filename,
                     content_type,
                     bytes: bytes::Bytes::from(buf),
+                    content_id,
                 });
             }
             _ => {
@@ -1317,6 +1336,97 @@ mod tests {
         let blobs = captured.lock().unwrap();
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs[0], file_content);
+    }
+
+    fn multipart_with_cids(cids: &[Option<&str>]) -> Body {
+        let boundary = "cidboundary";
+        let mut out = Vec::new();
+        out.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"envelope\"\r\n\
+                 Content-Type: application/json\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice(&envelope_json());
+        out.extend_from_slice(b"\r\n");
+        for cid in cids {
+            out.extend_from_slice(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"attachment\"; \
+                     filename=\"a.png\"\r\nContent-Type: image/png\r\n"
+                )
+                .as_bytes(),
+            );
+            if let Some(cid) = cid {
+                out.extend_from_slice(format!("Content-ID: {cid}\r\n").as_bytes());
+            }
+            out.extend_from_slice(b"\r\nPNG\r\n");
+        }
+        out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        Body::from(out)
+    }
+
+    async fn multipart_cid_status(cids: &[Option<&str>]) -> StatusCode {
+        let app = make_router();
+        app.oneshot(post_multipart("cidboundary", multipart_with_cids(cids)))
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn submit_multipart_content_id_is_validated_and_unique() {
+        assert_eq!(
+            multipart_cid_status(&[Some("<logo>"), Some("banner")]).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            multipart_cid_status(&[Some("<logo>"), Some("logo")]).await,
+            StatusCode::BAD_REQUEST
+        );
+        for bad in ["<>", "a b", "a<b", "<<a>>"] {
+            assert_eq!(
+                multipart_cid_status(&[Some(bad)]).await,
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
+    }
+
+    async fn json_cid_status(cids: &[&str]) -> StatusCode {
+        let attachments: Vec<_> = cids
+            .iter()
+            .map(|cid| serde_json::json!({"filename": "a.png", "content_type": "image/png", "inline_base64": "aGk=", "content_id": cid}))
+            .collect();
+        let payload = serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi", "html": "<img src=\"cid:logo\">"},
+            "attachments": attachments
+        });
+        make_router()
+            .oneshot(post_json(Body::from(serde_json::to_vec(&payload).unwrap())))
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn submit_json_content_id_is_validated_and_unique() {
+        assert_eq!(json_cid_status(&["logo", "banner"]).await, StatusCode::OK);
+        assert_eq!(
+            json_cid_status(&["logo", "logo"]).await,
+            StatusCode::BAD_REQUEST
+        );
+        let too_long = "a".repeat(256);
+        for bad in ["", "a b", "<logo>", "é", too_long.as_str()] {
+            assert_eq!(
+                json_cid_status(&[bad]).await,
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -729,6 +729,7 @@ mod tests {
         };
         let mut envelope = sample_envelope();
         envelope.attachments = vec![AttachmentRef {
+            content_id: None,
             filename: "file.pdf".into(),
             content_type: "application/pdf".into(),
             size_bytes: 1024,
@@ -758,6 +759,7 @@ mod tests {
         };
         let mut envelope = sample_envelope();
         envelope.attachments = vec![AttachmentRef {
+            content_id: None,
             filename: "file.pdf".into(),
             content_type: "application/pdf".into(),
             size_bytes: 512,

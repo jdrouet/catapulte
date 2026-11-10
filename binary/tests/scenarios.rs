@@ -12,6 +12,7 @@ crate::e2e_matrix! {
         lifecycle_events,
         mjml_inline_renders_with_variables,
         inline_attachment_is_delivered,
+        inline_cid_image,
         batch_submit_delivers_multiple_emails,
         list_emails_returns_submitted,
         display_name_sender,

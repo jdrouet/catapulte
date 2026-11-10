@@ -124,6 +124,8 @@ pub struct AttachmentRefDto {
     pub content_type: String,
     pub size_bytes: u64,
     pub blob: BlobRefDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
 }
 
 impl From<&AttachmentRef> for AttachmentRefDto {
@@ -136,6 +138,7 @@ impl From<&AttachmentRef> for AttachmentRefDto {
                 backend: a.blob.backend.clone(),
                 key: a.blob.key.clone(),
             },
+            content_id: a.content_id.clone(),
         }
     }
 }
@@ -150,6 +153,7 @@ impl From<AttachmentRefDto> for AttachmentRef {
                 backend: dto.blob.backend,
                 key: dto.blob.key,
             },
+            content_id: dto.content_id,
         }
     }
 }
@@ -226,6 +230,7 @@ mod tests {
             },
             attachments: vec![
                 AttachmentRefDto {
+                    content_id: None,
                     filename: "invoice.pdf".to_owned(),
                     content_type: "application/pdf".to_owned(),
                     size_bytes: 1024,
@@ -235,6 +240,7 @@ mod tests {
                     },
                 },
                 AttachmentRefDto {
+                    content_id: None,
                     filename: "photo.png".to_owned(),
                     content_type: "image/png".to_owned(),
                     size_bytes: 2048,
@@ -280,6 +286,28 @@ mod tests {
                 backend: "gcs".to_owned(),
                 key: "media/photo.png".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn attachment_ref_dto_content_id_roundtrips_and_legacy_json_loads() {
+        use catapulte_domain::entity::attachment::AttachmentRef;
+
+        use super::AttachmentRefDto;
+
+        let legacy = r#"{"filename":"a.png","content_type":"image/png","size_bytes":3,"blob":{"backend":"fs","key":"k"}}"#;
+        let dto: AttachmentRefDto = serde_json::from_str(legacy).unwrap();
+        assert_eq!(AttachmentRef::from(dto).content_id, None);
+
+        let mut dto: AttachmentRefDto = serde_json::from_str(legacy).unwrap();
+        assert!(!serde_json::to_string(&dto).unwrap().contains("content_id"));
+
+        dto.content_id = Some("logo".to_owned());
+        let json = serde_json::to_string(&dto).unwrap();
+        let back: AttachmentRefDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            AttachmentRef::from(back).content_id.as_deref(),
+            Some("logo")
         );
     }
 }

@@ -7,7 +7,7 @@ use catapulte_domain::port::email_transport::{
     DeliveryReceipt, EmailTransport, TransportError, TransportErrorKind,
 };
 use lettre::message::header::{ContentDisposition, ContentType};
-use lettre::message::{Mailbox, MultiPart, SinglePart};
+use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
@@ -150,6 +150,11 @@ fn build_body_part(body: &RenderedBody) -> MultiPart {
     }
 }
 
+fn parse_attachment_type(att: &ResolvedAttachment) -> anyhow::Result<ContentType> {
+    ContentType::parse(&att.content_type)
+        .with_context(|| format!("invalid attachment content-type: {}", att.content_type))
+}
+
 fn finalize_message(
     builder: lettre::message::MessageBuilder,
     subject: Option<&str>,
@@ -160,6 +165,10 @@ fn finalize_message(
         Some(s) => builder.subject(s),
         None => builder,
     };
+
+    // Without an HTML body nothing can reference a cid, so inline attachments are sent as
+    // regular ones.
+    let has_inline = body.html().is_some() && attachments.iter().any(|a| a.content_id.is_some());
 
     if attachments.is_empty() {
         let msg = match (body.text(), body.html()) {
@@ -193,11 +202,34 @@ fn finalize_message(
         msg.context("building email message")
     } else {
         let body_part = build_body_part(body);
-        let mut mixed = MultiPart::mixed().multipart(body_part);
-        for att in attachments {
-            let content_type = ContentType::parse(&att.content_type).with_context(|| {
-                format!("invalid attachment content-type: {}", att.content_type)
-            })?;
+        let mut regular = Vec::new();
+        let first = if has_inline {
+            let mut related = MultiPart::related().multipart(body_part);
+            for att in attachments {
+                match &att.content_id {
+                    Some(cid) => {
+                        let content_type = parse_attachment_type(att)?;
+                        related = related.singlepart(
+                            Attachment::new_inline_with_name(cid.clone(), att.filename.clone())
+                                .body(att.bytes.to_vec(), content_type),
+                        );
+                    }
+                    None => regular.push(att),
+                }
+            }
+            if regular.is_empty() {
+                return builder
+                    .multipart(related)
+                    .context("building email message with inline attachments");
+            }
+            related
+        } else {
+            regular.extend(attachments);
+            body_part
+        };
+        let mut mixed = MultiPart::mixed().multipart(first);
+        for att in regular {
+            let content_type = parse_attachment_type(att)?;
             mixed = mixed.singlepart(
                 SinglePart::builder()
                     .header(content_type)
@@ -556,6 +588,7 @@ mod tests {
             filename: "test.txt".to_owned(),
             content_type: "text/plain".to_owned(),
             bytes: bytes::Bytes::from_static(b"hello attachment"),
+            content_id: None,
         };
         assert!(finalize_message(base_builder(), Some("With Attachment"), &body, &[att]).is_ok());
     }
@@ -567,13 +600,120 @@ mod tests {
             filename: "a.txt".to_owned(),
             content_type: "text/plain".to_owned(),
             bytes: bytes::Bytes::from_static(b"file a"),
+            content_id: None,
         };
         let att2 = ResolvedAttachment {
             filename: "b.txt".to_owned(),
             content_type: "text/plain".to_owned(),
             bytes: bytes::Bytes::from_static(b"file b"),
+            content_id: None,
         };
         assert!(finalize_message(base_builder(), Some("Multi"), &body, &[att1, att2]).is_ok());
+    }
+
+    fn cid_att(name: &str, cid: Option<&str>) -> ResolvedAttachment {
+        ResolvedAttachment {
+            filename: name.to_owned(),
+            content_type: "image/png".to_owned(),
+            bytes: bytes::Bytes::from_static(b"png"),
+            content_id: cid.map(str::to_owned),
+        }
+    }
+
+    fn raw_message(body: &RenderedBody, atts: &[ResolvedAttachment]) -> String {
+        let msg = finalize_message(base_builder(), Some("s"), body, atts).unwrap();
+        String::from_utf8(msg.formatted()).unwrap()
+    }
+
+    #[test]
+    fn inline_attachment_with_html_builds_related_only() {
+        let raw = raw_message(&multipart_body(), &[cid_att("logo.png", Some("logo"))]);
+        assert!(raw.contains("multipart/related"));
+        assert!(!raw.contains("multipart/mixed"));
+        assert!(raw.contains("Content-ID: <logo>"));
+        assert!(raw.contains("Content-Disposition: inline"));
+    }
+
+    struct Part {
+        headers: String,
+        children: Vec<Part>,
+    }
+
+    impl Part {
+        fn parse(raw: &str) -> Self {
+            let (headers, body) = raw.split_once("\r\n\r\n").unwrap_or((raw, ""));
+            let headers = headers.replace("\r\n ", " ").replace("\r\n\t", " ");
+            let mut children = Vec::new();
+            if let Some(boundary) = headers
+                .split("boundary=\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+            {
+                let delim = format!("--{boundary}");
+                let mut sections = body.split(delim.as_str()).skip(1).collect::<Vec<_>>();
+                sections.pop();
+                children = sections
+                    .into_iter()
+                    .map(|c| Self::parse(c.strip_prefix("\r\n").unwrap_or(c)))
+                    .collect();
+            }
+            Self { headers, children }
+        }
+
+        fn kind(&self) -> &str {
+            let ct = self.headers.split("Content-Type: ").nth(1).unwrap_or("");
+            ct.split([';', '\r']).next().unwrap_or("")
+        }
+
+        fn shape(&self) -> String {
+            if self.children.is_empty() {
+                return self.kind().to_owned();
+            }
+            let inner: Vec<_> = self.children.iter().map(Self::shape).collect();
+            format!("{}[{}]", self.kind(), inner.join(","))
+        }
+    }
+
+    #[test]
+    fn inline_and_regular_attachments_build_mixed_wrapping_related() {
+        let raw = raw_message(
+            &multipart_body(),
+            &[cid_att("logo.png", Some("logo")), cid_att("b.png", None)],
+        );
+        let root = Part::parse(&raw);
+        assert_eq!(
+            root.shape(),
+            "multipart/mixed[multipart/related[multipart/alternative[text/plain,text/html],\
+             image/png],image/png]"
+        );
+        let inline = &root.children[0].children[1];
+        assert!(inline.headers.contains("Content-ID: <logo>"));
+        assert!(inline.headers.contains("Content-Disposition: inline"));
+        assert!(inline.headers.contains("filename=\"logo.png\""));
+        assert!(root.children[1].headers.contains("filename=\"b.png\""));
+    }
+
+    #[test]
+    fn inline_attachment_with_html_only_body_builds_related_of_html_and_image() {
+        let plain = Plain::try_new(None, Some("<img src=\"cid:logo\">".to_string())).unwrap();
+        let raw = raw_message(
+            &RenderedBody::new(plain),
+            &[cid_att("logo.png", Some("logo"))],
+        );
+        let root = Part::parse(&raw);
+        assert_eq!(
+            root.shape(),
+            "multipart/related[multipart/alternative[text/html],image/png]"
+        );
+    }
+
+    #[test]
+    fn inline_attachment_without_html_falls_back_to_regular() {
+        let raw = raw_message(&plain_text_body(), &[cid_att("logo.png", Some("logo"))]);
+        assert!(raw.contains("multipart/mixed"));
+        assert!(!raw.contains("multipart/related"));
+        assert!(!raw.contains("Content-ID"));
+        assert!(raw.contains("filename=\"logo.png\""));
     }
 
     #[test]
@@ -583,6 +723,7 @@ mod tests {
             filename: "bad.bin".to_owned(),
             content_type: "not a content type///".to_owned(),
             bytes: bytes::Bytes::from_static(b"data"),
+            content_id: None,
         };
         assert!(finalize_message(base_builder(), None, &body, &[att]).is_err());
     }
@@ -752,6 +893,7 @@ mod tests {
             recipients: vec![(kind, "to@example.com".into())],
             body: plain_text_body(),
             attachments: vec![ResolvedAttachment {
+                content_id: None,
                 filename: "big.bin".into(),
                 content_type: "application/octet-stream".into(),
                 bytes: bytes::Bytes::from(vec![7u8; size]),
@@ -983,6 +1125,7 @@ mod tests {
             filename: "f".repeat(1200),
             content_type: "text/plain".to_owned(),
             bytes: bytes::Bytes::from_static(b"data"),
+            content_id: None,
         }];
 
         let (_, raw) = transport.prepare(&email).unwrap();

@@ -162,12 +162,14 @@ mod tests {
                 id,
                 &[
                     AttachmentRef {
+                        content_id: None,
                         filename: "a.txt".into(),
                         content_type: "text/plain".into(),
                         size_bytes: 8,
                         blob: blob1.blob.clone(),
                     },
                     AttachmentRef {
+                        content_id: None,
                         filename: "b.txt".into(),
                         content_type: "text/plain".into(),
                         size_bytes: 8,

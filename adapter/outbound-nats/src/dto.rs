@@ -17,6 +17,8 @@ pub struct AttachmentRefDto {
     pub content_type: String,
     pub size_bytes: u64,
     pub blob: BlobRefDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
 }
 
 impl From<&AttachmentRef> for AttachmentRefDto {
@@ -29,6 +31,7 @@ impl From<&AttachmentRef> for AttachmentRefDto {
                 backend: a.blob.backend.clone(),
                 key: a.blob.key.clone(),
             },
+            content_id: a.content_id.clone(),
         }
     }
 }
@@ -43,6 +46,7 @@ impl From<AttachmentRefDto> for AttachmentRef {
                 backend: dto.blob.backend,
                 key: dto.blob.key,
             },
+            content_id: dto.content_id,
         }
     }
 }
@@ -234,6 +238,7 @@ mod tests {
     fn envelope_serialization_stays_under_256_kb_with_many_attachments() {
         let attachments: Vec<AttachmentRef> = (0..100)
             .map(|i| AttachmentRef {
+                content_id: None,
                 filename: format!("file-{i}.pdf"),
                 content_type: "application/pdf".into(),
                 size_bytes: 25 * 1024 * 1024,
@@ -300,5 +305,25 @@ mod tests {
         let payload: QueuedEmailPayload = serde_json::from_value(json).unwrap();
         let (_, env) = <(EmailId, Envelope)>::try_from(payload).unwrap();
         assert!(env.reply_to.is_empty() && env.headers.is_empty());
+    }
+
+    #[test]
+    fn attachment_ref_dto_content_id_roundtrips_and_legacy_json_loads() {
+        use super::AttachmentRefDto;
+
+        let legacy = r#"{"filename":"a.png","content_type":"image/png","size_bytes":3,"blob":{"backend":"fs","key":"k"}}"#;
+        let dto: AttachmentRefDto = serde_json::from_str(legacy).unwrap();
+        assert_eq!(AttachmentRef::from(dto).content_id, None);
+
+        let mut dto: AttachmentRefDto = serde_json::from_str(legacy).unwrap();
+        assert!(!serde_json::to_string(&dto).unwrap().contains("content_id"));
+
+        dto.content_id = Some("logo".to_owned());
+        let json = serde_json::to_string(&dto).unwrap();
+        let back: AttachmentRefDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            AttachmentRef::from(back).content_id.as_deref(),
+            Some("logo")
+        );
     }
 }

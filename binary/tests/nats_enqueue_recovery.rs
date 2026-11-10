@@ -221,6 +221,7 @@ fn input_with(
         body: BodySource::Plain(Plain::try_new(Some(body.to_owned()), None).unwrap()),
         variables,
         attachments: vec![AttachmentInput::Stream {
+            content_id: None,
             filename: "a.txt".to_owned(),
             content_type: "text/plain".to_owned(),
             reader: Box::pin(std::io::Cursor::new(attachment.to_vec())),

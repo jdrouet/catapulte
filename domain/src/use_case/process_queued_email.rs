@@ -199,6 +199,7 @@ async fn resolve_attachments<A: AttachmentStore>(
             filename: att.filename.clone(),
             content_type: att.content_type.clone(),
             bytes: bytes::Bytes::from(buf),
+            content_id: att.content_id.clone(),
         });
     }
     Ok(resolved)
@@ -730,6 +731,7 @@ mod tests {
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let mut envelope = default_envelope(body);
         envelope.attachments.push(AttachmentRef {
+            content_id: None,
             filename: "doc.txt".into(),
             content_type: "text/plain".into(),
             size_bytes: 12,

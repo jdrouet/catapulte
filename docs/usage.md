@@ -163,6 +163,18 @@ part without a content type defaults to `application/octet-stream`.
 Remote URLs are fetched server-side subject to the operator's allow-list; an
 unreachable or disallowed URL fails the submission with `400`.
 
+#### Inline images (`content_id`)
+
+Set `content_id` on an attachment to send it as an inline part that HTML can reference as
+`<img src="cid:logo">`. The value must be 1-255 ASCII graphic characters, without
+whitespace, `<` or `>`, and unique within the email; otherwise the request fails with
+`400`. In multipart, set it with the part's `Content-ID` header (one surrounding `<>` is
+stripped). Without an HTML body, inline attachments are sent as regular attachments.
+
+```json
+{ "filename": "logo.png", "content_type": "image/png", "inline_base64": "<base64>", "content_id": "logo" }
+```
+
 #### Streaming uploads (multipart)
 
 To avoid base64 overhead for large files, submit `multipart/form-data` with one
