@@ -83,11 +83,12 @@ pub trait EmailRepository: Send + Sync + 'static {
 
     /// # Errors
     ///
-    /// Returns `EmailRepositoryError::Storage` if the row is missing or the
+    /// Returns `EmailRepositoryError::Storage` if no row of `owner` matches or the
     /// update fails.
     fn set_enqueue_state(
         &self,
         id: EmailId,
+        owner: &str,
         state: EnqueueState,
     ) -> impl std::future::Future<Output = Result<(), EmailRepositoryError>> + Send;
 
@@ -111,6 +112,8 @@ pub enum EmailStatus {
 
 #[derive(Clone, Debug)]
 pub struct ListEmailsParams {
+    /// Restricts the list to emails submitted by this API key; `None` lists every owner.
+    pub owner: Option<String>,
     pub status: Option<EmailStatus>,
     pub after_ms: Option<i64>,
     pub before_ms: Option<i64>,

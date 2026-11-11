@@ -1,3 +1,4 @@
+use axum::Extension;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
@@ -11,6 +12,7 @@ use catapulte_domain::use_case::submit_email::{
 use futures_util::TryStreamExt;
 
 use crate::HttpServerState;
+use crate::auth::ApiKeyIdentity;
 use crate::dto::{
     BatchItemResultDto, BatchSubmitEmailRequest, BatchSubmitEmailResponse, DEFAULT_EMAILS_LIMIT,
     EmailRecordDto, EnvelopeConversionError, EnvelopeCoreDto, ListEmailsQuery, ListEmailsResponse,
@@ -34,6 +36,7 @@ fn is_multipart_form_data(content_type: Option<&axum::http::HeaderValue>) -> boo
 #[tracing::instrument(skip_all)]
 pub async fn submit_email<S: HttpServerState>(
     State(state): State<S>,
+    Extension(identity): Extension<ApiKeyIdentity>,
     request: Request<Body>,
 ) -> Result<Json<SubmitEmailResponse>, AppError> {
     let content_type = request.headers().get(axum::http::header::CONTENT_TYPE);
@@ -44,7 +47,7 @@ pub async fn submit_email<S: HttpServerState>(
         handle_json(request).await?
     };
 
-    let id = state.submit_email().execute(input).await?;
+    let id = state.submit_email().execute(identity.scope(input)).await?;
     Ok(Json(SubmitEmailResponse { id }))
 }
 
@@ -54,6 +57,7 @@ pub async fn submit_email<S: HttpServerState>(
 #[tracing::instrument(skip_all, fields(batch_size = tracing::field::Empty))]
 pub async fn submit_email_batch<S: HttpServerState>(
     State(state): State<S>,
+    Extension(identity): Extension<ApiKeyIdentity>,
     payload: Result<Json<BatchSubmitEmailRequest>, JsonRejection>,
 ) -> Result<Json<BatchSubmitEmailResponse>, AppError> {
     let Json(request) = payload?;
@@ -69,7 +73,7 @@ pub async fn submit_email_batch<S: HttpServerState>(
             Err(validation_err) => results.push(BatchItemResultDto::Rejected {
                 error: validation_err.to_string(),
             }),
-            Ok(input) => match state.submit_email().execute(input).await {
+            Ok(input) => match state.submit_email().execute(identity.scope(input)).await {
                 Ok(id) => results.push(BatchItemResultDto::Accepted {
                     id: id.as_uuid().to_string(),
                 }),
@@ -219,6 +223,7 @@ async fn handle_multipart(
 #[tracing::instrument(skip_all)]
 pub async fn list_emails<S: HttpServerState>(
     State(state): State<S>,
+    Extension(identity): Extension<ApiKeyIdentity>,
     Query(query): Query<ListEmailsQuery>,
 ) -> Result<Json<ListEmailsResponse>, AppError> {
     let id = match query.id.as_deref() {
@@ -233,6 +238,7 @@ pub async fn list_emails<S: HttpServerState>(
         .min(MAX_EMAILS_LIMIT);
     let offset = query.offset.unwrap_or(0);
     let params = ListEmailsParams {
+        owner: identity.read_scope(),
         status: query.status.map(Into::into),
         after_ms: query.after_ms,
         before_ms: query.before_ms,

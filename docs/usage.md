@@ -14,7 +14,7 @@ delivery, routing, retries, and lifecycle events from there.
 
 ## Authentication
 
-If the server sets `CATAPULTE_HTTP_API_KEY`, every endpoint **except** the health
+If the server sets `CATAPULTE_HTTP_API_KEY` or any `CATAPULTE_API_KEYS` entry, every endpoint **except** the health
 probes requires a bearer token:
 
 ```bash
@@ -24,8 +24,13 @@ curl http://localhost:3000/emails \
   -d '{ ... }'
 ```
 
-A missing or wrong token returns `401`. When the key is unset, the API is
-unauthenticated (only safe behind a trusted network boundary).
+A missing or wrong token returns `401`. When no key is configured, the API is
+unauthenticated and every caller is a trusted administrator (only safe behind a
+trusted network boundary).
+
+Named keys are scoped: a key that is not an admin only lists its own emails and
+events, and its idempotency keys do not collide with other keys'. A named key
+with `_SENDER_DOMAINS` gets `403` for a sender outside that list.
 
 ## Submitting an email
 

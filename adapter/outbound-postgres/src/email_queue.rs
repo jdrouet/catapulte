@@ -46,7 +46,9 @@ pub(crate) fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Enve
     let extras: Option<sqlx::types::Json<EnvelopeExtrasDto>> =
         row.try_get("extras").context("reading extras")?;
     let extras = extras.map(|j| j.0).unwrap_or_default();
+    let owner: String = row.try_get("api_key").context("reading api_key")?;
     Ok(Envelope {
+        owner,
         idempotency_key,
         correlation_id,
         subject,
@@ -169,7 +171,7 @@ impl PostgresAdapter {
         .map_err(|source| EmailQueueError::Storage { source })?;
 
         let maybe_row = sqlx::query(
-            "SELECT idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras FROM emails WHERE id = $1",
+            "SELECT api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras FROM emails WHERE id = $1",
         )
         .bind(email_id_uuid)
         .fetch_optional(&mut *tx)

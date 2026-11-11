@@ -21,6 +21,11 @@ impl EventRepository for PostgresAdapter {
             qb.push(" AND email_id = ");
             qb.push_bind(email_id.as_uuid());
         }
+        if let Some(owner) = params.owner {
+            qb.push(" AND email_id IN (SELECT id FROM emails WHERE api_key = ");
+            qb.push_bind(owner);
+            qb.push(")");
+        }
         if let Some(event_type) = params.event_type.as_deref() {
             qb.push(" AND event_type = ");
             qb.push_bind(event_type.to_owned());
@@ -152,6 +157,7 @@ mod tests {
 
     fn default_params() -> ListEventsParams {
         ListEventsParams {
+            owner: None,
             email_id: None,
             event_type: None,
             sender_name: None,

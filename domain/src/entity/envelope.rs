@@ -60,6 +60,9 @@ impl Unsubscribe {
 
 #[derive(Clone)]
 pub struct Envelope {
+    /// Name of the API key that submitted the email; `""` for the legacy key, trusted mode
+    /// and NATS. Idempotency keys are unique per owner.
+    pub owner: String,
     pub idempotency_key: Option<String>,
     pub correlation_id: Option<String>,
     pub subject: Option<String>,
@@ -85,6 +88,7 @@ impl Envelope {
         body: BodySource,
     ) -> Self {
         Self {
+            owner: String::new(),
             idempotency_key: None,
             correlation_id: None,
             subject: None,

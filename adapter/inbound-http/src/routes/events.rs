@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use axum::Extension;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use catapulte_domain::entity::email::EmailId;
@@ -8,6 +9,7 @@ use catapulte_domain::port::event_repository::ListEventsParams;
 use catapulte_domain::use_case::list_events::ListEventsUseCase;
 
 use crate::HttpServerState;
+use crate::auth::ApiKeyIdentity;
 use crate::dto::{
     DEFAULT_EVENTS_LIMIT, EventRecordDto, ListEventsQuery, ListEventsResponse, MAX_EVENTS_LIMIT,
 };
@@ -30,6 +32,7 @@ fn parse_error_class(raw: Option<&str>) -> Result<Option<ErrorClass>, AppError> 
 #[tracing::instrument(skip_all)]
 pub async fn list_events<S: HttpServerState>(
     State(state): State<S>,
+    Extension(identity): Extension<ApiKeyIdentity>,
     Query(query): Query<ListEventsQuery>,
 ) -> Result<Json<ListEventsResponse>, AppError> {
     let email_id = match query.email_id.as_deref() {
@@ -45,6 +48,7 @@ pub async fn list_events<S: HttpServerState>(
         .min(MAX_EVENTS_LIMIT);
     let offset = query.offset.unwrap_or(0);
     let params = ListEventsParams {
+        owner: identity.read_scope(),
         email_id,
         event_type: query.event_type,
         sender_name: query.sender_name,
@@ -76,6 +80,7 @@ pub async fn list_events<S: HttpServerState>(
 #[tracing::instrument(skip_all, fields(email_id = %email_id))]
 pub async fn list_events_for_email<S: HttpServerState>(
     State(state): State<S>,
+    Extension(identity): Extension<ApiKeyIdentity>,
     Path(email_id): Path<String>,
     Query(query): Query<ListEventsQuery>,
 ) -> Result<Json<ListEventsResponse>, AppError> {
@@ -87,6 +92,7 @@ pub async fn list_events_for_email<S: HttpServerState>(
         .min(MAX_EVENTS_LIMIT);
     let offset = query.offset.unwrap_or(0);
     let params = ListEventsParams {
+        owner: identity.read_scope(),
         email_id: Some(EmailId::from(uuid)),
         event_type: query.event_type,
         sender_name: query.sender_name,

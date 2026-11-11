@@ -51,11 +51,12 @@ impl EmailRepository for PostgresAdapter {
         };
 
         let result = sqlx::query(
-            "INSERT INTO emails (id, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, enqueue_state) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'reserved') \
-             ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
+            "INSERT INTO emails (id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, enqueue_state) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'reserved') \
+             ON CONFLICT (api_key, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
         )
         .bind(id_uuid)
+        .bind(&envelope.owner)
         .bind(envelope.idempotency_key.as_deref())
         .bind(envelope.correlation_id.as_deref())
         .bind(envelope.subject.as_deref())
@@ -81,7 +82,7 @@ impl EmailRepository for PostgresAdapter {
             });
         };
 
-        self.resolve_duplicate(key).await
+        self.resolve_duplicate(&envelope.owner, key).await
     }
 
     async fn list_emails(
@@ -92,6 +93,7 @@ impl EmailRepository for PostgresAdapter {
             "WITH email_status AS (\
                 SELECT \
                     e.id, \
+                    e.api_key, \
                     e.idempotency_key, \
                     e.subject, \
                     e.sender, \
@@ -117,6 +119,10 @@ impl EmailRepository for PostgresAdapter {
         if let Some(id) = params.id {
             qb.push(" AND id = ");
             qb.push_bind(id.as_uuid());
+        }
+        if let Some(owner) = params.owner {
+            qb.push(" AND api_key = ");
+            qb.push_bind(owner);
         }
         if let Some(after) = params.after_ms {
             qb.push(" AND created_at > ");
@@ -177,19 +183,22 @@ impl EmailRepository for PostgresAdapter {
     async fn set_enqueue_state(
         &self,
         id: EmailId,
+        owner: &str,
         state: EnqueueState,
     ) -> Result<(), EmailRepositoryError> {
         let value = match state {
             EnqueueState::Publishable => "publishable",
             EnqueueState::Enqueued => "enqueued",
         };
-        let result = sqlx::query("UPDATE emails SET enqueue_state = $1 WHERE id = $2")
-            .bind(value)
-            .bind(id.as_uuid())
-            .execute(self.pool())
-            .await
-            .context("updating enqueue_state")
-            .map_err(|source| EmailRepositoryError::Storage { source })?;
+        let result =
+            sqlx::query("UPDATE emails SET enqueue_state = $1 WHERE id = $2 AND api_key = $3")
+                .bind(value)
+                .bind(id.as_uuid())
+                .bind(owner)
+                .execute(self.pool())
+                .await
+                .context("updating enqueue_state")
+                .map_err(|source| EmailRepositoryError::Storage { source })?;
         if result.rows_affected() == 0 {
             return Err(EmailRepositoryError::Storage {
                 source: anyhow::anyhow!(
@@ -344,7 +353,11 @@ impl PostgresAdapter {
     /// Looks the existing row up in one transaction, locking it with `FOR UPDATE` so
     /// concurrent same-key recoveries serialise. A `publishable` row with worker evidence is
     /// promoted to `enqueued`; without evidence its envelope is returned for replay.
-    async fn resolve_duplicate(&self, key: &str) -> Result<SaveResult, EmailRepositoryError> {
+    async fn resolve_duplicate(
+        &self,
+        owner: &str,
+        key: &str,
+    ) -> Result<SaveResult, EmailRepositoryError> {
         let storage = |source| EmailRepositoryError::Storage { source };
         let mut tx = self
             .pool()
@@ -354,10 +367,11 @@ impl PostgresAdapter {
             .map_err(storage)?;
 
         let row = sqlx::query(
-            "SELECT id, enqueue_state, idempotency_key, correlation_id, subject, sender, \
+            "SELECT id, enqueue_state, api_key, idempotency_key, correlation_id, subject, sender, \
                     recipients, body, variables, extras \
-             FROM emails WHERE idempotency_key = $1 FOR UPDATE",
+             FROM emails WHERE api_key = $1 AND idempotency_key = $2 FOR UPDATE",
         )
+        .bind(owner)
         .bind(key)
         .fetch_one(&mut *tx)
         .await
@@ -384,8 +398,11 @@ impl PostgresAdapter {
                 .context("checking worker evidence")
                 .map_err(storage)?;
                 if has_evidence {
-                    sqlx::query("UPDATE emails SET enqueue_state = 'enqueued' WHERE id = $1")
-                        .bind(existing_uuid)
+                    sqlx::query(
+                        "UPDATE emails SET enqueue_state = 'enqueued' WHERE id = $1 AND api_key = $2",
+                    )
+                    .bind(existing_uuid)
+                    .bind(owner)
                         .execute(&mut *tx)
                         .await
                         .context("promoting enqueue_state")
@@ -522,7 +539,7 @@ mod tests {
         envelope.sender = "stored@example.com".to_owned();
         adapter.save(id, &envelope).await.unwrap();
         if let Some(state) = state {
-            adapter.set_enqueue_state(id, state).await.unwrap();
+            adapter.set_enqueue_state(id, "", state).await.unwrap();
         }
         id
     }
@@ -617,7 +634,7 @@ mod tests {
         envelope.headers = vec![("X-Order-Id".to_owned(), "42".to_owned())];
         adapter.save(id, &envelope).await.unwrap();
         adapter
-            .set_enqueue_state(id, EnqueueState::Publishable)
+            .set_enqueue_state(id, "", EnqueueState::Publishable)
             .await
             .unwrap();
 
@@ -675,6 +692,7 @@ mod tests {
 
     fn default_list_params() -> ListEmailsParams {
         ListEmailsParams {
+            owner: None,
             status: None,
             after_ms: None,
             before_ms: None,
@@ -1461,5 +1479,118 @@ mod tests {
         add_event_with_id(&adapter, tie_failed, "delivery.succeeded", 5, low2).await;
         add_event_with_id(&adapter, tie_failed, "delivery.failed", 5, high2).await;
         assert_eq!(status_of(tie_failed).await, EmailStatus::Failed);
+    }
+
+    fn owned_envelope(owner: &str, key: &str) -> Envelope {
+        let mut envelope = sample_envelope();
+        envelope.owner = owner.to_owned();
+        envelope.idempotency_key = Some(key.to_owned());
+        envelope
+    }
+
+    #[tokio::test]
+    async fn same_idempotency_key_is_unique_per_owner() {
+        let (adapter, _container) = fresh_adapter().await;
+        let a = EmailId::default();
+        let b = EmailId::default();
+
+        let first = adapter.save(a, &owned_envelope("a", "k")).await.unwrap();
+        let other = adapter.save(b, &owned_envelope("b", "k")).await.unwrap();
+        let again = adapter
+            .save(EmailId::default(), &owned_envelope("a", "k"))
+            .await
+            .unwrap();
+
+        assert!(matches!(first, SaveResult::Created(id) if id == a));
+        assert!(matches!(other, SaveResult::Created(id) if id == b));
+        assert!(matches!(again, SaveResult::Duplicate { id, .. } if id == a));
+        let all = adapter.list_emails(default_list_params()).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn another_owners_same_key_never_replays_or_updates_a_publishable_row() {
+        let (adapter, _container) = fresh_adapter().await;
+        let a = EmailId::default();
+        adapter.save(a, &owned_envelope("a", "k")).await.unwrap();
+        adapter
+            .set_enqueue_state(a, "a", EnqueueState::Publishable)
+            .await
+            .unwrap();
+
+        let b = EmailId::default();
+        let result = adapter.save(b, &owned_envelope("b", "k")).await.unwrap();
+        assert!(matches!(result, SaveResult::Created(id) if id == b));
+
+        let wrong_owner = adapter
+            .set_enqueue_state(a, "b", EnqueueState::Enqueued)
+            .await;
+        assert!(wrong_owner.is_err());
+        let replay = adapter
+            .save(EmailId::default(), &owned_envelope("a", "k"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            replay,
+            SaveResult::Duplicate { id, recovery: Some(_), .. } if id == a
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_emails_and_events_are_scoped_to_the_owner() {
+        use catapulte_domain::port::event_repository::{EventRepository, ListEventsParams};
+
+        let (adapter, _container) = fresh_adapter().await;
+        let a = EmailId::default();
+        let b = EmailId::default();
+        adapter.save(a, &owned_envelope("a", "ka")).await.unwrap();
+        adapter.save(b, &owned_envelope("b", "kb")).await.unwrap();
+        add_event(&adapter, a, "queued").await;
+        add_event(&adapter, b, "queued").await;
+
+        let emails = adapter
+            .list_emails(ListEmailsParams {
+                owner: Some("a".to_owned()),
+                ..default_list_params()
+            })
+            .await
+            .unwrap();
+        assert_eq!(emails.iter().map(|e| e.id).collect::<Vec<_>>(), vec![a]);
+        let foreign = adapter
+            .list_emails(ListEmailsParams {
+                owner: Some("a".to_owned()),
+                id: Some(b),
+                ..default_list_params()
+            })
+            .await
+            .unwrap();
+        assert!(foreign.is_empty());
+
+        let events_params = |owner: Option<&str>, email_id: Option<EmailId>| ListEventsParams {
+            owner: owner.map(str::to_owned),
+            email_id,
+            event_type: None,
+            sender_name: None,
+            error_class: None,
+            after_ms: None,
+            before_ms: None,
+            limit: 20,
+            offset: 0,
+        };
+        let own = adapter
+            .list_events(events_params(Some("a"), None))
+            .await
+            .unwrap();
+        assert_eq!(own.iter().map(|e| e.email_id).collect::<Vec<_>>(), vec![a]);
+        let foreign = adapter
+            .list_events(events_params(Some("a"), Some(b)))
+            .await
+            .unwrap();
+        assert!(foreign.is_empty());
+        let admin = adapter
+            .list_events(events_params(None, None))
+            .await
+            .unwrap();
+        assert_eq!(admin.len(), 2);
     }
 }
