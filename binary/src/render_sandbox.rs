@@ -42,7 +42,7 @@ const DEFAULT_MAX_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Variables copied into the child on top of an empty environment. Proxy URLs can hold
 /// credentials, so the resulting environment is never logged.
-const PASSTHROUGH_ENV: [&str; 13] = [
+const PASSTHROUGH_ENV: [&str; 11] = [
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
     "HTTP_PROXY",
@@ -54,8 +54,6 @@ const PASSTHROUGH_ENV: [&str; 13] = [
     "all_proxy",
     "no_proxy",
     "REQUEST_METHOD",
-    "LLVM_PROFILE_FILE",
-    "TMPDIR",
 ];
 
 type Variables = Map<String, Value>;
@@ -732,6 +730,11 @@ fn child_env(lookup: impl Fn(&str) -> Option<OsString>) -> Vec<(&'static str, Os
             .iter()
             .filter_map(|name| lookup(name).map(|value| (*name, value))),
     );
+    // A child killed by a limit leaves a truncated profile that breaks coverage merging,
+    // so an instrumented child writes its profile nowhere.
+    if lookup("LLVM_PROFILE_FILE").is_some() {
+        env.push(("LLVM_PROFILE_FILE", OsString::from("/dev/null")));
+    }
     env
 }
 
@@ -1315,7 +1318,7 @@ mod tests {
             ]
         );
         assert_eq!(env[0].1, "2");
-        assert_eq!(env[3].1, "cov-%p-%m.profraw");
+        assert_eq!(env[3].1, "/dev/null");
     }
 
     #[test]
