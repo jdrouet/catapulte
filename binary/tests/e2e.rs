@@ -157,6 +157,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
             auth: None,
+            feedback_secret: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -319,6 +320,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
             auth: None,
+            feedback_secret: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -458,6 +460,7 @@ async fn sent_email_blob_is_deleted_after_delivery() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
             auth: None,
+            feedback_secret: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -594,6 +597,7 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
             auth: None,
+            feedback_secret: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -739,6 +743,7 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
             auth: None,
+            feedback_secret: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: Some(catapulte_inbound_nats::server::InboundNatsConfig {
@@ -871,6 +876,7 @@ async fn submit_email_with_disallowed_remote_attachment_returns_400() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
             auth: None,
+            feedback_secret: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -983,6 +989,7 @@ async fn multi_sender_routes_by_sender_domain() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
             auth: None,
+            feedback_secret: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -1138,6 +1145,7 @@ async fn sink_sender_reaches_delivery_succeeded_without_any_smtp_server() {
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
             auth: None,
+            feedback_secret: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -1220,6 +1228,15 @@ fn named_key(name: &str, secret: &str, admin: bool, domains: Option<&[&str]>) ->
 
 /// Starts the app with a sink sender and the given auth; returns the HTTP base URL.
 async fn start_sink_app(auth: Option<AuthConfig>, db_dir: &tempfile::TempDir) -> String {
+    start_app(auth, None, None, db_dir).await
+}
+
+async fn start_app(
+    auth: Option<AuthConfig>,
+    feedback_secret: Option<&str>,
+    bounce: Option<catapulte_domain::entity::return_path::BounceConfig>,
+    db_dir: &tempfile::TempDir,
+) -> String {
     let http_port = free_port();
     let config = AppConfig {
         storage: StorageBackendConfig::Sqlite(SqliteConfig {
@@ -1228,6 +1245,7 @@ async fn start_sink_app(auth: Option<AuthConfig>, db_dir: &tempfile::TempDir) ->
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
             auth: auth.map(std::sync::Arc::new),
+            feedback_secret: feedback_secret.map(std::sync::Arc::from),
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -1245,7 +1263,7 @@ async fn start_sink_app(auth: Option<AuthConfig>, db_dir: &tempfile::TempDir) ->
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
         allowed_sender_domains: None,
-        bounce: None,
+        bounce,
     };
     let app = config.build().await.expect("failed to build app");
     tokio::spawn(async move {
@@ -1925,4 +1943,287 @@ async fn nul_in_request_fields_is_rejected_per_item_and_on_single_submit() {
         .map(|r| r["status"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(statuses, ["accepted", "rejected", "accepted"]);
+}
+
+const INGEST_SECRET: &str = "ingest-secret-0123456789abcdef0123456789";
+const BOUNCE_SECRET: &str = "bounce-secret-0123456789abcdef0123456789";
+const DSN_FIXTURE: &str = include_str!("../../adapter/inbound-http/tests/fixtures/dsn.eml");
+const ARF_FIXTURE: &str = include_str!("../../adapter/inbound-http/tests/fixtures/arf.eml");
+
+fn bounce_config() -> catapulte_domain::entity::return_path::BounceConfig {
+    catapulte_domain::entity::return_path::BounceConfig::new("bounces.example.com", BOUNCE_SECRET)
+        .unwrap()
+}
+
+fn id_of_uuid(id: &str) -> catapulte_domain::entity::email::EmailId {
+    catapulte_domain::entity::email::EmailId::from(uuid::Uuid::parse_str(id).unwrap())
+}
+
+fn fixture(template: &str, values: &[(&str, &str)]) -> String {
+    let mut out = template.to_owned();
+    for key in [
+        "BOUNCE_TO",
+        "RECIPIENT",
+        "ACTION",
+        "STATUS",
+        "RETURN_PATH",
+        "MESSAGE_ID",
+        "ORIGINAL_RETURN_PATH",
+    ] {
+        let value = values
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or("", |(_, v)| *v);
+        out = out.replace(&format!("{{{{{key}}}}}"), value);
+    }
+    out.replace('\n', "\r\n")
+}
+
+async fn post_feedback(base: &str, token: &str, body: String) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{base}/inbound/feedback"))
+        .bearer_auth(token)
+        .body(body)
+        .send()
+        .await
+        .unwrap()
+}
+
+/// A DSN for `email_id` naming `recipient`, signed with `verp` as the return path.
+fn dsn(email_id: &str, recipient: &str, action: &str, status: &str, verp: &str) -> String {
+    fixture(
+        DSN_FIXTURE,
+        &[
+            ("BOUNCE_TO", verp),
+            ("RECIPIENT", recipient),
+            ("ACTION", action),
+            ("STATUS", status),
+            ("RETURN_PATH", verp),
+            ("MESSAGE_ID", &format!("{email_id}@example.com")),
+        ],
+    )
+}
+
+async fn event_types(base: &str, email_id: &str) -> Vec<String> {
+    let events = get_json(base, "secret-ops", &format!("/emails/{email_id}/events")).await;
+    ids(&events, "events", "event_type")
+}
+
+async fn suppressed(base: &str) -> Vec<String> {
+    let listed = get_json(base, "secret-ops", "/suppressions").await;
+    ids(&listed, "suppressions", "address")
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn feedback_reports_suppress_only_verified_single_recipient_emails() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_app(
+        suppression_auth(),
+        Some(INGEST_SECRET),
+        Some(bounce_config()),
+        &db_dir,
+    )
+    .await;
+    let bounce = bounce_config();
+    let single = id_of(
+        submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            None,
+            serde_json::json!({
+                "recipients": [{ "kind": "to", "address": "alice@example.org" }],
+                "tags": ["welcome"]
+            }),
+        )
+        .await,
+    )
+    .await;
+    let pair = id_of(
+        submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            None,
+            serde_json::json!({
+                "recipients": [
+                    { "kind": "to", "address": "bob@example.org" },
+                    { "kind": "bcc", "address": "carol@example.org" }
+                ]
+            }),
+        )
+        .await,
+    )
+    .await;
+    wait_for_delivery(&base, "secret-ops", &single).await;
+    wait_for_delivery(&base, "secret-ops", &pair).await;
+    let verp_single = bounce.return_path(id_of_uuid(&single));
+    let verp_pair = bounce.return_path(id_of_uuid(&pair));
+
+    // A multi-recipient email only gets an event, even with a valid tag.
+    let r = post_feedback(
+        &base,
+        INGEST_SECRET,
+        dsn(&pair, "bob@example.org", "failed", "5.1.1", &verp_pair),
+    )
+    .await;
+    assert_eq!(r.status(), 204);
+    assert!(
+        event_types(&base, &pair)
+            .await
+            .contains(&"bounced".to_owned())
+    );
+    assert!(suppressed(&base).await.is_empty());
+
+    // Rejections leave no event and no suppression.
+    let tampered =
+        format!("{}x", &verp_single[..verp_single.find('@').unwrap() - 1]) + "@bounces.example.com";
+    for (body, why) in [
+        (
+            dsn(&single, "alice@example.org", "failed", "5.1.1", &tampered),
+            "tampered tag",
+        ),
+        (
+            dsn(
+                &single,
+                "alice@example.org",
+                "failed",
+                "5.1.1",
+                "postmaster@example.com",
+            ),
+            "no VERP",
+        ),
+        (
+            dsn(
+                &single,
+                "victim@example.org",
+                "failed",
+                "5.1.1",
+                &verp_single,
+            ),
+            "recipient not on the email",
+        ),
+        (
+            dsn(
+                &uuid::Uuid::now_v7().to_string(),
+                "alice@example.org",
+                "failed",
+                "5.1.1",
+                &bounce.return_path(id_of_uuid(&uuid::Uuid::now_v7().to_string())),
+            ),
+            "unknown email",
+        ),
+        (
+            fixture(
+                include_str!("../../adapter/inbound-http/tests/fixtures/plain.eml"),
+                &[],
+            ),
+            "not a report",
+        ),
+    ] {
+        let r = post_feedback(&base, INGEST_SECRET, body).await;
+        assert_eq!(r.status(), 422, "{why}");
+    }
+    assert!(
+        !event_types(&base, &single)
+            .await
+            .contains(&"bounced".to_owned())
+    );
+    assert!(suppressed(&base).await.is_empty());
+
+    // A soft bounce is an event only.
+    let r = post_feedback(
+        &base,
+        INGEST_SECRET,
+        dsn(
+            &single,
+            "alice@example.org",
+            "delayed",
+            "4.4.1",
+            &verp_single,
+        ),
+    )
+    .await;
+    assert_eq!(r.status(), 204);
+    assert!(suppressed(&base).await.is_empty());
+
+    // A Message-ID-only complaint is an unverified event.
+    let arf = fixture(
+        ARF_FIXTURE,
+        &[
+            ("BOUNCE_TO", "feedback@example.net"),
+            ("RECIPIENT", "alice@example.org"),
+            ("MESSAGE_ID", &format!("{single}@example.com")),
+        ],
+    );
+    let r = post_feedback(&base, INGEST_SECRET, arf).await;
+    assert_eq!(r.status(), 204);
+    let events = get_json(
+        &base,
+        "secret-ops",
+        &format!("/emails/{single}/events?event_type=complained"),
+    )
+    .await;
+    assert_eq!(events["events"][0]["payload"]["verified"], false);
+    assert_eq!(
+        events["events"][0]["payload"]["tags"],
+        serde_json::json!(["welcome"])
+    );
+    assert!(suppressed(&base).await.is_empty());
+
+    // A signed hard bounce for the single-recipient email suppresses.
+    let r = post_feedback(
+        &base,
+        INGEST_SECRET,
+        dsn(
+            &single,
+            "Alice@Example.org",
+            "failed",
+            "5.1.1",
+            &verp_single,
+        ),
+    )
+    .await;
+    assert_eq!(r.status(), 204);
+    assert_eq!(suppressed(&base).await, vec!["alice@example.org"]);
+    let listed = get_json(&base, "secret-ops", "/suppressions?reason=bounce").await;
+    assert_eq!(listed["suppressions"][0]["source_email_id"], single);
+    let status = get_json(&base, "secret-a", &format!("/emails?id={single}")).await;
+    assert_eq!(
+        status["emails"][0]["status"], "sent",
+        "bounced never changes the status"
+    );
+}
+
+#[tokio::test]
+async fn the_feedback_route_is_disabled_without_a_secret_and_rejects_api_keys_and_large_bodies() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let off = start_app(suppression_auth(), None, Some(bounce_config()), &db_dir).await;
+    let r = post_feedback(&off, INGEST_SECRET, "x".to_owned()).await;
+    assert_eq!(r.status(), 404);
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_app(
+        suppression_auth(),
+        Some(INGEST_SECRET),
+        Some(bounce_config()),
+        &db_dir,
+    )
+    .await;
+    for token in ["secret-ops", "secret-a", "wrong"] {
+        let r = post_feedback(&base, token, "x".to_owned()).await;
+        assert_eq!(r.status(), 401, "{token}");
+    }
+    let anonymous = reqwest::Client::new()
+        .post(format!("{base}/inbound/feedback"))
+        .body("x")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+    let huge = post_feedback(&base, INGEST_SECRET, "x".repeat(1024 * 1024 + 1)).await;
+    assert_eq!(huge.status(), 413);
+    let not_a_report = post_feedback(&base, INGEST_SECRET, "x".to_owned()).await;
+    assert_eq!(not_a_report.status(), 422);
 }

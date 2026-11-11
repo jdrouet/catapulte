@@ -64,6 +64,14 @@ pub(crate) struct AppState {
     pub(crate) list_senders: Arc<ListSendersServiceImpl>,
     pub(crate) list_emails: Arc<ListEmailsServiceImpl>,
     pub(crate) list_events: Arc<ListEventsServiceImpl>,
+    pub(crate) ingest_feedback: Arc<
+        catapulte_domain::use_case::ingest_feedback::IngestFeedbackService<
+            StorageAdapter,
+            PublisherAdapter,
+            StorageAdapter,
+            catapulte_domain::port::clock::SystemClock,
+        >,
+    >,
     pub(crate) manage_suppressions: Arc<ManageSuppressionsService<StorageAdapter>>,
     pub(crate) check_readiness: Arc<CheckReadinessServiceImpl>,
     pub(crate) queue: QueueAdapter,
@@ -99,6 +107,12 @@ impl HttpServerState for AppState {
 
     fn manage_suppressions(&self) -> &impl ManageSuppressionsUseCase {
         self.manage_suppressions.as_ref()
+    }
+
+    fn ingest_feedback(
+        &self,
+    ) -> &impl catapulte_domain::use_case::ingest_feedback::IngestFeedbackUseCase {
+        self.ingest_feedback.as_ref()
     }
 }
 

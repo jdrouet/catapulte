@@ -132,6 +132,22 @@ impl catapulte_domain::port::sender_usage::SenderUsage for StorageAdapter {
     }
 }
 
+impl catapulte_domain::port::email_lookup::EmailLookup for StorageAdapter {
+    async fn find(
+        &self,
+        id: EmailId,
+    ) -> Result<
+        Option<catapulte_domain::port::email_lookup::EmailSummary>,
+        catapulte_domain::port::email_lookup::EmailLookupError,
+    > {
+        use catapulte_domain::port::email_lookup::EmailLookup as L;
+        match self {
+            Self::Sqlite(a) => L::find(a, id).await,
+            Self::Postgres(a) => L::find(a, id).await,
+        }
+    }
+}
+
 impl catapulte_domain::port::suppression_repository::SuppressionRepository for StorageAdapter {
     async fn list(
         &self,

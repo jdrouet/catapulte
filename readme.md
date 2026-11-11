@@ -103,6 +103,7 @@ All configuration is done via environment variables.
 | `CATAPULTE_GC_SWEEP_INTERVAL_SECS` | Interval in seconds between garbage collection sweeps | `3600` |
 | `CATAPULTE_GC_GRACE_PERIOD_SECS` | Minimum age for data to be eligible for garbage collection | `3600` |
 | `CATAPULTE_BOUNCE_DOMAIN` | Domain of the signed return path (`bounces+{id}-{tag}@domain`) used as the SMTP `MAIL FROM`, so bounces can be tied to an email. Set together with `CATAPULTE_BOUNCE_SECRET`; setting only one stops startup. See [Bounce return path](#bounce-return-path) | unset (the sender address is used) |
+| `CATAPULTE_BOUNCE_INGEST_SECRET` | Enables `POST /inbound/feedback` and is its bearer secret, at least 32 bytes (`openssl rand -base64 48`). Unset leaves the route out (404). API keys never work on that route. See [Bounce and complaint ingestion](#bounce-and-complaint-ingestion) | unset |
 | `CATAPULTE_BOUNCE_SECRET` | Key that signs the return paths, at least 32 bytes; generate one with `openssl rand -base64 48`. Keep it stable: rotating it makes bounces for mail already sent unverifiable | unset |
 | `CATAPULTE_ALLOWED_SENDER_DOMAINS` | Comma-separated sender domains the API accepts. Matching is exact (no subdomains), case-insensitive, and IDN domains are compared in punycode. Unset accepts any domain; set but empty denies every sender. An entry that is not a valid domain stops startup | unset |
 
@@ -203,6 +204,38 @@ DNS needs two things:
   `From` domain (see below), so keep DKIM configured for every sender domain.
 
 The bounce domain also needs an MX that receives the bounces.
+
+#### Bounce and complaint ingestion
+
+Point the MX of your bounce domain at a command that forwards each received message, unchanged,
+to Catapulte. With Postfix, a `pipe` transport such as
+
+```
+# master.cf
+catapulte-feedback unix - n n - - pipe
+  flags=Rq user=nobody argv=/usr/bin/curl -sf --max-time 20 --data-binary @- \
+    -H "Authorization: Bearer $CATAPULTE_BOUNCE_INGEST_SECRET" \
+    http://catapulte:3000/inbound/feedback
+```
+
+routes `bounces+*@your-bounce-domain` to it (`transport_maps`). Forward only mail addressed to the
+bounce domain.
+
+Catapulte accepts delivery status notifications (RFC 3464) and abuse reports (RFC 5965) and
+answers `204`. Anything else, an unknown email, or a recipient the email was not sent to
+returns `422` and is not stored. The ingest secret only authenticates the forwarder: the
+report is untrusted, and is tied to an email through the signed return path (see above).
+
+- A hard bounce (`Action: failed`, status `5.x.x`) emits a `bounced` event; a soft bounce
+  emits the same event with `hard: false`. A complaint emits `complained`.
+- **Automatic suppression** happens only for a hard bounce, or a complaint, whose report
+  carries a valid signed return path, **and only when the email had exactly one recipient**
+  (To, Cc and Bcc together). The signed tag identifies the email, not a recipient, so on a
+  multi-recipient email any recipient could forge a report about another one; those emails
+  get the event only.
+- A complaint without the return path, matched by the original `Message-ID` alone, emits
+  `complained` with `verified: false` and never suppresses. A tag that is present but invalid
+  is rejected outright.
 
 #### DKIM signing
 
@@ -437,7 +470,7 @@ Emitted gauges:
 
 ## Out of scope (for now)
 
-Bounce and complaint ingestion and scheduled sends. Listed so they aren't mistaken for missing stories.
+Scheduled sends. Listed so they aren't mistaken for missing stories.
 
 ## License
 

@@ -1,6 +1,7 @@
 pub mod attachment_fetcher;
 pub mod attachment_store;
 pub mod clock;
+pub mod email_lookup;
 pub mod email_queue;
 pub mod email_repository;
 pub mod email_sender;

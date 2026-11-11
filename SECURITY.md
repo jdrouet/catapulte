@@ -40,6 +40,9 @@ delivers them over SMTP. The following are **in scope**:
 
 - **Server-side request forgery (SSRF)** in the remote-fetch paths: URL-based
   attachments and remote MJML templates (`mj-include` fetched over HTTP).
+- **Feedback ingestion** (`POST /inbound/feedback`): forged or replayed bounce and
+  complaint reports that suppress a recipient they should not, or bypass the signed
+  return path and single-recipient rule described in the readme.
 - **Authentication / authorization** flaws on the HTTP API (the
   `CATAPULTE_HTTP_API_KEY` bearer check and the scoped `CATAPULTE_API_KEYS`
   owner and admin checks), including bypasses and cross-owner reads.
@@ -61,7 +64,7 @@ The following are **out of scope**:
   limiting or abuse protection by design; operators are expected to run it
   behind a gateway or reverse proxy that enforces limits.
 - Features explicitly listed as out of scope in the [readme](./readme.md)
-  (bounce ingestion, scheduled sends).
+  (scheduled sends).
 - Vulnerabilities already tracked by the repository's dependency scanning, or
   in dependencies that are not reachable from the shipped binary (for example,
   test-only tooling).

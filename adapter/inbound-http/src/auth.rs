@@ -64,7 +64,7 @@ pub struct AuthConfig {
 
 /// Only an absent variable counts as unset; a value that is not valid unicode must stop
 /// startup, because ignoring it would silently drop a key or a restriction.
-fn optional_var<F>(lookup: &F, key: &str) -> anyhow::Result<Option<String>>
+pub(crate) fn optional_var<F>(lookup: &F, key: &str) -> anyhow::Result<Option<String>>
 where
     F: Fn(&str) -> Result<String, VarError>,
 {
@@ -248,6 +248,24 @@ pub fn require_admin(identity: &ApiKeyIdentity) -> Result<(), crate::error::AppE
     } else {
         Err(crate::error::AppError::Forbidden)
     }
+}
+
+/// Guards the feedback route with its own bearer secret; API keys never match it.
+pub(crate) async fn require_feedback_secret(
+    State(secret): State<std::sync::Arc<str>>,
+    request: Request,
+    next: Next,
+) -> Result<axum::response::Response, StatusCode> {
+    let token = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    if !constant_time_eq(token.as_bytes(), secret.as_bytes()) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(next.run(request).await)
 }
 
 /// Used when authentication is off: every caller is the trusted administrator.

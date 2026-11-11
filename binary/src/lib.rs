@@ -278,6 +278,15 @@ impl AppConfig {
             }),
         );
         let mjml_renderer = MjmlRenderer::new(self.include_loader.build());
+        let ingest_feedback = Arc::new(
+            catapulte_domain::use_case::ingest_feedback::IngestFeedbackService::new(
+                storage.clone(),
+                publisher.clone(),
+                storage.clone(),
+                catapulte_domain::port::clock::SystemClock,
+                self.bounce.clone(),
+            ),
+        );
         let mut process_queued_email = ProcessQueuedEmailService::new(
             resolver,
             MiniJinjaInterpolator::new(),
@@ -304,6 +313,7 @@ impl AppConfig {
             list_emails,
             list_events,
             manage_suppressions,
+            ingest_feedback,
             check_readiness,
             queue,
             publisher,

@@ -1,0 +1,30 @@
+From: complaints@provider.example
+To: {{BOUNCE_TO}}
+Subject: Abuse report
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=feedback-report;
+	boundary="BOUND"
+
+--BOUND
+Content-Type: text/plain; charset=us-ascii
+
+This is an abuse report for a message received from your network.
+
+--BOUND
+Content-Type: message/feedback-report
+
+Feedback-Type: abuse
+User-Agent: ExampleMail/1.0
+Version: 1
+Original-Rcpt-To: <{{RECIPIENT}}>
+
+--BOUND
+Content-Type: message/rfc822
+
+{{ORIGINAL_RETURN_PATH}}From: sender@example.com
+To: {{RECIPIENT}}
+Message-ID: <{{MESSAGE_ID}}>
+Subject: Welcome
+
+Hello
+--BOUND--

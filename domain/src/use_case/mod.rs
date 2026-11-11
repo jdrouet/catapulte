@@ -1,4 +1,5 @@
 pub mod check_readiness;
+pub mod ingest_feedback;
 pub mod list_emails;
 pub mod list_events;
 pub mod list_senders;

@@ -26,6 +26,7 @@ tower-http = { workspace = true, features = ["timeout"] }
 tracing = { workspace = true }
 url = { version = "2.5" }
 uuid = { workspace = true }
+mail-parser = "0.11.9"
 
 [dev-dependencies]
 catapulte-outbound-smtp = { path = "../outbound-smtp" }

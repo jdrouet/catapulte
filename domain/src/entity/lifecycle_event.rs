@@ -99,6 +99,22 @@ pub enum LifecycleEvent {
         sender_name: Option<SenderName>,
         context: EventContext,
     },
+    /// Informational: a remote server reported a bounce for `recipient`.
+    Bounced {
+        id: EmailId,
+        hard: bool,
+        recipient: String,
+        diagnostic_code: Option<String>,
+        context: EventContext,
+    },
+    /// Informational: a mailbox provider reported a spam complaint. `verified` is true only
+    /// when the report carried a valid signed return path.
+    Complained {
+        id: EmailId,
+        recipient: String,
+        verified: bool,
+        context: EventContext,
+    },
     /// Informational: recipients were dropped because they are on the suppression list.
     Suppressed {
         id: EmailId,
@@ -118,6 +134,8 @@ impl LifecycleEvent {
             Self::Retrying { .. } => "retrying",
             Self::Failed { .. } => "delivery.failed",
             Self::Suppressed { .. } => "suppressed",
+            Self::Bounced { .. } => "bounced",
+            Self::Complained { .. } => "complained",
         }
     }
 
@@ -130,7 +148,9 @@ impl LifecycleEvent {
             | Self::Sent { id, .. }
             | Self::Retrying { id, .. }
             | Self::Failed { id, .. }
-            | Self::Suppressed { id, .. } => id,
+            | Self::Suppressed { id, .. }
+            | Self::Bounced { id, .. }
+            | Self::Complained { id, .. } => id,
         }
     }
 
@@ -141,7 +161,11 @@ impl LifecycleEvent {
     #[must_use]
     pub fn sender_name(&self) -> Option<&SenderName> {
         match self {
-            Self::Queued { .. } | Self::Sending { .. } | Self::Suppressed { .. } => None,
+            Self::Queued { .. }
+            | Self::Sending { .. }
+            | Self::Suppressed { .. }
+            | Self::Bounced { .. }
+            | Self::Complained { .. } => None,
             Self::Sent { sender_name, .. } => Some(sender_name),
             Self::Retrying { sender_name, .. } | Self::Failed { sender_name, .. } => {
                 sender_name.as_ref()
@@ -171,6 +195,29 @@ impl LifecycleEvent {
             Self::Suppressed {
                 addresses, context, ..
             } => (serde_json::json!({ "addresses": addresses }), context),
+            Self::Bounced {
+                hard,
+                recipient,
+                diagnostic_code,
+                context,
+                ..
+            } => (
+                serde_json::json!({
+                    "hard": hard,
+                    "recipient": recipient,
+                    "diagnostic_code": diagnostic_code,
+                }),
+                context,
+            ),
+            Self::Complained {
+                recipient,
+                verified,
+                context,
+                ..
+            } => (
+                serde_json::json!({ "recipient": recipient, "verified": verified }),
+                context,
+            ),
             Self::Sending {
                 attempt, context, ..
             } => (serde_json::json!({ "attempt": attempt }), context),

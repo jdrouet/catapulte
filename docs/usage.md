@@ -356,6 +356,8 @@ each event as JSON:
 | `delivery.succeeded` | accepted by the upstream SMTP server | `sender_name`, `correlation_id`, `smtp_response`, `message_id` |
 | `retrying` | attempt failed, will retry | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
 | `delivery.failed` | retries exhausted, or no recipient left after suppression (`error_class` `suppressed`) | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
+| `bounced` | a remote server reported a bounce (see [ingestion](../readme.md#bounce-and-complaint-ingestion)); informational, never changes the status | `hard`, `recipient`, `diagnostic_code`, `correlation_id` |
+| `complained` | a mailbox provider reported a spam complaint; `verified` is true only when the report carried a valid signed return path; informational | `recipient`, `verified`, `correlation_id` |
 | `suppressed` | recipients were dropped because they are on the suppression list; informational, never changes the status | `addresses`, `correlation_id` |
 
 Every event also carries the email's `tags` and `metadata` in `payload`, but only when the

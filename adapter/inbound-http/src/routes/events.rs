@@ -265,6 +265,12 @@ mod tests {
         {
             &crate::routes::suppressions::NoopManageSuppressions
         }
+
+        fn ingest_feedback(
+            &self,
+        ) -> &impl catapulte_domain::use_case::ingest_feedback::IngestFeedbackUseCase {
+            &crate::routes::feedback::NoopIngestFeedback
+        }
     }
 
     #[derive(Clone)]
@@ -302,6 +308,12 @@ mod tests {
         ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
         {
             &crate::routes::suppressions::NoopManageSuppressions
+        }
+
+        fn ingest_feedback(
+            &self,
+        ) -> &impl catapulte_domain::use_case::ingest_feedback::IngestFeedbackUseCase {
+            &crate::routes::feedback::NoopIngestFeedback
         }
     }
 
