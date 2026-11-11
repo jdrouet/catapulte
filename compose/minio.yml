@@ -1,5 +1,6 @@
-# Local use only, do not deploy as is. The default MinIO password is for
-# development; set MINIO_ROOT_PASSWORD to override it. Ports bind to loopback.
+# Local use only, do not deploy as is. The default S3 secret is for development;
+# set MINIO_ROOT_PASSWORD to override it. Ports bind to loopback. The services keep
+# their old "minio" names; the object store is RustFS, an S3-compatible server.
 services:
   catapulte:
     build:
@@ -35,30 +36,32 @@ services:
         condition: service_started
 
   minio:
-    image: minio/minio
-    command: ["server", "/data", "--console-address", ":9001"]
+    image: rustfs/rustfs:1.0.5
+    command: ["/data"]
     environment:
-      - "MINIO_ROOT_USER=catapulte"
-      - "MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-catapulte}"
+      - "RUSTFS_ACCESS_KEY=catapulte"
+      - "RUSTFS_SECRET_KEY=${MINIO_ROOT_PASSWORD:-catapulte}"
     ports:
       - "127.0.0.1:9000:9000" # S3 API
       - "127.0.0.1:9001:9001" # Web console
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
     volumes:
       - minio_data:/data
 
   minio-init:
-    image: minio/mc
+    image: amazon/aws-cli:2.40.0
     environment:
-      - "MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-catapulte}"
+      - "AWS_ACCESS_KEY_ID=catapulte"
+      - "AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-catapulte}"
+      - "AWS_DEFAULT_REGION=us-east-1"
     entrypoint: >
       /bin/sh -c "
-        mc alias set local http://minio:9000 catapulte \"$$MINIO_ROOT_PASSWORD\" &&
-        mc mb --ignore-existing local/catapulte
+        aws --endpoint-url http://minio:9000 s3api head-bucket --bucket catapulte 2>/dev/null ||
+        aws --endpoint-url http://minio:9000 s3 mb s3://catapulte
       "
     depends_on:
       minio:

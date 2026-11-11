@@ -41,3 +41,4 @@ test-compose:
     ./scripts/smoke-test.sh compose/local-dev.yml
     ./scripts/smoke-test.sh compose/sqlite.yml
     ./scripts/smoke-test.sh compose/postgres-nats.yml
+    ./scripts/smoke-test.sh compose/minio.yml
