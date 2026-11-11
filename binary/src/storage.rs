@@ -132,6 +132,62 @@ impl catapulte_domain::port::sender_usage::SenderUsage for StorageAdapter {
     }
 }
 
+impl catapulte_domain::port::template_repository::TemplateRepository for StorageAdapter {
+    async fn latest(
+        &self,
+        name: &str,
+    ) -> Result<
+        Option<catapulte_domain::port::template_repository::StoredTemplate>,
+        catapulte_domain::port::template_repository::TemplateRepositoryError,
+    > {
+        use catapulte_domain::port::template_repository::TemplateRepository as R;
+        match self {
+            Self::Sqlite(a) => R::latest(a, name).await,
+            Self::Postgres(a) => R::latest(a, name).await,
+        }
+    }
+
+    async fn list(
+        &self,
+    ) -> Result<
+        Vec<catapulte_domain::port::template_repository::StoredTemplate>,
+        catapulte_domain::port::template_repository::TemplateRepositoryError,
+    > {
+        use catapulte_domain::port::template_repository::TemplateRepository as R;
+        match self {
+            Self::Sqlite(a) => R::list(a).await,
+            Self::Postgres(a) => R::list(a).await,
+        }
+    }
+
+    async fn put(
+        &self,
+        name: &str,
+        source: &str,
+        created_at_ms: i64,
+    ) -> Result<
+        catapulte_domain::port::template_repository::StoredTemplate,
+        catapulte_domain::port::template_repository::TemplateRepositoryError,
+    > {
+        use catapulte_domain::port::template_repository::TemplateRepository as R;
+        match self {
+            Self::Sqlite(a) => R::put(a, name, source, created_at_ms).await,
+            Self::Postgres(a) => R::put(a, name, source, created_at_ms).await,
+        }
+    }
+
+    async fn delete(
+        &self,
+        name: &str,
+    ) -> Result<bool, catapulte_domain::port::template_repository::TemplateRepositoryError> {
+        use catapulte_domain::port::template_repository::TemplateRepository as R;
+        match self {
+            Self::Sqlite(a) => R::delete(a, name).await,
+            Self::Postgres(a) => R::delete(a, name).await,
+        }
+    }
+}
+
 impl catapulte_domain::port::email_lookup::EmailLookup for StorageAdapter {
     async fn find(
         &self,

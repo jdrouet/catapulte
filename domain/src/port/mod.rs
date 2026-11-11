@@ -13,4 +13,5 @@ pub mod sender_usage;
 pub mod suppression_repository;
 pub mod template_interpolator;
 pub mod template_renderer;
+pub mod template_repository;
 pub mod template_resolver;
