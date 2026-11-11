@@ -153,4 +153,40 @@ Follows #815 and implements #816.
 
 ### Measurements
 
-To be filled in once the implementation is measured.
+Measured on one Linux development machine with the debug test build and a release build.
+Treat the numbers as orders of magnitude.
+
+**Spawn cost.** One child round trip for a trivial template (spawn, request, render,
+response, exit):
+
+| Build | Samples | Median | p99 |
+|---|---|---|---|
+| debug (integration test through the sandbox) | 60 | 3.4 ms | 4.8 ms |
+| release (child only, driven from a script) | 300 | 3.4 ms | 10.2 ms |
+
+The cost is small against the 7 s deadline, which is why a warm pool is not needed yet.
+
+**Memory.** The peak virtual size (`VmPeak`, sampled while the child runs, so a lower bound)
+of the debug build was 61 MiB for a 5,000-row table and 61 MiB for a 3.4 MiB request with a
+0.9 MiB response. The release build peaked at about 32 MiB for a trivial job. The default
+limit of 256 MiB is above four times the debug peak, so it stays.
+With a 40 MB limit a 2.5 MiB request aborts the child on a failed allocation (SIGABRT), and
+with 30 MB or less the child fails earlier with a typed setup failure. Both are infrastructure
+failures.
+
+**Hostile templates.** "In process" is the same job run in a child without any limit, which is
+what the worker would experience. Mechanisms were observed, not assumed.
+
+| Template | In process | In the sandbox | Mechanism |
+|---|---|---|---|
+| `~` on a list doubled 40 times | still running after 25 s; virtual size 1,056 MiB and growing | about 2 s | CPU limit (SIGXCPU), permanent |
+| `~` on a list doubled 20 times | 0.5 s | 0.3 to 0.5 s | typed budget from the output cap, permanent |
+| `==` on two towers built with 28 doublings | still running after 25 s; 32 MiB, constant | about 2 s | CPU limit (SIGXCPU), permanent |
+| a `* 1000` list repeated and formatted | 0.16 s | 0.07 to 0.5 s | typed budget from the formatter bound, permanent |
+| 50,000 nested MJML wrappers | aborts the process in 50 ms | child aborts in 10 ms | stack overflow (SIGABRT), infrastructure |
+
+The `~` template at 40 doublings is limited by CPU time, not by the address-space limit, so it
+is a permanent failure, not an infrastructure one. It grows memory slowly (about 535 MiB
+resident after 25 s), so a machine with a much faster CPU than the one measured could reach the
+address-space limit first. That case is an abort, classified as infrastructure and retried up
+to the worker's attempt limit.
