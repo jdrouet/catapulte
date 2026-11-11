@@ -149,7 +149,8 @@ For each `{NAME}` in the list:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CATAPULTE_SENDER_{NAME}_HOST` | **(Required)** SMTP hostname | - |
+| `CATAPULTE_SENDER_{NAME}_KIND` | `smtp` or `sink` (see [Sink sender](#sink-sender-testing)) | `smtp` |
+| `CATAPULTE_SENDER_{NAME}_HOST` | **(Required for `smtp`)** SMTP hostname | - |
 | `CATAPULTE_SENDER_{NAME}_PORT` | SMTP port | `587` |
 | `CATAPULTE_SENDER_{NAME}_USERNAME` | SMTP username | - |
 | `CATAPULTE_SENDER_{NAME}_PASSWORD` | SMTP password | - |
@@ -166,6 +167,17 @@ minute between sends. Pool size and idle timeout are not configurable yet (there
 in-flight sending today that would make a larger pool useful); the knobs will arrive with
 intra-worker concurrency. If a pooled connection was dropped by the server while idle, the next
 send on it fails and is retried through the normal queue retry and alternate-sender fallback.
+
+#### Sink sender (testing)
+
+A sender with `CATAPULTE_SENDER_{NAME}_KIND=sink` needs no host, port, credentials or TLS. Emails
+go through validation, rendering, attachment handling and events as usual and reach
+`delivery.succeeded`, but nothing is sent over SMTP: the message is built and then discarded.
+Use it in CI and staging. Priority, quota and `MATCH_DOMAIN` routing apply to a sink like any
+other sender, and startup logs a warning for each sink. Do not mix a sink into production
+routes: when an SMTP sender fails or is over quota, an eligible sink accepts the message,
+discards it and reports `delivery.succeeded`. Submission still checks the estimated size against
+`CATAPULTE_MAX_MESSAGE_BYTES`; only the final wire-size check is skipped for a sink.
 
 #### DKIM signing
 

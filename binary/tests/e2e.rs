@@ -1116,3 +1116,86 @@ async fn multi_sender_routes_by_sender_domain() {
         "marketing should have sent_in_range == 1"
     );
 }
+
+#[tokio::test]
+async fn sink_sender_reaches_delivery_succeeded_without_any_smtp_server() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_sink.db");
+    let http_port = free_port();
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+            api_key: None,
+            request_timeout: std::time::Duration::from_secs(30),
+        },
+        inbound_nats: None,
+        smtp: MultiSenderConfig::empty().with_sink_sender("ci", 100),
+        resolver: base_resolver(),
+        worker: WorkerConfig::default(),
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
+        attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
+        max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
+    };
+
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if client
+            .post(format!("http://127.0.0.1:{http_port}/emails"))
+            .body("")
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{http_port}/emails"))
+        .json(&serde_json::json!({
+            "sender": "sender@example.com",
+            "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+            "body": { "kind": "plain", "text": "discarded by the sink" },
+            "variables": {}
+        }))
+        .send()
+        .await
+        .expect("POST /emails failed");
+    assert!(resp.status().is_success(), "POST failed: {}", resp.status());
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let id = body["id"].as_str().expect("id field missing").to_owned();
+
+    let events_url = format!("http://127.0.0.1:{http_port}/emails/{id}/events");
+    let mut delivered = false;
+    for _ in 0..100 {
+        if let Ok(resp) = client.get(&events_url).send().await
+            && let Ok(body) = resp.json::<serde_json::Value>().await
+            && body["events"].as_array().is_some_and(|events| {
+                events
+                    .iter()
+                    .any(|e| e["event_type"].as_str() == Some("delivery.succeeded"))
+            })
+        {
+            delivered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(delivered, "no delivery.succeeded event with a sink sender");
+}
