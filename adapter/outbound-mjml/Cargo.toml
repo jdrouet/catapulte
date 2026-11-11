@@ -13,11 +13,13 @@ workspace = true
 anyhow = { workspace = true }
 async-trait = "0.1.89"
 catapulte-domain = { path = "../../domain" }
-mrml = { version = "6.0.1", default-features = false, features = ["parse", "render", "local-loader", "http-loader-async-reqwest"] }
+mrml = { version = "6.0.1", default-features = false, features = ["parse", "render", "local-loader", "async"] }
 tokio = { workspace = true, features = ["rt"] }
+reqwest = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
+wiremock = "0.6"
