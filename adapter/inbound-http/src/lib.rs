@@ -15,6 +15,7 @@ use axum::routing::post;
 use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
 use catapulte_domain::use_case::list_events::ListEventsUseCase;
 use catapulte_domain::use_case::list_senders::ListSendersUseCase;
+use catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase;
 use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 use tokio_util::sync::CancellationToken;
 
@@ -38,6 +39,7 @@ pub trait HttpServerState: ReadinessState {
     fn list_emails(&self) -> &impl ListEmailsUseCase;
     fn list_events(&self) -> &impl ListEventsUseCase;
     fn list_senders(&self) -> &impl ListSendersUseCase;
+    fn manage_suppressions(&self) -> &impl ManageSuppressionsUseCase;
 }
 
 /// Builds the application router.
@@ -76,6 +78,18 @@ pub fn router<S: HttpServerState>(
         .route("/senders", get(crate::routes::senders::list_senders::<S>))
         .layer(timeout_layer);
 
+    let suppression_routes = Router::new()
+        .route(
+            "/suppressions",
+            get(crate::routes::suppressions::list_suppressions::<S>)
+                .post(crate::routes::suppressions::add_suppressions::<S>),
+        )
+        .route(
+            "/suppressions/{address}",
+            axum::routing::delete(crate::routes::suppressions::delete_suppression::<S>),
+        )
+        .layer(timeout_layer);
+
     let submit_routes = Router::new()
         .route("/emails", post(crate::routes::emails::submit_email::<S>))
         .route(
@@ -83,7 +97,10 @@ pub fn router<S: HttpServerState>(
             post(crate::routes::emails::submit_email_batch::<S>),
         );
 
-    let protected_routes = read_routes.merge(submit_routes).with_state(state);
+    let protected_routes = read_routes
+        .merge(suppression_routes)
+        .merge(submit_routes)
+        .with_state(state);
 
     let protected_routes = match auth {
         Some(auth) => protected_routes

@@ -5,6 +5,7 @@ pub mod event_publisher;
 pub mod event_repository;
 mod health;
 pub mod sender_usage;
+pub mod suppression_repository;
 
 use anyhow::Context;
 use sqlx::PgPool;

@@ -237,6 +237,19 @@ pub(crate) async fn require_api_key(
     Ok(next.run(request).await)
 }
 
+/// Rejects a caller whose key is not an administrator.
+///
+/// # Errors
+///
+/// Returns `AppError::Forbidden` for a non-admin identity.
+pub fn require_admin(identity: &ApiKeyIdentity) -> Result<(), crate::error::AppError> {
+    if identity.admin {
+        Ok(())
+    } else {
+        Err(crate::error::AppError::Forbidden)
+    }
+}
+
 /// Used when authentication is off: every caller is the trusted administrator.
 pub(crate) async fn trust_every_caller(
     mut request: Request,

@@ -11,6 +11,16 @@ pub const WORKER_EVENT_TYPES: &[&str] = &[
     "delivery.failed",
 ];
 
+/// Event types that belong to the delivery pipeline. Only these decide whether an email can
+/// still be delivered; any other event is informational.
+pub const PIPELINE_EVENT_TYPES: &[&str] = &[
+    "queued",
+    "sending",
+    "retrying",
+    "delivery.succeeded",
+    "delivery.failed",
+];
+
 /// Event types that settle an email's status; every other event is informational.
 pub const TERMINAL_EVENT_TYPES: &[&str] = &["delivery.succeeded", "delivery.failed"];
 
@@ -49,6 +59,12 @@ pub enum LifecycleEvent {
         sender_name: Option<SenderName>,
         correlation_id: Option<String>,
     },
+    /// Informational: recipients were dropped because they are on the suppression list.
+    Suppressed {
+        id: EmailId,
+        addresses: Vec<String>,
+        correlation_id: Option<String>,
+    },
 }
 
 impl LifecycleEvent {
@@ -61,6 +77,7 @@ impl LifecycleEvent {
             Self::Sent { .. } => "delivery.succeeded",
             Self::Retrying { .. } => "retrying",
             Self::Failed { .. } => "delivery.failed",
+            Self::Suppressed { .. } => "suppressed",
         }
     }
 
@@ -72,7 +89,8 @@ impl LifecycleEvent {
             | Self::Sending { id, .. }
             | Self::Sent { id, .. }
             | Self::Retrying { id, .. }
-            | Self::Failed { id, .. } => id,
+            | Self::Failed { id, .. }
+            | Self::Suppressed { id, .. } => id,
         }
     }
 
@@ -83,7 +101,7 @@ impl LifecycleEvent {
     #[must_use]
     pub fn sender_name(&self) -> Option<&SenderName> {
         match self {
-            Self::Queued { .. } | Self::Sending { .. } => None,
+            Self::Queued { .. } | Self::Sending { .. } | Self::Suppressed { .. } => None,
             Self::Sent { sender_name, .. } => Some(sender_name),
             Self::Retrying { sender_name, .. } | Self::Failed { sender_name, .. } => {
                 sender_name.as_ref()
@@ -112,6 +130,11 @@ impl LifecycleEvent {
             Self::Queued { correlation_id, .. } => {
                 serde_json::json!({ "correlation_id": correlation_id })
             }
+            Self::Suppressed {
+                addresses,
+                correlation_id,
+                ..
+            } => serde_json::json!({ "addresses": addresses, "correlation_id": correlation_id }),
             Self::Sending {
                 attempt,
                 correlation_id,
@@ -161,6 +184,18 @@ mod tests {
     use crate::entity::email::EmailId;
     use crate::entity::error_class::ErrorClass;
     use crate::entity::sender::SenderName;
+
+    #[test]
+    fn suppressed_is_informational_for_status_and_worker_evidence() {
+        let e = LifecycleEvent::Suppressed {
+            id: EmailId::default(),
+            addresses: vec!["a@x.com".to_owned()],
+            correlation_id: None,
+        };
+        assert_eq!(e.event_type(), "suppressed");
+        assert!(!TERMINAL_EVENT_TYPES.contains(&e.event_type()));
+        assert!(!WORKER_EVENT_TYPES.contains(&e.event_type()));
+    }
 
     #[test]
     fn event_type_queued() {

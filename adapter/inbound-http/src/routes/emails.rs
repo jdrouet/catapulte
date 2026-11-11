@@ -80,6 +80,7 @@ pub async fn submit_email_batch<S: HttpServerState>(
                 Err(
                     e @ (SubmitEmailError::MessageTooLarge { .. }
                     | SubmitEmailError::SenderDomainNotAllowed { .. }
+                    | SubmitEmailError::AllRecipientsSuppressed
                     | SubmitEmailError::ReservationIncomplete { .. }),
                 ) => {
                     results.push(BatchItemResultDto::Rejected {
@@ -444,6 +445,13 @@ mod tests {
         fn list_senders(&self) -> &impl ListSendersUseCase {
             &NoopListSenders
         }
+
+        fn manage_suppressions(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
+        {
+            &crate::routes::suppressions::NoopManageSuppressions
+        }
     }
 
     #[derive(Clone)]
@@ -476,6 +484,13 @@ mod tests {
         fn list_senders(&self) -> &impl ListSendersUseCase {
             &NoopListSenders
         }
+
+        fn manage_suppressions(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
+        {
+            &crate::routes::suppressions::NoopManageSuppressions
+        }
     }
 
     #[derive(Clone)]
@@ -506,6 +521,13 @@ mod tests {
 
         fn list_senders(&self) -> &impl ListSendersUseCase {
             &NoopListSenders
+        }
+
+        fn manage_suppressions(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
+        {
+            &crate::routes::suppressions::NoopManageSuppressions
         }
     }
 
@@ -1352,6 +1374,13 @@ mod tests {
 
         fn list_senders(&self) -> &impl ListSendersUseCase {
             &NoopListSenders
+        }
+
+        fn manage_suppressions(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
+        {
+            &crate::routes::suppressions::NoopManageSuppressions
         }
     }
 

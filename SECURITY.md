@@ -61,7 +61,7 @@ The following are **out of scope**:
   limiting or abuse protection by design; operators are expected to run it
   behind a gateway or reverse proxy that enforces limits.
 - Features explicitly listed as out of scope in the [readme](./readme.md)
-  (bounce ingestion, scheduled sends, suppression lists).
+  (bounce ingestion, scheduled sends).
 - Vulnerabilities already tracked by the repository's dependency scanning, or
   in dependencies that are not reachable from the shipped binary (for example,
   test-only tooling).

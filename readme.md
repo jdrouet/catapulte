@@ -418,7 +418,7 @@ Emitted gauges:
 
 ## Out of scope (for now)
 
-Bounce and complaint ingestion, scheduled sends, recipient suppression lists. Listed so they aren't mistaken for missing stories.
+Bounce and complaint ingestion and scheduled sends. Listed so they aren't mistaken for missing stories.
 
 ## License
 
