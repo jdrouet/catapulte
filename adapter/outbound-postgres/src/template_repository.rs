@@ -22,6 +22,41 @@ fn to_template(row: &sqlx::postgres::PgRow) -> anyhow::Result<StoredTemplate> {
     })
 }
 
+const MAX_PUT_ATTEMPTS: u32 = 6;
+
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    e.as_database_error()
+        .and_then(sqlx::error::DatabaseError::code)
+        .is_some_and(|code| code == "23505")
+}
+
+impl PostgresAdapter {
+    async fn insert_next_version(
+        &self,
+        name: &str,
+        source: &str,
+        created_at_ms: i64,
+    ) -> Result<sqlx::postgres::PgRow, sqlx::Error> {
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(name)
+            .execute(&mut *tx)
+            .await?;
+        let row = sqlx::query(
+            "INSERT INTO templates (name, version, source, created_at_ms) \
+             SELECT $1::text, COALESCE(MAX(version), 0) + 1, $2::text, $3::bigint FROM templates WHERE name = $1::text \
+             RETURNING name, version, source, created_at_ms",
+        )
+        .bind(name)
+        .bind(source)
+        .bind(created_at_ms)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row)
+    }
+}
+
 impl TemplateRepository for PostgresAdapter {
     async fn latest(&self, name: &str) -> Result<Option<StoredTemplate>, TemplateRepositoryError> {
         let row = sqlx::query(
@@ -58,18 +93,17 @@ impl TemplateRepository for PostgresAdapter {
         source: &str,
         created_at_ms: i64,
     ) -> Result<StoredTemplate, TemplateRepositoryError> {
-        let row = sqlx::query(
-            "INSERT INTO templates (name, version, source, created_at_ms) \
-             SELECT $1::text, COALESCE(MAX(version), 0) + 1, $2::text, $3::bigint FROM templates WHERE name = $1::text \
-             RETURNING name, version, source, created_at_ms",
-        )
-        .bind(name)
-        .bind(source)
-        .bind(created_at_ms)
-        .fetch_one(self.pool())
-        .await
-        .context("storing template")
-        .map_err(storage)?;
+        // The advisory lock serialises writers of one name; the retry covers any conflict that
+        // still slips through, for example from a writer that bypasses this code.
+        let mut attempt = 0;
+        let row = loop {
+            attempt += 1;
+            match self.insert_next_version(name, source, created_at_ms).await {
+                Ok(row) => break row,
+                Err(e) if attempt < MAX_PUT_ATTEMPTS && is_unique_violation(&e) => {}
+                Err(e) => return Err(storage(anyhow::Error::new(e).context("storing template"))),
+            }
+        };
         to_template(&row).map_err(storage)
     }
 
@@ -165,5 +199,31 @@ mod tests {
         assert!(!adapter.delete("welcome").await.unwrap());
         assert!(adapter.latest("welcome").await.unwrap().is_none());
         assert_eq!(adapter.put("welcome", "c", 3).await.unwrap().version, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_puts_of_one_name_get_consecutive_versions() {
+        let adapter = fresh_adapter().await;
+
+        let tasks: Vec<_> = (0..8)
+            .map(|i| {
+                let adapter = adapter.clone();
+                tokio::spawn(async move {
+                    adapter
+                        .put("fresh", &format!("source {i}"), i)
+                        .await
+                        .unwrap()
+                        .version
+                })
+            })
+            .collect();
+        let mut versions = Vec::new();
+        for task in tasks {
+            versions.push(task.await.unwrap());
+        }
+        versions.sort_unstable();
+
+        assert_eq!(versions, (1..=8).collect::<Vec<u32>>());
+        assert_eq!(adapter.latest("fresh").await.unwrap().unwrap().version, 8);
     }
 }
