@@ -247,6 +247,7 @@ fn input_with(
             ),
             mailto: Some(format!("unsub-{correlation_id}@example.com")),
         }),
+        send_at_ms: None,
     }
 }
 

@@ -5,7 +5,7 @@ use crate::entity::error_class::ErrorClass;
 use crate::entity::sender::SenderName;
 
 /// Event types a worker emits; each proves the queue stored the message.
-/// Informational events (`queued`, `suppressed`, `bounced`, `complained`) do not.
+/// Informational events (`queued`, `scheduled`, `suppressed`, `bounced`, `complained`) do not.
 pub const WORKER_EVENT_TYPES: &[&str] = &[
     "sending",
     "retrying",
@@ -70,6 +70,12 @@ pub enum LifecycleEvent {
         id: EmailId,
         context: EventContext,
     },
+    /// Informational: the email is accepted and will not be sent before `send_at_ms`.
+    Scheduled {
+        id: EmailId,
+        send_at_ms: i64,
+        context: EventContext,
+    },
     Sending {
         id: EmailId,
         attempt: u32,
@@ -129,6 +135,7 @@ impl LifecycleEvent {
     pub fn event_type(&self) -> &'static str {
         match self {
             Self::Queued { .. } => "queued",
+            Self::Scheduled { .. } => "scheduled",
             Self::Sending { .. } => "sending",
             Self::Sent { .. } => "delivery.succeeded",
             Self::Retrying { .. } => "retrying",
@@ -144,6 +151,7 @@ impl LifecycleEvent {
     pub fn email_id(&self) -> &EmailId {
         match self {
             Self::Queued { id, .. }
+            | Self::Scheduled { id, .. }
             | Self::Sending { id, .. }
             | Self::Sent { id, .. }
             | Self::Retrying { id, .. }
@@ -162,6 +170,7 @@ impl LifecycleEvent {
     pub fn sender_name(&self) -> Option<&SenderName> {
         match self {
             Self::Queued { .. }
+            | Self::Scheduled { .. }
             | Self::Sending { .. }
             | Self::Suppressed { .. }
             | Self::Bounced { .. }
@@ -192,6 +201,11 @@ impl LifecycleEvent {
     pub fn payload(&self) -> serde_json::Value {
         let (mut payload, context) = match self {
             Self::Queued { context, .. } => (serde_json::json!({}), context),
+            Self::Scheduled {
+                send_at_ms,
+                context,
+                ..
+            } => (serde_json::json!({ "send_at_ms": send_at_ms }), context),
             Self::Suppressed {
                 addresses, context, ..
             } => (serde_json::json!({ "addresses": addresses }), context),
@@ -282,6 +296,28 @@ mod tests {
         assert_eq!(e.event_type(), "suppressed");
         assert!(!TERMINAL_EVENT_TYPES.contains(&e.event_type()));
         assert!(!WORKER_EVENT_TYPES.contains(&e.event_type()));
+    }
+
+    #[test]
+    fn scheduled_is_informational_and_carries_send_at() {
+        let e = LifecycleEvent::Scheduled {
+            id: EmailId::default(),
+            send_at_ms: 42,
+            context: EventContext::with_correlation(None),
+        };
+        assert_eq!(e.event_type(), "scheduled");
+        assert_eq!(
+            e.payload(),
+            serde_json::json!({ "send_at_ms": 42, "correlation_id": null })
+        );
+        assert!(e.sender_name().is_none());
+        for list in [
+            TERMINAL_EVENT_TYPES,
+            PIPELINE_EVENT_TYPES,
+            WORKER_EVENT_TYPES,
+        ] {
+            assert!(!list.contains(&"scheduled"));
+        }
     }
 
     fn ctx() -> EventContext {

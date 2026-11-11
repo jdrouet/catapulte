@@ -177,6 +177,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
         allowed_sender_domains: None,
         bounce: None,
     };
@@ -343,6 +344,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
         allowed_sender_domains: None,
         bounce: None,
     };
@@ -488,6 +490,7 @@ async fn sent_email_blob_is_deleted_after_delivery() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
         allowed_sender_domains: None,
         bounce: None,
     };
@@ -634,6 +637,7 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
         allowed_sender_domains: None,
         bounce: None,
     };
@@ -786,6 +790,7 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
         allowed_sender_domains: None,
         bounce: None,
     };
@@ -879,6 +884,156 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn scheduled_submit_via_inbound_nats_emits_scheduled_and_acks_out_of_range() {
+    use futures_util::StreamExt as _;
+
+    let nats = start_nats().await;
+    let nats_port = nats.get_host_port_ipv4(4222).await.unwrap();
+    wait_for_tcp(nats_port, Duration::from_secs(15)).await;
+    let nats_url = format!("nats://127.0.0.1:{nats_port}");
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db_path = db_dir.path().join("catapulte_e2e_scheduled_nats.db");
+    let http_port = free_port();
+
+    let lifecycle_client = async_nats::connect(&nats_url).await.unwrap();
+    let mut lifecycle_sub = lifecycle_client
+        .subscribe("catapulte.lifecycle")
+        .await
+        .unwrap();
+
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+            auth: None,
+            feedback_secret: None,
+            request_timeout: std::time::Duration::from_secs(30),
+        },
+        inbound_nats: Some(catapulte_inbound_nats::server::InboundNatsConfig {
+            url: nats_url.clone(),
+            stream: "CATAPULTE_E2E_SCHED".to_owned(),
+            subject: "catapulte.sched.submissions".to_owned(),
+            consumer: "e2e-sched".to_owned(),
+            ack_wait_secs: 5,
+            max_deliver: 3,
+            backoff_secs: vec![1, 2, 3],
+        }),
+        smtp: base_smtp(free_port()),
+        resolver: base_resolver(),
+        worker: WorkerConfig::default(),
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::with_nats_events(
+            nats_url.clone(),
+            "catapulte.lifecycle".to_owned(),
+        ),
+        attachment_store: base_attachment_store(),
+        attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
+        max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
+        allowed_sender_domains: None,
+        bounce: None,
+    };
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        if client
+            .get(format!("http://127.0.0.1:{http_port}/emails"))
+            .send()
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let js = async_nats::jetstream::new(async_nats::connect(&nats_url).await.unwrap());
+    let now_ms = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let day_ms = 86_400_000_i64;
+    let publish = |key: &'static str, send_at_ms: i64| {
+        let js = js.clone();
+        async move {
+            let payload = serde_json::json!({
+                "idempotency_key": key,
+                "sender": "sender@example.com",
+                "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+                "body": { "kind": "plain", "text": "later" },
+                "send_at_ms": send_at_ms
+            });
+            js.publish(
+                "catapulte.sched.submissions",
+                serde_json::to_vec(&payload).unwrap().into(),
+            )
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        }
+    };
+    publish("too-far", now_ms + 31 * day_ms).await;
+    publish("in-range", now_ms + day_ms).await;
+
+    let mut scheduled_at = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while scheduled_at.is_none() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, lifecycle_sub.next()).await {
+            Ok(Some(msg)) => {
+                let body: serde_json::Value = serde_json::from_slice(&msg.payload).unwrap();
+                if body["event_type"].as_str() == Some("scheduled") {
+                    scheduled_at = body["payload"]["send_at_ms"].as_i64();
+                }
+            }
+            _ => break,
+        }
+    }
+    assert_eq!(scheduled_at, Some(now_ms + day_ms));
+
+    // The over-horizon message is acked and discarded, never redelivered or stored.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let stream = js.get_stream("CATAPULTE_E2E_SCHED").await.unwrap();
+    let info = stream.consumer_info("e2e-sched").await.unwrap();
+    assert_eq!(info.num_ack_pending, 0);
+    assert_eq!(info.num_redelivered, 0);
+
+    let listed: serde_json::Value = client
+        .get(format!("http://127.0.0.1:{http_port}/emails"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let keys: Vec<&str> = listed["emails"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["idempotency_key"].as_str())
+        .collect();
+    assert_eq!(keys, vec!["in-range"]);
+}
+
+#[tokio::test]
 async fn submit_email_with_disallowed_remote_attachment_returns_400() {
     let db_dir = tempfile::tempdir().unwrap();
     let db_path = db_dir.path().join("catapulte_e2e_disallowed_att.db");
@@ -913,6 +1068,7 @@ async fn submit_email_with_disallowed_remote_attachment_returns_400() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
         allowed_sender_domains: None,
         bounce: None,
     };
@@ -1027,6 +1183,7 @@ async fn multi_sender_routes_by_sender_domain() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
         allowed_sender_domains: None,
         bounce: None,
     };
@@ -1186,6 +1343,7 @@ async fn sink_sender_reaches_delivery_succeeded_without_any_smtp_server() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
         allowed_sender_domains: None,
         bounce: None,
     };
@@ -1342,6 +1500,7 @@ async fn start_app_with_sandbox(
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
         allowed_sender_domains: None,
         bounce,
     };

@@ -81,6 +81,8 @@ pub async fn submit_email_batch<S: HttpServerState>(
                     e @ (SubmitEmailError::MessageTooLarge { .. }
                     | SubmitEmailError::SenderDomainNotAllowed { .. }
                     | SubmitEmailError::AllRecipientsSuppressed
+                    | SubmitEmailError::SendAtOutOfRange
+                    | SubmitEmailError::SchedulingUnavailable
                     | SubmitEmailError::ReservationIncomplete { .. }),
                 ) => {
                     results.push(BatchItemResultDto::Rejected {
@@ -335,6 +337,12 @@ mod tests {
                 return Err(SubmitEmailError::SenderDomainNotAllowed {
                     domain: "b.c".to_owned(),
                 });
+            }
+            if input.subject.as_deref() == Some("send-at-out-of-range") {
+                return Err(SubmitEmailError::SendAtOutOfRange);
+            }
+            if input.subject.as_deref() == Some("scheduling-unavailable") {
+                return Err(SubmitEmailError::SchedulingUnavailable);
             }
             if input.subject.as_deref() == Some("incomplete") {
                 return Err(SubmitEmailError::ReservationIncomplete {
@@ -1362,12 +1370,14 @@ mod tests {
     #[derive(Clone)]
     struct CapturingSubmit {
         captured_bytes: Arc<Mutex<Vec<Vec<u8>>>>,
+        send_at: Arc<Mutex<Vec<Option<i64>>>>,
     }
 
     impl CapturingSubmit {
         fn new() -> Self {
             Self {
                 captured_bytes: Arc::new(Mutex::new(Vec::new())),
+                send_at: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -1375,6 +1385,7 @@ mod tests {
     impl SubmitEmailUseCase for CapturingSubmit {
         async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
             use catapulte_domain::use_case::submit_email::AttachmentInput;
+            self.send_at.lock().unwrap().push(input.send_at_ms);
             for att in input.attachments {
                 if let AttachmentInput::Inline { bytes, .. } = att {
                     self.captured_bytes.lock().unwrap().push(bytes.to_vec());
@@ -1901,5 +1912,108 @@ mod tests {
             .unwrap();
         assert_eq!(single.status(), StatusCode::BAD_REQUEST);
         assert_eq!(batch.status(), single.status());
+    }
+
+    fn capturing_router() -> (axum::Router, Arc<Mutex<Vec<Option<i64>>>>) {
+        let submit = Arc::new(CapturingSubmit::new());
+        let send_at = submit.send_at.clone();
+        let app = router(
+            CapturingTestState {
+                submit,
+                list_emails: Arc::new(FakeListEmails::new()),
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        (app, send_at)
+    }
+
+    #[tokio::test]
+    async fn json_submit_forwards_send_at_ms() {
+        let (app, send_at) = capturing_router();
+        let mut payload = valid_email_payload("r@x.y");
+        payload["send_at_ms"] = serde_json::json!(1_900_000_000_000_i64);
+
+        let response = app
+            .oneshot(post_json(serde_json::to_vec(&payload).unwrap()))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(*send_at.lock().unwrap(), vec![Some(1_900_000_000_000)]);
+    }
+
+    #[tokio::test]
+    async fn multipart_submit_forwards_send_at_ms() {
+        let (app, send_at) = capturing_router();
+        let envelope = serde_json::to_vec(&serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "send_at_ms": 1_900_000_000_000_i64
+        }))
+        .unwrap();
+        let body = multipart_body(
+            "b1",
+            &[("envelope", None, Some("application/json"), &envelope)],
+        );
+
+        let response = app.oneshot(post_multipart("b1", body)).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(*send_at.lock().unwrap(), vec![Some(1_900_000_000_000)]);
+    }
+
+    #[tokio::test]
+    async fn single_submit_maps_scheduling_errors_to_400_and_422() {
+        for (subject, status, message) in [
+            (
+                "send-at-out-of-range",
+                StatusCode::BAD_REQUEST,
+                "send_at_ms is in the past or beyond the maximum schedule horizon",
+            ),
+            (
+                "scheduling-unavailable",
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "scheduled sends are not available on this queue backend",
+            ),
+        ] {
+            let mut payload = valid_email_payload("r@x.y");
+            payload["subject"] = serde_json::json!(subject);
+            let response = make_router()
+                .oneshot(post_json(serde_json::to_vec(&payload).unwrap()))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{subject}");
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(json["error"].as_str(), Some(message));
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_items_with_scheduling_errors_are_rejected_while_others_are_accepted() {
+        let mut out_of_range = valid_email_payload("r2@x.y");
+        out_of_range["subject"] = serde_json::json!("send-at-out-of-range");
+        let mut unavailable = valid_email_payload("r3@x.y");
+        unavailable["subject"] = serde_json::json!("scheduling-unavailable");
+        let payload = serde_json::json!({
+            "emails": [valid_email_payload("r1@x.y"), out_of_range, unavailable]
+        });
+
+        let response = make_router()
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results[0]["status"].as_str(), Some("accepted"));
+        assert_eq!(results[1]["status"].as_str(), Some("rejected"));
+        assert_eq!(results[2]["status"].as_str(), Some("rejected"));
     }
 }

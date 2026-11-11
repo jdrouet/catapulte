@@ -961,6 +961,7 @@ fn app_config(http_port: u16, dir: &tempfile::TempDir) -> catapulte::AppConfig {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        max_schedule_ahead: std::time::Duration::from_hours(720),
         allowed_sender_domains: None,
         bounce: None,
     }

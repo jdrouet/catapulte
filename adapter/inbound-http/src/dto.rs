@@ -635,6 +635,9 @@ pub struct EnvelopeCoreDto {
     pub tags: Vec<String>,
     #[serde(default)]
     pub metadata: std::collections::BTreeMap<String, String>,
+    /// Earliest delivery time in epoch milliseconds.
+    #[serde(default)]
+    pub send_at_ms: Option<i64>,
 }
 
 fn json_contains_nul(value: &serde_json::Value) -> bool {
@@ -811,6 +814,7 @@ impl EnvelopeCoreDto {
             unsubscribe,
             tags: self.tags,
             metadata: self.metadata,
+            send_at_ms: self.send_at_ms,
         })
     }
 }
@@ -883,6 +887,7 @@ mod tests {
             tags: vec![],
             metadata: std::collections::BTreeMap::new(),
             headers: std::collections::BTreeMap::new(),
+            send_at_ms: None,
         }
     }
 
@@ -951,6 +956,16 @@ mod tests {
             "variables": { "k": "a\nb" }
         }));
         assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn send_at_ms_is_forwarded_and_defaults_to_none() {
+        let with = convert_with(serde_json::json!({"send_at_ms": 1_900_000_000_000_i64})).unwrap();
+        assert_eq!(with.send_at_ms, Some(1_900_000_000_000));
+        assert_eq!(
+            convert_with(serde_json::json!({})).unwrap().send_at_ms,
+            None
+        );
     }
 
     #[test]

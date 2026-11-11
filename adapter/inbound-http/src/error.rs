@@ -75,6 +75,14 @@ impl IntoResponse for AppError {
             | Self::Submit(
                 SubmitEmailError::AttachmentFetch { .. } | SubmitEmailError::MessageTooLarge { .. },
             ) => (StatusCode::BAD_REQUEST, "invalid request"),
+            Self::Submit(SubmitEmailError::SendAtOutOfRange) => (
+                StatusCode::BAD_REQUEST,
+                "send_at_ms is in the past or beyond the maximum schedule horizon",
+            ),
+            Self::Submit(SubmitEmailError::SchedulingUnavailable) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "scheduled sends are not available on this queue backend",
+            ),
             Self::Submit(SubmitEmailError::SenderDomainNotAllowed { .. }) => {
                 (StatusCode::FORBIDDEN, "sender domain is not allowed")
             }
@@ -145,5 +153,22 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE
         );
         assert_eq!(invalid.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn scheduling_errors_map_to_400_and_422() {
+        use catapulte_domain::use_case::submit_email::SubmitEmailError;
+
+        let out_of_range = AppError::Submit(SubmitEmailError::SendAtOutOfRange);
+        let unavailable = AppError::Submit(SubmitEmailError::SchedulingUnavailable);
+
+        assert_eq!(
+            out_of_range.into_response().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            unavailable.into_response().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 }

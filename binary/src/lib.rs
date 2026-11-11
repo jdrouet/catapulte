@@ -50,6 +50,8 @@ pub struct AppConfig {
     pub gc_grace_period: Duration,
     /// Single limit shared by the submit-time estimate and the SMTP wire-size check.
     pub max_message_bytes: u64,
+    /// Furthest `send_at_ms` accepted on queues that can delay delivery.
+    pub max_schedule_ahead: Duration,
     /// `None` accepts any sender domain; `Some` of an empty set denies every sender.
     pub allowed_sender_domains: Option<std::collections::HashSet<String>>,
     /// Signed return paths for bounces; `None` keeps the sender address as `MAIL FROM`.
@@ -89,6 +91,24 @@ fn parse_max_message_bytes(
         Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!("{KEY} is not valid unicode"),
         Ok(raw) => match raw.trim().parse::<u64>() {
             Ok(n) if n > 0 => Ok(n),
+            _ => anyhow::bail!("{KEY} must be a positive integer, got {raw:?}"),
+        },
+    }
+}
+
+const DEFAULT_MAX_SCHEDULE_AHEAD_SECS: u64 = 2_592_000;
+
+fn parse_max_schedule_ahead(
+    lookup: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> anyhow::Result<Duration> {
+    const KEY: &str = "CATAPULTE_MAX_SCHEDULE_AHEAD_SECS";
+    match lookup(KEY) {
+        Err(std::env::VarError::NotPresent) => {
+            Ok(Duration::from_secs(DEFAULT_MAX_SCHEDULE_AHEAD_SECS))
+        }
+        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!("{KEY} is not valid unicode"),
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(n) if n > 0 => Ok(Duration::from_secs(n)),
             _ => anyhow::bail!("{KEY} must be a positive integer, got {raw:?}"),
         },
     }
@@ -154,6 +174,7 @@ impl AppConfig {
             .unwrap_or(3600);
         let gc_grace_period = Duration::from_secs(gc_grace_secs);
         let max_message_bytes = parse_max_message_bytes(|k| std::env::var(k))?;
+        let max_schedule_ahead = parse_max_schedule_ahead(|k| std::env::var(k))?;
         let allowed_sender_domains = parse_allowed_sender_domains(|k| std::env::var(k))?;
         let bounce = parse_bounce_config(|k| std::env::var(k))?;
         Ok(Self {
@@ -172,6 +193,7 @@ impl AppConfig {
             gc_sweep_interval,
             gc_grace_period,
             max_message_bytes,
+            max_schedule_ahead,
             allowed_sender_domains,
             bounce,
         })
@@ -285,6 +307,12 @@ impl AppConfig {
             .with_limits(SubmitLimits {
                 max_message_bytes: self.max_message_bytes,
                 allowed_sender_domains: self.allowed_sender_domains.clone(),
+                // Only the storage queues can hold a row back until its send time.
+                max_schedule_ahead: matches!(
+                    queue,
+                    queue::QueueAdapter::Sqlite(_) | queue::QueueAdapter::Postgres(_)
+                )
+                .then_some(self.max_schedule_ahead),
             }),
         );
         self.render
@@ -519,7 +547,10 @@ impl Application {
 mod tests {
     use std::env::VarError;
 
-    use super::{parse_allowed_sender_domains, parse_bounce_config, parse_max_message_bytes};
+    use super::{
+        parse_allowed_sender_domains, parse_bounce_config, parse_max_message_bytes,
+        parse_max_schedule_ahead,
+    };
 
     fn lookup(value: Option<&'static str>) -> impl Fn(&str) -> Result<String, VarError> {
         move |_| value.map(str::to_owned).ok_or(VarError::NotPresent)
@@ -548,6 +579,30 @@ mod tests {
         }
         let non_unicode = |_: &str| Err(VarError::NotUnicode(std::ffi::OsString::from("x")));
         assert!(parse_max_message_bytes(non_unicode).is_err());
+    }
+
+    #[test]
+    fn max_schedule_ahead_defaults_to_30_days_and_parses_seconds() {
+        assert_eq!(
+            parse_max_schedule_ahead(lookup(None)).unwrap(),
+            std::time::Duration::from_hours(720)
+        );
+        assert_eq!(
+            parse_max_schedule_ahead(lookup(Some(" 3600 "))).unwrap(),
+            std::time::Duration::from_hours(1)
+        );
+    }
+
+    #[test]
+    fn max_schedule_ahead_rejects_zero_invalid_and_non_unicode() {
+        for bad in ["0", "abc", "-1", ""] {
+            assert!(
+                parse_max_schedule_ahead(lookup(Some(bad))).is_err(),
+                "{bad:?}"
+            );
+        }
+        let non_unicode = |_: &str| Err(VarError::NotUnicode(std::ffi::OsString::from("x")));
+        assert!(parse_max_schedule_ahead(non_unicode).is_err());
     }
 
     #[test]
