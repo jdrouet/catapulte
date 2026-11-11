@@ -2028,6 +2028,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idn_equivalent_recipients_are_all_suppressed() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[]);
+        let service = service_with(
+            &repo,
+            &queue,
+            &FakeEventPublisher::new(),
+            &FakeAttachmentStore::new(),
+        )
+        .with_suppression_list(FakeSuppressions::with(&["u@xn--bcher-kva.example"]));
+        let mut input = keyed_input("k", 10);
+        input.recipients = [
+            "u@bücher.example",
+            "U@BÜCHER.example",
+            "u@xn--bcher-kva.example",
+        ]
+        .map(|a| (RecipientKind::To, a.to_owned()))
+        .to_vec();
+
+        let err = service.execute(input).await.unwrap_err();
+
+        assert!(
+            matches!(err, SubmitEmailError::AllRecipientsSuppressed),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
     async fn suppression_added_after_acceptance_does_not_turn_a_resubmit_into_an_error() {
         let repo = KeyedRepository::new();
         let queue = ScriptedQueue::failing(&[]);

@@ -764,6 +764,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idn_equivalent_recipients_are_all_suppressed_by_the_worker() {
+        let (service, spy) = capturing_service();
+        let service =
+            service.with_suppression_list(FixedSuppressions(vec!["u@xn--bcher-kva.example"]));
+
+        let err = service
+            .execute(
+                EmailId::default(),
+                envelope_to(&[
+                    "u@bücher.example",
+                    "U@BÜCHER.example",
+                    "u@xn--bcher-kva.example",
+                ]),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ProcessQueuedEmailError::AllRecipientsSuppressed
+        ));
+        assert!(spy.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn all_recipients_suppressed_is_permanent_and_sends_nothing() {
         let (service, spy) = capturing_service();
         let service = service.with_suppression_list(FixedSuppressions(vec!["a@x.com"]));

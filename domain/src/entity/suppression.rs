@@ -3,6 +3,7 @@ use std::str::FromStr;
 use thiserror::Error;
 
 use crate::entity::email::{EmailId, bare_address};
+use crate::use_case::submit_email::normalize_sender_domain;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuppressionReason {
@@ -55,10 +56,22 @@ pub struct Suppression {
     pub source_email_id: Option<EmailId>,
 }
 
-/// The key a recipient is matched on: the bare address of a mailbox, lowercased.
+/// The canonical form of an address: lowercase local part and the domain in lowercase
+/// punycode, so `bücher`, `BÜCHER` and `xn--bcher-kva` are one address. `None` when the
+/// domain is not a valid hostname.
+#[must_use]
+pub fn normalize_suppression_address(address: &str) -> Option<String> {
+    let (local, domain) = address.trim().rsplit_once('@')?;
+    let domain = normalize_sender_domain(domain)?;
+    Some(format!("{}@{domain}", local.to_lowercase()))
+}
+
+/// The key a recipient is matched on: the canonical form of the bare address of a mailbox.
+/// An address that cannot be normalised falls back to its lowercase form.
 #[must_use]
 pub fn suppression_key(mailbox: &str) -> String {
-    bare_address(mailbox).to_ascii_lowercase()
+    let bare = bare_address(mailbox);
+    normalize_suppression_address(bare).unwrap_or_else(|| bare.to_lowercase())
 }
 
 #[cfg(test)]
@@ -69,6 +82,20 @@ mod tests {
     fn key_is_the_lowercased_bare_address() {
         assert_eq!(suppression_key("Ann <Ann@Example.COM>"), "ann@example.com");
         assert_eq!(suppression_key("a@b.c"), "a@b.c");
+    }
+
+    #[test]
+    fn idn_forms_of_one_address_share_a_key() {
+        let forms = [
+            "u@bücher.example",
+            "U@BÜCHER.example",
+            "u@xn--bcher-kva.example",
+        ];
+        for form in forms {
+            assert_eq!(suppression_key(form), "u@xn--bcher-kva.example", "{form}");
+        }
+        assert_eq!(normalize_suppression_address("nodomain"), None);
+        assert_eq!(normalize_suppression_address("u@bad_domain!"), None);
     }
 
     #[test]

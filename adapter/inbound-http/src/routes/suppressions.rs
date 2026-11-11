@@ -3,7 +3,9 @@ use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use catapulte_domain::entity::suppression::{Suppression, SuppressionReason};
+use catapulte_domain::entity::suppression::{
+    Suppression, SuppressionReason, normalize_suppression_address,
+};
 use catapulte_domain::port::suppression_repository::ListSuppressionsParams;
 use catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase;
 use lettre::Address;
@@ -65,8 +67,9 @@ fn parse_reason(raw: &str) -> Result<SuppressionReason, AppError> {
 fn normalize_address(raw: &str) -> Result<String, AppError> {
     raw.trim()
         .parse::<Address>()
-        .map(|a| a.to_string().to_ascii_lowercase())
-        .map_err(|_| AppError::BadRequestRaw(format!("invalid address {raw:?}")))
+        .ok()
+        .and_then(|a| normalize_suppression_address(a.as_ref()))
+        .ok_or_else(|| AppError::BadRequestRaw(format!("invalid address {raw:?}")))
 }
 
 /// # Errors
@@ -90,7 +93,9 @@ pub async fn list_suppressions<S: HttpServerState>(
         .manage_suppressions()
         .list(ListSuppressionsParams {
             reason,
-            address: query.address,
+            address: query
+                .address
+                .map(|a| normalize_suppression_address(&a).unwrap_or_else(|| a.to_lowercase())),
             limit,
             offset,
         })

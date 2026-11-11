@@ -11,6 +11,16 @@ pub const WORKER_EVENT_TYPES: &[&str] = &[
     "delivery.failed",
 ];
 
+/// Event types that belong to the delivery pipeline. Only these decide whether an email can
+/// still be delivered; any other event is informational.
+pub const PIPELINE_EVENT_TYPES: &[&str] = &[
+    "queued",
+    "sending",
+    "retrying",
+    "delivery.succeeded",
+    "delivery.failed",
+];
+
 /// Event types that settle an email's status; every other event is informational.
 pub const TERMINAL_EVENT_TYPES: &[&str] = &["delivery.succeeded", "delivery.failed"];
 

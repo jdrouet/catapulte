@@ -1690,3 +1690,44 @@ async fn suppressed_recipients_are_rejected_dropped_and_released_by_delete() {
     let status = get_json(&base, "secret-ops", &format!("/emails?id={partial}")).await;
     assert_eq!(status["emails"][0]["status"], "sent");
 }
+
+#[tokio::test]
+async fn idn_forms_of_a_suppressed_address_match_at_submit_and_delete() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_sink_app(suppression_auth(), &db_dir).await;
+    let added = send(
+        reqwest::Method::POST,
+        &base,
+        "secret-ops",
+        "/suppressions",
+        Some(serde_json::json!({ "suppressions": [{ "address": "u@bücher.example" }] })),
+    )
+    .await;
+    assert_eq!(added.status(), 204);
+    let listed = get_json(
+        &base,
+        "secret-ops",
+        "/suppressions?address=U@BÜCHER.example",
+    )
+    .await;
+    assert_eq!(
+        ids(&listed, "suppressions", "address"),
+        vec!["u@xn--bcher-kva.example"]
+    );
+
+    let other_form = serde_json::json!({
+        "recipients": [{ "kind": "to", "address": "U@xn--bcher-kva.example" }]
+    });
+    let rejected = submit_as(&base, "secret-a", "s@example.com", None, other_form).await;
+    assert_eq!(rejected.status(), 422);
+
+    let deleted = send(
+        reqwest::Method::DELETE,
+        &base,
+        "secret-ops",
+        "/suppressions/u@xn--bcher-kva.example",
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status(), 204);
+}

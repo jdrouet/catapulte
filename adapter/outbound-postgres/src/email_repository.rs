@@ -2,7 +2,9 @@ use anyhow::Context;
 use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
-use catapulte_domain::entity::lifecycle_event::{TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES};
+use catapulte_domain::entity::lifecycle_event::{
+    PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES,
+};
 use catapulte_domain::port::email_repository::{
     DuplicateState, EmailRecord, EmailRepository, EmailRepositoryError, EmailStatus, EnqueueState,
     ListEmailsParams, SaveResult,
@@ -17,8 +19,8 @@ use crate::dto::{
     UnsubscribeDto, recipients_to_dto,
 };
 
-fn terminal_types_sql() -> String {
-    TERMINAL_EVENT_TYPES
+fn sql_list(types: &[&str]) -> String {
+    types
         .iter()
         .map(|t| format!("'{t}'"))
         .collect::<Vec<_>>()
@@ -113,7 +115,7 @@ impl EmailRepository for PostgresAdapter {
             SELECT id, idempotency_key, subject, sender, recipients, created_at, latest_terminal_event_type \
             FROM email_status \
             WHERE 1=1",
-            terminal = terminal_types_sql(),
+            terminal = sql_list(TERMINAL_EVENT_TYPES),
         ));
 
         if let Some(id) = params.id {
@@ -156,7 +158,7 @@ impl EmailRepository for PostgresAdapter {
             Some(EmailStatus::Queued) => {
                 qb.push(format!(
                     " AND latest_terminal_event_type NOT IN ({})",
-                    terminal_types_sql()
+                    sql_list(TERMINAL_EVENT_TYPES)
                 ));
             }
             None => {}
@@ -280,13 +282,14 @@ impl EmailRepository for PostgresAdapter {
     }
 
     async fn list_all_attachment_blobs(&self) -> Result<Vec<BlobRef>, EmailRepositoryError> {
-        // Unlike status, any later event (e.g. a redelivered `sending`) revives an email: a
-        // duplicate copy can retry after a terminal event, so its blobs must outlive it.
+        // Unlike status, a later pipeline event (e.g. a redelivered `sending`) revives an email:
+        // a duplicate copy can retry after a terminal event. Informational events never do.
         let rows: Vec<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "WITH email_status AS (\
                 SELECT e.body, COALESCE(\
                     (SELECT event_type FROM lifecycle_events le \
                      WHERE le.email_id = e.id \
+                       AND le.event_type IN ({pipeline}) \
                      ORDER BY le.created_at DESC, le.id DESC LIMIT 1),\
                     'queued'\
                 ) AS latest_event_type \
@@ -294,7 +297,8 @@ impl EmailRepository for PostgresAdapter {
             ) \
             SELECT body FROM email_status \
             WHERE latest_event_type NOT IN ({terminal})",
-            terminal = terminal_types_sql(),
+            pipeline = sql_list(PIPELINE_EVENT_TYPES),
+            terminal = sql_list(TERMINAL_EVENT_TYPES),
         )))
         .fetch_all(self.pool())
         .await
@@ -1439,6 +1443,32 @@ mod tests {
             .collect();
         keys.sort();
         assert_eq!(keys, ["redelivered", "replayed"]);
+    }
+
+    #[tokio::test]
+    async fn gc_liveness_ignores_informational_events() {
+        let (adapter, _container) = fresh_adapter().await;
+        let suppressed = email_with_blob(&adapter, "suppressed").await;
+        add_event_at(&adapter, suppressed, "delivery.failed", 1).await;
+        add_event_at(&adapter, suppressed, "suppressed", 2).await;
+        let bounced = email_with_blob(&adapter, "bounced").await;
+        add_event_at(&adapter, bounced, "delivery.succeeded", 1).await;
+        add_event_at(&adapter, bounced, "bounced", 2).await;
+        let unknown = email_with_blob(&adapter, "unknown").await;
+        add_event_at(&adapter, unknown, "delivery.failed", 1).await;
+        add_event_at(&adapter, unknown, "made.up", 2).await;
+        let live = email_with_blob(&adapter, "live").await;
+        add_event_at(&adapter, live, "queued", 1).await;
+        add_event_at(&adapter, live, "suppressed", 2).await;
+
+        let keys: Vec<String> = adapter
+            .list_all_attachment_blobs()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|b| b.key)
+            .collect();
+        assert_eq!(keys, ["live"]);
     }
 
     #[tokio::test]

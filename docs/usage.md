@@ -454,7 +454,7 @@ On submit, suppressed recipients are dropped. If none are left, the request fail
 (a per-item rejection in a batch, and a discarded message on inbound NATS) and nothing is
 stored. A resubmit with an idempotency key that already identifies an accepted email returns
 that email's id even if a recipient was suppressed afterwards. Dropped recipients are reported
-in a `suppressed` lifecycle event, which does not change the email's status. The worker checks
+in a `suppressed` lifecycle event, which does not change the email's status and is not re-emitted when a retry replays an interrupted submission. The worker checks
 the list again before sending: it drops newly suppressed recipients, and if none remain it
 fails the email with `delivery.failed` and `error_class` `suppressed`.
 
