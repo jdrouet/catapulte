@@ -133,6 +133,21 @@ The `mailto` local part may only contain letters, digits and `. _ + -`; an inter
 | `mjml_named` | `name` | a template pre-registered on the server, rendered with `variables` |
 | `mjml_remote` | `url` | MJML fetched over HTTP (supports `mj-include`), rendered with `variables` |
 
+### Template variables and escaping
+
+Variables are HTML-escaped when they are rendered into MJML sources and `plain` HTML parts, so a value such as `<b>` appears as text. Plain-text parts are not escaped. Use the `safe` filter only for trusted markup, for example `{{ snippet|safe }}`.
+
+Escaping does not validate URL schemes: a variable used in `href` or `src` can still hold a `javascript:` URL. The text part derived from `mj-preview` is decoded back to plain text and is not escaped. The email subject is not a template and is never interpolated.
+
+Variables in MJML contexts that are not HTML have no correctness or security guarantee, and simple URLs work only incidentally:
+
+- `mj-include path`
+- `mj-font href`, which becomes a CSS `@import url(...)`
+- `mj-style`
+- `mj-raw` containing script or style
+
+`|safe` turns escaping off but does not validate URLs or escape CSS or script, so a value used there must be trusted and valid for that context. For example, an apostrophe can still break CSS. Do not put untrusted variables in these contexts.
+
 ### Examples
 
 Plain text + HTML:
@@ -156,7 +171,7 @@ curl -X POST http://localhost:3000/emails \
   -d '{
     "sender": "noreply@example.com",
     "recipients": [{ "kind": "to", "address": "alice@example.com" }],
-    "subject": "Hi {{ name }}",
+    "subject": "Hi Alice",
     "body": { "kind": "mjml_inline", "source": "<mjml><mj-body><mj-text>Hi {{ name }}</mj-text></mj-body></mjml>" },
     "variables": { "name": "Alice" }
   }'
