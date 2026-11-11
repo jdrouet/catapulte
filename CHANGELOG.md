@@ -1,0 +1,353 @@
+# Changelog
+
+All notable changes to this project are documented here.
+## [2.0.0] - 2026-11-11
+
+### Bug fixes
+- Use path.display() instead of {:?} in error messages
+- Replace wildcard match arms and collapse nested ifs
+- Rename similar binding names and add missing Errors doc
+- Give each test its own container for isolation
+- Add publisher field to e2e AppConfig literals after PublisherAdapter wiring
+- Store emails.created_at in milliseconds
+- Return early when ack/nack fails in process_one
+- Error on unknown backend env var values instead of silently falling back
+- Loop indefinitely in dequeue instead of failing after 10 retries
+- Encode queue row id in AckToken instead of email_id
+- Track in-flight items so nack can requeue them
+- Claim queue row atomically to prevent double-delivery
+- Guard idempotency fallback against null key
+- Delete orphaned queue entry when email is missing
+- Replace racy sleep in nack test with paused tokio time
+- Log when queue backend env var is absent and defaults to storage
+- Clamp NAK delay to i64::MAX to avoid overflow
+- Error on startup if stream subjects do not include required subject
+- Error on invalid env var values instead of silently using defaults
+- Rename created_at column to created_at_ms
+- Return container from fresh_adapter to prevent leaks
+- Treat publish failure as non-fatal in submit email use case
+- Guard idempotency fallback against null key
+- Warn at startup when using non-durable memory queue
+- Delete orphaned queue entry inside transaction
+- Keep blob and row state recoverable on submit and post-send paths
+- Wait for container ports before connecting
+- Target branch
+- Log full error cause chain on send failure
+- Harden metrics config and memory queue depth counter
+- Security hardening for attachments, webhooks and compose files (#799)
+- Parse addresses as lettre mailboxes and keep display names
+- Classify permanent failures, stop retrying them, add error_class rejected **(breaking)**
+- Validate attachment content type and filename at submit
+- Await JetStream publish ack on enqueue
+- Keep and recover emails whose enqueue outcome is uncertain
+- Derive email status from the latest terminal event
+- Status from terminal events; feat(smtp): sink sender kind (#805)
+- Match IDN forms and ignore informational events in GC
+- Reject control characters in metadata
+- Reject NUL characters that the storage layer cannot hold
+- Harden feedback report parsing
+- Stop following redirects and bound remote template fetches **(breaking)**
+- Stop following redirects and bound remote template fetches (#811) **(breaking)**
+- Guarded HTTP include fetcher; remove HTTP_DENY mode **(breaking)**
+- Guarded HTTP include fetcher; remove HTTP_DENY mode (#812) **(breaking)**
+- HTML-escape variables in MJML and HTML bodies **(breaking)**
+- HTML-escape variables in MJML and HTML bodies (#813) **(breaking)**
+- Retry template version allocation on conflict
+- Bound template rendering with fuel
+- Replace the unavailable MinIO images with RustFS
+- Replace the unavailable MinIO images with RustFS (#819)
+- Bound the total rendered output
+- Tighten render sandbox admission, cancellation and reaping
+- Raise the default render child memory limit to 512 MiB
+- Keep killed render children out of coverage profiles
+
+### CI
+- Add pre-pr workflow
+- Build and push multi-arch docker image to GHCR
+- Build each arch on a native runner instead of QEMU
+- Publish semver-tagged images on release tags
+- Run on main instead of nextgen
+
+### Documentation
+- Add error doc comment to RoutedEmailSender::send
+- Add missing rustdoc and fix inaccurate doc comments
+- Document configuration and quick start in readme
+- Document s3 attachment backend and add minio compose
+- Document redis attachment backend and add compose
+- Record traces-led observability decision
+- Add OpenTelemetry collector observability example
+- Add API usage guide
+- Mark implemented user stories
+- Add security policy
+- V3 supported versions
+- Bounce and complaint ingestion
+- Render templates in a resource-limited subprocess
+- Document the render sandbox
+- Record the render sandbox measurements
+
+### Features
+- Add genid macro and EmailId entity
+- Add email body types
+- Add template pipeline ports
+- Add SubmitEmail use case
+- Add ProcessQueuedEmail use case
+- Add EmailSender port
+- Send rendered email from ProcessQueuedEmail
+- Add EmailRepository port
+- Add EventPublisher port and LifecycleEvent
+- Persist and emit queued event in SubmitEmail
+- Add outbound-mjml implementing TemplateRenderer
+- Add outbound-sqlite implementing EmailRepository and EventPublisher
+- Add SubmitEmailUseCase trait with Send-bound futures
+- Add inbound-http with HttpServerState trait and tracing
+- Boot the service with AppConfig and Application
+- Add SmtpSender implementing EmailSender
+- Add MiniJinjaInterpolator implementing TemplateInterpolator
+- Add TemplateResolverAdapter with catalog and HTTP fetch
+- Add domain whitelist for remote template fetches
+- Add TemplateResolverConfig with from_env and build
+- Add ProcessQueuedEmailUseCase trait, EmailQueue port, and LifecycleEvent::Sent
+- Implement EmailQueue and handle LifecycleEvent::Sent
+- Add WorkerState trait, WorkerConfig, and Worker
+- Wire all adapters and start HTTP server and worker
+- Add enqueue to EmailQueue port and wire SubmitEmailService
+- Drop Queued variant
+- Add ack and dedicated email_queue table
+- Add Failed variant and record processing errors
+- Add in-process memory queue backend
+- Configurable queue backend via QueueBackendConfig
+- Add optional subject field
+- Retry failed emails with exponential backoff and attempt cap
+- Add health routes and refactor routes module
+- Deduplicate emails on idempotency key
+- Add postgres adapter for email, queue and events
+- Support postgres storage and queue backend
+- Add NATS JetStream queue backend
+- Expand LifecycleEvent with Queued, Sending, Retrying variants
+- Add EventRepository read port
+- Emit Queued event after enqueue
+- Emit Sending and Retrying lifecycle events
+- Persist all lifecycle event variants and use JSON payload
+- Persist all lifecycle event variants
+- Implement EventRepository::list_events
+- Implement EventRepository::list_events
+- Add EventRepository to HttpServerState
+- Wire event_repository() into AppState
+- Add GET /emails/:id/events endpoint
+- Add GET /events cross-email endpoint
+- Add list_emails port with EmailStatus
+- Implement list_emails with status derivation
+- Implement list_emails with status derivation
+- Delegate list_emails through StorageAdapter
+- Add GET /emails list endpoint
+- Add webhook and NATS fan-out for lifecycle events
+- Add SenderName, SenderQuota and QuotaRange
+- Thread sender_name through LifecycleEvent, EmailSender and worker
+- Add sender_name column to lifecycle_events
+- Add sender_name to EventRecord, surface in HTTP
+- Add SenderRepository port and implement for storage adapters
+- Add MultiSmtpSender with priority-based selection
+- Implement SenderRepository for StorageAdapter
+- Add sender_repository and configured_senders to HttpServerState
+- Add GET /senders endpoint
+- Wire MultiSenderConfig and configured_senders into AppState
+- Add with_sender and empty constructors to MultiSenderConfig
+- Add SenderEntry name/quota, NoopSenderRepository, and R: SenderRepository to MultiSmtpSender
+- Pass storage repo to MultiSmtpSender::build for quota enforcement
+- Add EmailTransport port
+- Add PriorityEmailSender service
+- Add QuotaRange::since_ms
+- Add Clock port, SenderConfig, SenderUsagePort, and ListSendersService
+- Add ListEmailsService and ListEventsService use cases
+- Validate sender and recipient addresses at request boundary
+- Add CancellationToken to Worker::run for graceful shutdown
+- Add attachment domain model with empty pass-through
+- Add crash-safe filesystem attachment store
+- Add set_attachments and delete primitives to EmailRepository
+- Deliver emails with inline base64 attachments end to end
+- Fetch remote URL attachments at submit time with SSRF gating
+- Accept multipart/form-data uploads on POST /emails
+- Clean up attachment blobs after sent, sweep orphans periodically
+- Add POST /emails/batch for bulk submission
+- Resolve mj-include via configurable loader
+- Carry attempt count on LifecycleEvent::Failed
+- Thread correlation_id from submission to lifecycle events
+- Consume submissions from JetStream
+- Route SMTP delivery by sender domain
+- Add s3-compatible object store adapter
+- Wire s3 backend into binary and generalize gc
+- Add redis attachment store adapter
+- Wire redis backend into binary
+- Add optional static API key auth
+- Add health-check port and readiness use case
+- Add readiness probe, configurable Postgres pool, and HTTP request timeout
+- Add healthcheck subcommand and container/compose healthchecks
+- OTLP trace export with runtime exporter config
+- Trace spans across the submit and send pipeline
+- Propagate trace context through the SQL and memory queues
+- Propagate trace context through NATS queue and inbound NATS
+- In-app gauge metrics for queue depth and sender usage
+- Rename delivery events to delivery.succeeded/delivery.failed
+- Template filter on emails; sender/error-class filters on events
+- Set service.instance.id to distinguish replicas
+- Process queued emails with bounded concurrency
+- Per-host auth for remote template fetches (#731)
+- Enforce CATAPULTE_MAX_MESSAGE_BYTES (default 25 MiB) **(breaking)**
+- Reply_to and custom headers
+- Record SMTP response and Message-ID on delivery.succeeded
+- Inline attachments with Content-ID
+- List-Unsubscribe and one-click unsubscribe headers
+- DKIM signing
+- Restrict accepted sender domains
+- Reply-to, custom headers, inline attachments, List-Unsubscribe, DKIM, sender allow-list (#804)
+- Sink sender kind
+- Scoped API keys with admin identity
+- Scoped API keys with admin identity (#807)
+- Suppression list port and repositories
+- Drop suppressed recipients at submit and send time
+- Admin-only suppression routes
+- Suppression list (#808)
+- Tags and metadata on emails and events
+- Tags and metadata; reject NUL characters at intake (#809)
+- Signed VERP return path
+- Bounce and complaint ingestion
+- Signed VERP and bounce/complaint ingestion (#810)
+- Template repository
+- Template validator, stored resolver and management use case
+- Admin-only template management
+- Template management with a render budget (#817)
+- Classify render sandbox failures
+- Make the include loader config serializable and clampable
+- Add the render sandbox
+- Render templates in the resource-limited sandbox
+- Render templates in a resource-limited subprocess (#820)
+
+### Miscellaneous
+- Prepare repository
+- Add justfile with workspace commands
+- Drop needless raw string hashes in tests
+- Add clippy step to pre-pr and update lockfile
+- Remove unused imports from route test modules
+- Clear all clippy warnings reported by just clippy
+- Add docker-compose configs for local-dev, sqlite, and postgres-nats
+- Skip agents
+- Drop unused dependencies
+- Add AGPL-3.0 license
+- Create dependabot.yml
+- Match only vX.Y.Z release tags in git-cliff
+
+### Performance
+- Run the cargo-chef planner on the native build platform
+- Pool and reuse SMTP connections
+
+### Refactor
+- Move Envelope to entity module
+- Take prefix in InboundHttpConfig::from_env
+- Extract helpers to reduce cyclomatic complexity
+- Move check_domain to TemplateResolverAdapter method
+- Move resolve_remote to TemplateResolverAdapter method
+- Make dequeue blocking, remove worker poll timer
+- Take OutboundEmail struct instead of positional args
+- Split lib.rs into queue.rs and state.rs
+- Add AckToken and nack to EmailQueue port
+- Wire EventPublisher into SubmitEmailService and add EventRepository
+- Replace Pin<Box<dyn Future>> with RPITIT in SendRef
+- Implement EmailTransport on SmtpSender
+- Wire PriorityEmailSender as the email sender
+- Rename PriorityEmailSender to RoutedEmailSender, guard empty routes, warn on repo failure
+- Expose build_routes instead of building RoutedEmailSender
+- Use QuotaRange::since_ms in list_senders
+- Wire RoutedEmailSender at the composition root
+- Implement SenderUsagePort in storage adapters
+- Inject Clock into RoutedEmailSender and expose SmtpTransportEntry
+- Replace SenderRepository/configured_senders with ListSendersUseCase
+- Wire ListSendersService at the composition root
+- Remove SenderRepository port
+- Rename SenderUsagePort to SenderUsage
+- Rename SmtpSender to SmtpTransport
+- Replace repository ports with use-case traits in HttpServerState
+- Rename SenderUsage struct to SenderSnapshot
+- Remove empty SubmitParams from submit_email use case
+- Apply Send+Sync+'static consistently to all port traits
+- Type RoutedEmailSender::new error and rename generic param P
+- Render asynchronously to free the tokio worker on include I/O
+- Centralize lifecycle-event payload on the domain entity
+- Share envelope conversion between JSON and multipart
+- Envelope::new for test construction
+- EventContext on lifecycle events
+- Make the template interpolation ports async
+
+### Testing
+- Scaffold plain email delivery test with mailpit
+- Use testcontainers + mailpit Docker image
+- Add memory queue variant wired manually against mailpit
+- Cover all storage and queue backend combinations
+- Exercise lifecycle event endpoint
+- Smoke-test GET /emails and GET /events list endpoints
+- Add e2e tests for multi-sender priority selection and fallback
+- Add unit tests for ListSendersService
+- Verify OutboundEmail content in process_queued_email tests
+- Cover Interpolate and Render error branches in process_queued_email
+- Run testcontainers tests serially to avoid port conflicts
+- Cover mjml+variables rendering and idempotency key deduplication
+- Verify ack failure suppresses sent lifecycle event
+- Cover inbound NATS submission through to a Sent lifecycle event
+- Scenario harness running each scenario across every backend combo
+- Migrate scenarios into the matrix harness, run them sequentially
+- Add network-isolated compose smoke test
+- Align e2e and scenario assertions with renamed delivery events
+- Add multi-replica k6 load-test harness
+- Make the tampered VERP tag always differ from the real one
+- Make the tampered VERP tag always differ from the real one (#814)
+- Share one container per test binary and remove it on exit
+- Share one container per test binary and remove it on exit (#818)
+
+### Build
+- Use rustls for lettre SMTP transport
+- Containerize with a distroless image
+- Bump uuid from 1.23.1 to 1.23.3
+- Bump serial_test from 3.4.0 to 3.5.0
+- Bump async-nats from 0.48.0 to 0.49.1
+- Bump testcontainers from 0.23.3 to 0.27.3
+- Bump sqlx from 0.8.6 to 0.9.0
+- Bump async-nats, sqlx, testcontainers, serial_test, uuid
+- Bump bytes from 1.11.1 to 1.12.0 (#733)
+- Bump redis from 1.2.2 to 1.2.3 (#734)
+- Bump minijinja from 2.20.0 to 2.21.0 (#735)
+- Bump tower-http from 0.6.11 to 0.7.0 (#736)
+- Bump uuid from 1.23.3 to 1.23.4 (#739)
+- Bump anyhow from 1.0.102 to 1.0.103 (#738)
+- Bump redis from 1.2.3 to 1.2.4 (#737)
+- Bump opentelemetry-semantic-conventions (#741)
+- Bump redis from 1.2.4 to 1.3.0 (#740)
+- Bump bytes from 1.12.0 to 1.12.1 (#742)
+- Bump serde_with from 3.20.0 to 3.21.0 (#743)
+- Bump thiserror from 2.0.18 to 2.0.19 (#748)
+- Bump redis from 1.3.0 to 1.4.1 (#749)
+- Bump tokio from 1.52.3 to 1.53.1 (#750)
+- Bump quinn-proto from 0.11.14 to 0.11.16 (#751)
+- Bump http-body-util from 0.1.3 to 0.1.4 (#744)
+- Bump uuid from 1.23.4 to 1.24.0 (#746)
+- Bump serial_test from 3.5.0 to 4.0.1 (#756)
+- Bump serde from 1.0.228 to 1.0.229 (#755)
+- Bump futures-util from 0.3.32 to 0.3.33 (#754)
+- Bump serde_json from 1.0.150 to 1.0.151 (#753)
+- Bump async-nats from 0.49.1 to 0.50.0 (#752)
+- Bump lettre from 0.11.22 to 0.11.23 (#758)
+- Bump redis from 1.4.1 to 1.5.0 (#759)
+- Bump base64 from 0.22.1 to 0.23.1 (#760)
+- Bump anyhow from 1.0.103 to 1.0.104 (#761)
+- Bump tokio-util from 0.7.18 to 0.7.19 (#757)
+- Bump thiserror from 2.0.19 to 2.0.20 (#765)
+- Bump async-trait from 0.1.89 to 0.1.92 (#764)
+- Bump testcontainers from 0.27.3 to 0.28.0 (#763)
+- Bump minijinja from 2.21.0 to 2.23.0 (#762)
+- Bump http-body-util from 0.1.4 to 0.1.5 (#766)
+- Bump futures-util from 0.3.33 to 0.3.34 (#767)
+- Bump redis from 1.5.0 to 1.6.0 (#768)
+- Bump uuid from 1.24.0 to 1.24.1 (#769)
+- Bump all dependencies (#777)
+
+### Doc
+- Create readme with user stories
+
