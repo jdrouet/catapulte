@@ -300,7 +300,7 @@ with `500`. Batch items use the inline/remote attachment form (no multipart).
 
 | Query param | Notes |
 |-------------|-------|
-| `status` | `queued` \| `scheduled` \| `sent` \| `failed` |
+| `status` | `queued` \| `scheduled` \| `cancelled` \| `sent` \| `failed` |
 | `recipient` | substring filter on the recipient's bare email address; display names are not matched |
 | `template` | filter by named MJML template name; only matches emails submitted with `kind: mjml_named` |
 | `id` | exact email id (UUID) |

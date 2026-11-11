@@ -3,11 +3,11 @@ use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::entity::lifecycle_event::{
-    PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES,
+    EventContext, PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES,
 };
 use catapulte_domain::port::email_repository::{
-    DuplicateState, EmailRecord, EmailRepository, EmailRepositoryError, EmailStatus, EnqueueState,
-    ListEmailsParams, SaveResult,
+    CancelOutcome, DuplicateState, EmailCancellation, EmailRecord, EmailRepository,
+    EmailRepositoryError, EmailStatus, EnqueueState, ListEmailsParams, SaveResult,
 };
 use sqlx::QueryBuilder;
 use sqlx::Row;
@@ -114,6 +114,7 @@ impl EmailRepository for SqliteAdapter {
                     e.extras, \
                     e.created_at_ms, \
                     e.send_at_ms, \
+                    e.cancelled_at_ms, \
                     COALESCE(\
                         (SELECT le.event_type \
                          FROM lifecycle_events le \
@@ -128,6 +129,7 @@ impl EmailRepository for SqliteAdapter {
             email_status AS (\
                 SELECT latest.*, \
                     CASE \
+                        WHEN cancelled_at_ms IS NOT NULL THEN 'cancelled' \
                         WHEN latest_terminal_event_type = 'delivery.succeeded' THEN 'sent' \
                         WHEN latest_terminal_event_type = 'delivery.failed' THEN 'failed' \
                         WHEN send_at_ms > ",
@@ -186,6 +188,7 @@ impl EmailRepository for SqliteAdapter {
                 EmailStatus::Failed => "failed",
                 EmailStatus::Queued => "queued",
                 EmailStatus::Scheduled => "scheduled",
+                EmailStatus::Cancelled => "cancelled",
             });
         }
 
@@ -318,7 +321,7 @@ impl EmailRepository for SqliteAdapter {
                      ORDER BY le.created_at DESC, le.id DESC LIMIT 1),\
                     'queued'\
                 ) AS latest_event_type \
-                FROM emails e\
+                FROM emails e WHERE e.cancelled_at_ms IS NULL\
             ) \
             SELECT body FROM email_status \
             WHERE latest_event_type NOT IN ({terminal})",
@@ -347,6 +350,100 @@ impl EmailRepository for SqliteAdapter {
     }
 }
 
+impl EmailCancellation for SqliteAdapter {
+    async fn cancel(
+        &self,
+        id: EmailId,
+        owner: Option<&str>,
+    ) -> Result<CancelOutcome, EmailRepositoryError> {
+        let storage = |source| EmailRepositoryError::Storage { source };
+        let id_bytes = id.as_uuid().as_bytes().to_vec();
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .context("starting cancel transaction")
+            .map_err(storage)?;
+
+        // The first statement is a write, so the transaction holds the writer lock throughout.
+        let cancelled = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE emails SET cancelled_at_ms = ?1 \
+             WHERE id = ?2 AND (?3 IS NULL OR api_key = ?3) \
+               AND cancelled_at_ms IS NULL AND send_at_ms IS NOT NULL \
+               AND enqueue_state = 'enqueued' \
+               AND NOT EXISTS (SELECT 1 FROM lifecycle_events \
+                               WHERE email_id = emails.id AND event_type IN ({worker})) \
+             RETURNING correlation_id, tags, extras",
+            worker = sql_list(WORKER_EVENT_TYPES),
+        )))
+        .bind(crate::email_queue::now_ms())
+        .bind(&id_bytes)
+        .bind(owner)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("marking the email cancelled")
+        .map_err(storage)?;
+
+        let Some(row) = cancelled else {
+            let existing: Option<Option<i64>> = sqlx::query_scalar(
+                "SELECT cancelled_at_ms FROM emails WHERE id = ?1 AND (?2 IS NULL OR api_key = ?2)",
+            )
+            .bind(&id_bytes)
+            .bind(owner)
+            .fetch_optional(&mut *tx)
+            .await
+            .context("classifying the cancel")
+            .map_err(storage)?;
+            return Ok(match existing {
+                None => CancelOutcome::NotFound,
+                Some(Some(_)) => CancelOutcome::AlreadyCancelled,
+                Some(None) => CancelOutcome::NotCancellable,
+            });
+        };
+        let correlation_id: Option<String> = row
+            .try_get("correlation_id")
+            .map_err(|e| storage(e.into()))?;
+        let tags: Option<Json<Vec<String>>> = row.try_get("tags").map_err(|e| storage(e.into()))?;
+        let extras: Option<Json<EnvelopeExtrasDto>> =
+            row.try_get("extras").map_err(|e| storage(e.into()))?;
+
+        let removed =
+            sqlx::query("DELETE FROM email_queue WHERE email_id = ? AND attempt_count = 0")
+                .bind(&id_bytes)
+                .execute(&mut *tx)
+                .await
+                .context("removing the queue row")
+                .map_err(storage)?
+                .rows_affected();
+        let remaining: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_queue WHERE email_id = ?)")
+                .bind(&id_bytes)
+                .fetch_one(&mut *tx)
+                .await
+                .context("checking for remaining queue rows")
+                .map_err(storage)?;
+        // Anything but exactly one untouched row means a worker may hold the email.
+        if removed != 1 || remaining {
+            tx.rollback()
+                .await
+                .context("rolling back the cancel")
+                .map_err(storage)?;
+            return Ok(CancelOutcome::NotCancellable);
+        }
+        tx.commit()
+            .await
+            .context("committing the cancel")
+            .map_err(storage)?;
+        Ok(CancelOutcome::Cancelled {
+            context: EventContext {
+                correlation_id,
+                tags: tags.map(|j| j.0).unwrap_or_default(),
+                metadata: extras.map(|j| j.0.metadata).unwrap_or_default(),
+            },
+        })
+    }
+}
+
 impl SqliteAdapter {
     fn row_to_email_record(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<EmailRecord> {
         let id_bytes: Vec<u8> = row.try_get("id").context("reading id")?;
@@ -371,7 +468,9 @@ impl SqliteAdapter {
             "sent" => EmailStatus::Sent,
             "failed" => EmailStatus::Failed,
             "scheduled" => EmailStatus::Scheduled,
-            _ => EmailStatus::Queued,
+            "cancelled" => EmailStatus::Cancelled,
+            "queued" => EmailStatus::Queued,
+            other => anyhow::bail!("unknown email status {other:?}"),
         };
         Ok(EmailRecord {
             id: EmailId::from(id),
@@ -406,7 +505,7 @@ impl SqliteAdapter {
 
         let row = sqlx::query(
             "SELECT id, enqueue_state, api_key, idempotency_key, correlation_id, subject, sender, \
-                    recipients, body, variables, extras, tags, send_at_ms \
+                    recipients, body, variables, extras, tags, send_at_ms, cancelled_at_ms \
              FROM emails WHERE api_key = ? AND idempotency_key = ?",
         )
         .bind(owner)
@@ -426,43 +525,51 @@ impl SqliteAdapter {
             .try_get("enqueue_state")
             .map_err(|e| storage(e.into()))?;
 
-        let (state, recovery) = match state.as_str() {
-            "reserved" => (DuplicateState::Reserved, None),
-            "enqueued" => (DuplicateState::Complete, None),
-            "publishable" => {
-                let mut evidence = QueryBuilder::<Sqlite>::new(
-                    "SELECT EXISTS(SELECT 1 FROM lifecycle_events WHERE email_id = ",
-                );
-                evidence.push_bind(&id_bytes).push(" AND event_type IN (");
-                let mut types = evidence.separated(", ");
-                for t in WORKER_EVENT_TYPES {
-                    types.push_bind(*t);
+        let cancelled: Option<i64> = row
+            .try_get("cancelled_at_ms")
+            .map_err(|e| storage(e.into()))?;
+        // A cancelled email is final: nothing to replay, whatever its enqueue state.
+        let (state, recovery) = if cancelled.is_some() {
+            (DuplicateState::Complete, None)
+        } else {
+            match state.as_str() {
+                "reserved" => (DuplicateState::Reserved, None),
+                "enqueued" => (DuplicateState::Complete, None),
+                "publishable" => {
+                    let mut evidence = QueryBuilder::<Sqlite>::new(
+                        "SELECT EXISTS(SELECT 1 FROM lifecycle_events WHERE email_id = ",
+                    );
+                    evidence.push_bind(&id_bytes).push(" AND event_type IN (");
+                    let mut types = evidence.separated(", ");
+                    for t in WORKER_EVENT_TYPES {
+                        types.push_bind(*t);
+                    }
+                    evidence.push("))");
+                    let has_evidence: bool = evidence
+                        .build_query_scalar()
+                        .fetch_one(&mut *tx)
+                        .await
+                        .context("checking worker evidence")
+                        .map_err(storage)?;
+                    if has_evidence {
+                        sqlx::query(
+                            "UPDATE emails SET enqueue_state = 'enqueued' WHERE id = ? AND api_key = ?",
+                        )
+                        .bind(&id_bytes)
+                        .bind(owner)
+                        .execute(&mut *tx)
+                        .await
+                        .context("promoting enqueue_state")
+                        .map_err(storage)?;
+                        (DuplicateState::Complete, None)
+                    } else {
+                        let envelope = crate::email_queue::parse_envelope(&row).map_err(storage)?;
+                        (DuplicateState::Complete, Some(envelope))
+                    }
                 }
-                evidence.push("))");
-                let has_evidence: bool = evidence
-                    .build_query_scalar()
-                    .fetch_one(&mut *tx)
-                    .await
-                    .context("checking worker evidence")
-                    .map_err(storage)?;
-                if has_evidence {
-                    sqlx::query(
-                        "UPDATE emails SET enqueue_state = 'enqueued' WHERE id = ? AND api_key = ?",
-                    )
-                    .bind(&id_bytes)
-                    .bind(owner)
-                    .execute(&mut *tx)
-                    .await
-                    .context("promoting enqueue_state")
-                    .map_err(storage)?;
-                    (DuplicateState::Complete, None)
-                } else {
-                    let envelope = crate::email_queue::parse_envelope(&row).map_err(storage)?;
-                    (DuplicateState::Complete, Some(envelope))
+                other => {
+                    return Err(storage(anyhow::anyhow!("unknown enqueue_state {other:?}")));
                 }
-            }
-            other => {
-                return Err(storage(anyhow::anyhow!("unknown enqueue_state {other:?}")));
             }
         };
 

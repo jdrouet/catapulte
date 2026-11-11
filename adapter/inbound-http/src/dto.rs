@@ -2012,6 +2012,7 @@ pub struct ListEventsResponse {
 pub enum EmailStatusDto {
     Queued,
     Scheduled,
+    Cancelled,
     Sent,
     Failed,
 }
@@ -2021,6 +2022,7 @@ impl From<EmailStatusDto> for catapulte_domain::port::email_repository::EmailSta
         match s {
             EmailStatusDto::Queued => Self::Queued,
             EmailStatusDto::Scheduled => Self::Scheduled,
+            EmailStatusDto::Cancelled => Self::Cancelled,
             EmailStatusDto::Sent => Self::Sent,
             EmailStatusDto::Failed => Self::Failed,
         }
@@ -2082,6 +2084,7 @@ impl From<catapulte_domain::port::email_repository::EmailRecord> for EmailRecord
         let status = match r.status {
             EmailStatus::Queued => "queued",
             EmailStatus::Scheduled => "scheduled",
+            EmailStatus::Cancelled => "cancelled",
             EmailStatus::Sent => "sent",
             EmailStatus::Failed => "failed",
         };

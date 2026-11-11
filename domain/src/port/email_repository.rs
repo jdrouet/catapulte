@@ -3,6 +3,7 @@ use thiserror::Error;
 use crate::entity::attachment::{AttachmentRef, BlobRef};
 use crate::entity::email::{EmailId, RecipientKind};
 use crate::entity::envelope::Envelope;
+use crate::entity::lifecycle_event::EventContext;
 
 /// Where an email stands on its way into the queue. A freshly saved row is
 /// `Reserved`; the transitions below are the only ones callers may request.
@@ -108,6 +109,8 @@ pub enum EmailStatus {
     Queued,
     /// Accepted and held until its `send_at_ms`.
     Scheduled,
+    /// Withdrawn before any worker touched it.
+    Cancelled,
     Sent,
     Failed,
 }
@@ -140,4 +143,31 @@ pub struct EmailRecord {
     pub tags: Vec<String>,
     pub metadata: std::collections::BTreeMap<String, String>,
     pub send_at_ms: Option<i64>,
+}
+
+/// Result of [`EmailCancellation::cancel`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// This call cancelled the email; `context` is what its events carry.
+    Cancelled { context: EventContext },
+    /// An earlier call already cancelled it.
+    AlreadyCancelled,
+    /// A worker has claimed or handled the email, it was not scheduled, or it is not queued.
+    NotCancellable,
+    /// No email with this id is visible to the caller.
+    NotFound,
+}
+
+pub trait EmailCancellation: Send + Sync + 'static {
+    /// Cancels a scheduled email that no worker has touched. After `Cancelled` no queue row
+    /// remains and none can be added. `owner` of `None` matches any email.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmailRepositoryError::Storage` when the transaction fails.
+    fn cancel(
+        &self,
+        id: EmailId,
+        owner: Option<&str>,
+    ) -> impl std::future::Future<Output = Result<CancelOutcome, EmailRepositoryError>> + Send;
 }

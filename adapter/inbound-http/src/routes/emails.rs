@@ -2067,4 +2067,46 @@ mod tests {
         assert_eq!(json["emails"][1]["status"], "queued");
         assert!(json["emails"][1].get("send_at_ms").is_none());
     }
+
+    #[tokio::test]
+    async fn list_emails_cancelled_filter_forwarded() {
+        let list_emails = Arc::new(FakeListEmails::new());
+        let captured = list_emails.captured_params.clone();
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit::default()),
+                list_emails,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        app.oneshot(get_emails("?status=cancelled")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(
+            params.as_ref().unwrap().status,
+            Some(EmailStatus::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn list_emails_serialises_the_cancelled_status() {
+        let cancelled = EmailRecord {
+            status: EmailStatus::Cancelled,
+            ..sample_email_record()
+        };
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit::default()),
+                list_emails: Arc::new(FakeListEmails::with_records(vec![cancelled])),
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+
+        let response = app.oneshot(get_emails("")).await.unwrap();
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["emails"][0]["status"], "cancelled");
+    }
 }

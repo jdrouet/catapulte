@@ -1,0 +1,1 @@
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS cancelled_at_ms BIGINT;

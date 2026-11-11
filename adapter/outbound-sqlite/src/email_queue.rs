@@ -237,7 +237,8 @@ impl EmailQueue for SqliteAdapter {
         // The state flip is the once-only decision and the lock that serialises enqueuers.
         let claimed = sqlx::query(
             "UPDATE emails SET enqueue_state = 'enqueued' \
-             WHERE id = ? AND api_key = ? AND enqueue_state <> 'enqueued'",
+             WHERE id = ? AND api_key = ? AND enqueue_state <> 'enqueued' \
+             AND cancelled_at_ms IS NULL",
         )
         .bind(&email_id_bytes)
         .bind(&envelope.owner)
@@ -335,7 +336,8 @@ mod tests {
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::port::email_queue::{EmailQueue, EmailQueueError, EnqueueOutcome};
     use catapulte_domain::port::email_repository::{
-        DuplicateState, EmailRepository, EnqueueState, SaveResult,
+        CancelOutcome, DuplicateState, EmailCancellation, EmailRepository, EmailStatus,
+        EnqueueState, ListEmailsParams, SaveResult,
     };
 
     use crate::SqliteAdapter;
@@ -942,5 +944,382 @@ mod tests {
             .unwrap();
 
         assert_eq!(adapter.try_dequeue().await.unwrap().unwrap().id, id);
+    }
+
+    async fn raw_queue_row(adapter: &SqliteAdapter, id: EmailId, attempts: i64) {
+        sqlx::query(
+            "INSERT INTO email_queue (id, email_id, claimed_until, attempt_count) VALUES (?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::now_v7().as_bytes().to_vec())
+        .bind(id.as_uuid().as_bytes().to_vec())
+        .bind(super::now_ms() + 3_600_000)
+        .bind(attempts)
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+    }
+
+    async fn cancelled_at(adapter: &SqliteAdapter, id: EmailId) -> Option<i64> {
+        sqlx::query_scalar("SELECT cancelled_at_ms FROM emails WHERE id = ?")
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn force_cancelled(adapter: &SqliteAdapter, id: EmailId) {
+        sqlx::query("UPDATE emails SET cancelled_at_ms = 1 WHERE id = ?")
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+    }
+
+    async fn scheduled_email(adapter: &SqliteAdapter, owner: &str, send_at_ms: i64) -> EmailId {
+        let id = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.owner = owner.to_owned();
+        envelope.send_at_ms = Some(send_at_ms);
+        envelope.correlation_id = Some("c1".to_owned());
+        envelope.tags = vec!["t".to_owned()];
+        adapter.save(id, &envelope).await.unwrap();
+        adapter.enqueue(id, &envelope).await.unwrap();
+        id
+    }
+
+    fn in_an_hour() -> i64 {
+        super::now_ms() + 3_600_000
+    }
+
+    fn due_now() -> i64 {
+        super::now_ms() - 1_000
+    }
+
+    async fn status_of(adapter: &SqliteAdapter, id: EmailId) -> EmailStatus {
+        adapter
+            .list_emails(ListEmailsParams {
+                tag: None,
+                owner: None,
+                status: None,
+                after_ms: None,
+                before_ms: None,
+                recipient: None,
+                template: None,
+                id: Some(id),
+                limit: 1,
+                offset: 0,
+            })
+            .await
+            .unwrap()[0]
+            .status
+    }
+
+    #[tokio::test]
+    async fn cancel_removes_the_queue_row_and_repeats_as_already_cancelled() {
+        let adapter = fresh_adapter().await;
+        let id = scheduled_email(&adapter, "", in_an_hour()).await;
+
+        let outcome = adapter.cancel(id, Some("")).await.unwrap();
+
+        let CancelOutcome::Cancelled { context } = outcome else {
+            panic!("expected Cancelled, got {outcome:?}");
+        };
+        assert_eq!(context.correlation_id.as_deref(), Some("c1"));
+        assert_eq!(context.tags, vec!["t".to_owned()]);
+        assert_eq!(queue_rows(&adapter, id).await, 0);
+        assert!(cancelled_at(&adapter, id).await.is_some());
+        assert_eq!(
+            adapter.cancel(id, Some("")).await.unwrap(),
+            CancelOutcome::AlreadyCancelled
+        );
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_claimed_email_is_not_cancellable_and_nothing_changes() {
+        let adapter = fresh_adapter().await;
+        let id = scheduled_email(&adapter, "", due_now()).await;
+        adapter.try_dequeue().await.unwrap().unwrap();
+
+        let outcome = adapter.cancel(id, Some("")).await.unwrap();
+
+        assert_eq!(outcome, CancelOutcome::NotCancellable);
+        assert_eq!(cancelled_at(&adapter, id).await, None);
+        assert_eq!(queue_rows(&adapter, id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_delivered_and_acked_email_is_not_cancellable_and_stays_sent() {
+        use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
+        use catapulte_domain::port::event_publisher::EventPublisher;
+
+        let adapter = fresh_adapter().await;
+        let id = scheduled_email(&adapter, "", due_now()).await;
+        let dequeued = adapter.try_dequeue().await.unwrap().unwrap();
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id,
+                sender_name: catapulte_domain::entity::sender::SenderName::new("test"),
+                context: EventContext::with_correlation(None),
+                smtp_response: None,
+                message_id: "<m@example.com>".to_owned(),
+            })
+            .await
+            .unwrap();
+        adapter.ack(dequeued.token).await.unwrap();
+
+        let outcome = adapter.cancel(id, Some("")).await.unwrap();
+
+        assert_eq!(outcome, CancelOutcome::NotCancellable);
+        assert_eq!(status_of(&adapter, id).await, EmailStatus::Sent);
+    }
+
+    #[tokio::test]
+    async fn unscheduled_and_publishable_emails_are_not_cancellable() {
+        let adapter = fresh_adapter().await;
+        let plain = EmailId::default();
+        save_and_enqueue(&adapter, plain).await;
+        let publishable = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.send_at_ms = Some(in_an_hour());
+        adapter.save(publishable, &envelope).await.unwrap();
+        adapter
+            .set_enqueue_state(publishable, "", EnqueueState::Publishable)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            adapter.cancel(plain, Some("")).await.unwrap(),
+            CancelOutcome::NotCancellable
+        );
+        assert_eq!(
+            adapter.cancel(publishable, Some("")).await.unwrap(),
+            CancelOutcome::NotCancellable
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_is_scoped_to_the_owner_and_an_admin_sees_every_email() {
+        let adapter = fresh_adapter().await;
+        let mine = scheduled_email(&adapter, "a", in_an_hour()).await;
+        let theirs = scheduled_email(&adapter, "b", in_an_hour()).await;
+
+        assert_eq!(
+            adapter.cancel(theirs, Some("a")).await.unwrap(),
+            CancelOutcome::NotFound
+        );
+        assert_eq!(
+            adapter.cancel(EmailId::default(), Some("a")).await.unwrap(),
+            CancelOutcome::NotFound
+        );
+        assert!(matches!(
+            adapter.cancel(mine, Some("a")).await.unwrap(),
+            CancelOutcome::Cancelled { .. }
+        ));
+        assert!(matches!(
+            adapter.cancel(theirs, None).await.unwrap(),
+            CancelOutcome::Cancelled { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn two_untouched_rows_roll_the_cancel_back() {
+        let adapter = fresh_adapter().await;
+        let id = scheduled_email(&adapter, "", in_an_hour()).await;
+        raw_queue_row(&adapter, id, 0).await;
+
+        let outcome = adapter.cancel(id, Some("")).await.unwrap();
+
+        assert_eq!(outcome, CancelOutcome::NotCancellable);
+        assert_eq!(queue_rows(&adapter, id).await, 2);
+        assert_eq!(cancelled_at(&adapter, id).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_untouched_row_next_to_a_claimed_one_is_not_cancellable() {
+        let adapter = fresh_adapter().await;
+        let id = scheduled_email(&adapter, "", in_an_hour()).await;
+        raw_queue_row(&adapter, id, 1).await;
+
+        let outcome = adapter.cancel(id, Some("")).await.unwrap();
+
+        assert_eq!(outcome, CancelOutcome::NotCancellable);
+        assert_eq!(queue_rows(&adapter, id).await, 2);
+        assert_eq!(cancelled_at(&adapter, id).await, None);
+    }
+
+    #[tokio::test]
+    async fn stored_worker_events_block_a_cancel_even_with_a_surviving_untouched_row() {
+        use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
+        use catapulte_domain::port::event_publisher::EventPublisher;
+
+        let adapter = fresh_adapter().await;
+        let id = scheduled_email(&adapter, "", in_an_hour()).await;
+        adapter
+            .publish(&LifecycleEvent::Sending {
+                id,
+                attempt: 1,
+                context: EventContext::with_correlation(None),
+            })
+            .await
+            .unwrap();
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id,
+                sender_name: catapulte_domain::entity::sender::SenderName::new("test"),
+                context: EventContext::with_correlation(None),
+                smtp_response: None,
+                message_id: "<m@example.com>".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let outcome = adapter.cancel(id, Some("")).await.unwrap();
+
+        assert_eq!(outcome, CancelOutcome::NotCancellable);
+        assert_eq!(status_of(&adapter, id).await, EmailStatus::Sent);
+        assert_eq!(queue_rows(&adapter, id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn enqueue_after_a_cancel_inserts_nothing() {
+        let adapter = fresh_adapter().await;
+        let id = scheduled_email(&adapter, "", in_an_hour()).await;
+        adapter.cancel(id, Some("")).await.unwrap();
+
+        let outcome = adapter.enqueue(id, &sample_envelope()).await.unwrap();
+
+        assert_eq!(outcome, EnqueueOutcome::AlreadyEnqueued);
+        assert_eq!(queue_rows(&adapter, id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_publishable_duplicate_has_no_recovery_envelope() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.idempotency_key = Some("k".to_owned());
+        envelope.send_at_ms = Some(in_an_hour());
+        adapter.save(id, &envelope).await.unwrap();
+        adapter
+            .set_enqueue_state(id, "", EnqueueState::Publishable)
+            .await
+            .unwrap();
+        force_cancelled(&adapter, id).await;
+
+        let result = adapter.save(EmailId::default(), &envelope).await.unwrap();
+
+        let SaveResult::Duplicate {
+            id: existing,
+            state,
+            recovery,
+        } = result
+        else {
+            panic!("expected a duplicate");
+        };
+        assert_eq!(existing, id);
+        assert_eq!(state, DuplicateState::Complete);
+        assert!(recovery.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_status_and_filter_and_gc_exclusion() {
+        use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
+
+        let adapter = fresh_adapter().await;
+        let id = scheduled_email(&adapter, "", in_an_hour()).await;
+        adapter
+            .set_attachments(
+                id,
+                &[AttachmentRef {
+                    content_id: None,
+                    filename: "a.pdf".into(),
+                    content_type: "application/pdf".into(),
+                    size_bytes: 1,
+                    blob: BlobRef {
+                        backend: "fs".into(),
+                        key: "sched".into(),
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(adapter.list_all_attachment_blobs().await.unwrap().len(), 1);
+
+        adapter.cancel(id, Some("")).await.unwrap();
+
+        assert_eq!(status_of(&adapter, id).await, EmailStatus::Cancelled);
+        assert!(
+            adapter
+                .list_all_attachment_blobs()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let with = |status| {
+            let adapter = adapter.clone();
+            async move {
+                adapter
+                    .list_emails(ListEmailsParams {
+                        tag: None,
+                        owner: None,
+                        status: Some(status),
+                        after_ms: None,
+                        before_ms: None,
+                        recipient: None,
+                        template: None,
+                        id: None,
+                        limit: 20,
+                        offset: 0,
+                    })
+                    .await
+                    .unwrap()
+                    .len()
+            }
+        };
+        assert_eq!(with(EmailStatus::Cancelled).await, 1);
+        assert_eq!(with(EmailStatus::Queued).await, 0);
+        assert_eq!(with(EmailStatus::Scheduled).await, 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_and_claim_race_has_exactly_one_winner() {
+        let adapter = fresh_adapter().await;
+        let (mut cancels, mut claims) = (0, 0);
+        for i in 0..50 {
+            let id = scheduled_email(&adapter, "", due_now()).await;
+            let cancel = |adapter: SqliteAdapter| {
+                tokio::spawn(async move { adapter.cancel(id, Some("")).await })
+            };
+            let claim =
+                |adapter: SqliteAdapter| tokio::spawn(async move { adapter.try_dequeue().await });
+            // Alternate who starts first so both outcomes are exercised.
+            let (cancel_task, claim_task) = if i % 2 == 0 {
+                let c = cancel(adapter.clone());
+                (c, claim(adapter.clone()))
+            } else {
+                let d = claim(adapter.clone());
+                (cancel(adapter.clone()), d)
+            };
+            let cancelled = matches!(
+                cancel_task.await.unwrap().unwrap(),
+                CancelOutcome::Cancelled { .. }
+            );
+            let claimed = claim_task.await.unwrap().unwrap().is_some();
+            assert_ne!(cancelled, claimed, "exactly one side must win");
+            if cancelled {
+                cancels += 1;
+                assert_eq!(queue_rows(&adapter, id).await, 0);
+            } else {
+                claims += 1;
+                assert_eq!(cancelled_at(&adapter, id).await, None);
+            }
+            // Clear the claimed row so the next iteration starts from an empty queue.
+            sqlx::query("DELETE FROM email_queue")
+                .execute(adapter.pool())
+                .await
+                .unwrap();
+        }
+        eprintln!("race results: cancel won {cancels}, claim won {claims}");
     }
 }
