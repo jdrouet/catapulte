@@ -132,6 +132,60 @@ impl catapulte_domain::port::sender_usage::SenderUsage for StorageAdapter {
     }
 }
 
+impl catapulte_domain::port::suppression_repository::SuppressionRepository for StorageAdapter {
+    async fn list(
+        &self,
+        params: catapulte_domain::port::suppression_repository::ListSuppressionsParams,
+    ) -> Result<
+        Vec<catapulte_domain::entity::suppression::Suppression>,
+        catapulte_domain::port::suppression_repository::SuppressionRepositoryError,
+    > {
+        use catapulte_domain::port::suppression_repository::SuppressionRepository as R;
+        match self {
+            Self::Sqlite(a) => R::list(a, params).await,
+            Self::Postgres(a) => R::list(a, params).await,
+        }
+    }
+
+    async fn add(
+        &self,
+        entries: &[catapulte_domain::entity::suppression::Suppression],
+    ) -> Result<(), catapulte_domain::port::suppression_repository::SuppressionRepositoryError>
+    {
+        use catapulte_domain::port::suppression_repository::SuppressionRepository as R;
+        match self {
+            Self::Sqlite(a) => R::add(a, entries).await,
+            Self::Postgres(a) => R::add(a, entries).await,
+        }
+    }
+
+    async fn delete(
+        &self,
+        address: &str,
+    ) -> Result<bool, catapulte_domain::port::suppression_repository::SuppressionRepositoryError>
+    {
+        use catapulte_domain::port::suppression_repository::SuppressionRepository as R;
+        match self {
+            Self::Sqlite(a) => R::delete(a, address).await,
+            Self::Postgres(a) => R::delete(a, address).await,
+        }
+    }
+
+    async fn find_suppressed(
+        &self,
+        addresses: &[String],
+    ) -> Result<
+        std::collections::HashSet<String>,
+        catapulte_domain::port::suppression_repository::SuppressionRepositoryError,
+    > {
+        use catapulte_domain::port::suppression_repository::SuppressionRepository as R;
+        match self {
+            Self::Sqlite(a) => R::find_suppressed(a, addresses).await,
+            Self::Postgres(a) => R::find_suppressed(a, addresses).await,
+        }
+    }
+}
+
 impl StorageAdapter {
     fn backend_name(&self) -> &'static str {
         match self {
