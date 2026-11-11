@@ -1812,3 +1812,54 @@ async fn tags_and_metadata_are_validated_filtered_and_echoed_in_events() {
         assert!(event["payload"].get("tags").is_none(), "{event}");
     }
 }
+
+#[tokio::test]
+async fn control_characters_in_metadata_are_rejected_per_item_and_on_single_submit() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_sink_app(suppression_auth(), &db_dir).await;
+    for metadata in [
+        serde_json::json!({ "k": "a\u{0}b" }),
+        serde_json::json!({ "a\u{0}b": "v" }),
+        serde_json::json!({ "k": "a\u{7}b" }),
+    ] {
+        let single = submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            None,
+            serde_json::json!({ "metadata": metadata }),
+        )
+        .await;
+        assert_eq!(single.status(), 400, "{metadata}");
+    }
+
+    let email = |metadata: serde_json::Value| {
+        serde_json::json!({
+            "sender": "s@example.com",
+            "recipients": [{ "kind": "to", "address": "r@example.com" }],
+            "body": { "kind": "plain", "text": "hi" },
+            "metadata": metadata
+        })
+    };
+    let batch = send(
+        reqwest::Method::POST,
+        &base,
+        "secret-a",
+        "/emails/batch",
+        Some(serde_json::json!({ "emails": [
+            email(serde_json::json!({ "k": "ok" })),
+            email(serde_json::json!({ "k": "a\u{0}b" })),
+            email(serde_json::json!({ "k": "also ok" })),
+        ]})),
+    )
+    .await;
+    assert!(batch.status().is_success());
+    let body: serde_json::Value = batch.json().await.unwrap();
+    let statuses: Vec<_> = body["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["status"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(statuses, ["accepted", "rejected", "accepted"]);
+}

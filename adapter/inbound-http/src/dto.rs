@@ -668,6 +668,9 @@ fn validate_metadata(
         if value.len() > MAX_METADATA_VALUE_BYTES {
             return Err(InvalidMetadata("value too long"));
         }
+        if key.chars().chain(value.chars()).any(char::is_control) {
+            return Err(InvalidMetadata("control characters are not allowed"));
+        }
     }
     Ok(())
 }
@@ -895,6 +898,9 @@ mod tests {
             serde_json::json!({ "metadata": { "": "v" } }),
             serde_json::json!({ "metadata": { long_key: "v" } }),
             serde_json::json!({ "metadata": { "k": long_value } }),
+            serde_json::json!({ "metadata": { "k": "a\u{0}b" } }),
+            serde_json::json!({ "metadata": { "a\u{0}b": "v" } }),
+            serde_json::json!({ "metadata": { "k": "line\nbreak" } }),
         ] {
             assert!(convert_with(bad.clone()).is_err(), "{bad}");
         }
