@@ -635,6 +635,28 @@ impl RenderSandbox {
         }
     }
 
+    /// Runs one trivial job of each kind, so a missing or broken child binary stops startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the child cannot validate and render a trivial template.
+    pub async fn self_test(&self) -> anyhow::Result<()> {
+        let validated = self
+            .validate("{{ 1 }}", &Variables::new())
+            .await
+            .context("validating a trivial template")?;
+        anyhow::ensure!(
+            validated == "1",
+            "the render child answered {validated:?} instead of \"1\""
+        );
+        self.render(InterpolatedBody::Mjml(
+            "<mjml><mj-body></mj-body></mjml>".to_owned(),
+        ))
+        .await
+        .context("rendering an empty document")?;
+        Ok(())
+    }
+
     /// Kills every running child, refuses new jobs, and waits until all are reaped.
     pub async fn shutdown(&self) {
         self.shutdown.cancel();

@@ -213,6 +213,11 @@ impl IncludeLoaderConfig {
         })
     }
 
+    #[must_use]
+    pub const fn http_timeout(&self) -> Duration {
+        self.http_timeout
+    }
+
     /// Lowers the per-fetch HTTP timeout to `max` when it is longer; never raises it.
     #[must_use]
     pub fn with_max_http_timeout(mut self, max: Duration) -> Self {

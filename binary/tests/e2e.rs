@@ -171,6 +171,9 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -334,6 +337,9 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -476,6 +482,9 @@ async fn sent_email_blob_is_deleted_after_delivery() {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -619,6 +628,9 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
                 fetch_timeout: Duration::from_secs(30),
             },
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -768,6 +780,9 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -892,6 +907,9 @@ async fn submit_email_with_disallowed_remote_attachment_returns_400() {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -1003,6 +1021,9 @@ async fn multi_sender_routes_by_sender_domain() {
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -1159,6 +1180,9 @@ async fn sink_sender_reaches_delivery_succeeded_without_any_smtp_server() {
         attachment_store: base_attachment_store(),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -1249,6 +1273,29 @@ async fn start_app_with_resolver(
     resolver: TemplateResolverConfig,
     db_dir: &tempfile::TempDir,
 ) -> String {
+    start_app_with_render(
+        auth,
+        feedback_secret,
+        bounce,
+        resolver,
+        base_render(),
+        db_dir,
+    )
+    .await
+}
+
+fn base_render() -> catapulte::render_sandbox::RenderSandboxConfig {
+    catapulte::render_sandbox::RenderSandboxConfig::new(env!("CARGO_BIN_EXE_catapulte").into())
+}
+
+async fn start_app_with_render(
+    auth: Option<AuthConfig>,
+    feedback_secret: Option<&str>,
+    bounce: Option<catapulte_domain::entity::return_path::BounceConfig>,
+    resolver: TemplateResolverConfig,
+    render: catapulte::render_sandbox::RenderSandboxConfig,
+    db_dir: &tempfile::TempDir,
+) -> String {
     let http_port = free_port();
     let config = AppConfig {
         storage: StorageBackendConfig::Sqlite(SqliteConfig {
@@ -1271,6 +1318,7 @@ async fn start_app_with_resolver(
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render,
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -2487,4 +2535,194 @@ async fn runaway_templates_are_rejected_on_upload_and_fail_a_send_without_a_retr
     }
     assert!(types.contains(&"delivery.failed".to_owned()), "{types:?}");
     assert!(!types.contains(&"retrying".to_owned()), "{types:?}");
+}
+
+const STATIC_MJML: &str = "<mjml><mj-body><mj-section><mj-column><mj-text>Hi</mj-text></mj-column></mj-section></mj-body></mjml>";
+
+/// `==` on two separately built towers, which the engine cannot meter.
+fn hostile_body() -> String {
+    let mut source = String::from("{% set a = ['x'] %}{% set b = ['x'] %}");
+    source.push_str(&"{% set a = [a, a] %}{% set b = [b, b] %}".repeat(28));
+    source.push_str("{{ a == b }}");
+    format!(
+        "<mjml><mj-body><mj-section><mj-column><mj-text>{source}</mj-text></mj-column></mj-section></mj-body></mjml>"
+    )
+}
+
+async fn submit_mjml(base: &str, source: &str) -> String {
+    id_of(
+        submit_as(
+            base,
+            "secret-a",
+            "s@example.com",
+            None,
+            serde_json::json!({ "body": { "kind": "mjml_inline", "source": source } }),
+        )
+        .await,
+    )
+    .await
+}
+
+async fn events_of(base: &str, id: &str) -> Vec<serde_json::Value> {
+    get_json(base, "secret-ops", &format!("/emails/{id}/events")).await["events"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+async fn wait_for_event(base: &str, id: &str, event_type: &str) -> Vec<serde_json::Value> {
+    for _ in 0..200 {
+        let events = events_of(base, id).await;
+        if events.iter().any(|e| e["event_type"] == event_type) {
+            return events;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!(
+        "no {event_type} event for {id}: {:?}",
+        events_of(base, id).await
+    );
+}
+
+async fn preview(base: &str, name: &str) -> reqwest::Response {
+    send(
+        reqwest::Method::POST,
+        base,
+        "secret-ops",
+        &format!("/templates/{name}/preview"),
+        Some(serde_json::json!({ "variables": {} })),
+    )
+    .await
+}
+
+fn templates_dir_with(name: &str, source: &str) -> (tempfile::TempDir, TemplateResolverConfig) {
+    let files = tempfile::tempdir().unwrap();
+    std::fs::write(files.path().join(format!("{name}.mjml")), source).unwrap();
+    let resolver = TemplateResolverConfig {
+        templates_dir: Some(files.path().to_path_buf()),
+        ..base_resolver()
+    };
+    (files, resolver)
+}
+
+#[tokio::test]
+async fn a_send_with_an_unmetered_template_fails_once_as_template_interpolate_without_any_retry() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_sink_app(suppression_auth(), &db_dir).await;
+
+    let id = submit_mjml(&base, &hostile_body()).await;
+
+    let events = wait_for_event(&base, &id, "delivery.failed").await;
+    let failed: Vec<_> = events
+        .iter()
+        .filter(|e| e["event_type"] == "delivery.failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "{events:?}");
+    assert_eq!(failed[0]["payload"]["attempt"], 1, "{events:?}");
+    assert_eq!(
+        failed[0]["error_class"], "template_interpolate",
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|e| !["retrying", "delivery.succeeded"]
+                .contains(&e["event_type"].as_str().unwrap())),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn hostile_uploads_and_previews_are_rejected_with_400_long_before_the_http_timeout() {
+    let (_files, resolver) = templates_dir_with("hostile", &hostile_body());
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_app_with_resolver(suppression_auth(), None, None, resolver, &db_dir).await;
+
+    let started = std::time::Instant::now();
+    let upload = put_template(
+        &base,
+        "secret-ops",
+        "stored",
+        &hostile_body(),
+        serde_json::json!({}),
+    )
+    .await;
+    let previewed = preview(&base, "hostile").await;
+
+    assert_eq!(upload.status(), 400);
+    assert_eq!(previewed.status(), 400);
+    let message: serde_json::Value = previewed.json().await.unwrap();
+    assert!(
+        message["error"].as_str().unwrap().contains("budget"),
+        "{message}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn a_broken_render_program_is_a_503_for_templates_and_a_retry_for_sends() {
+    let (_files, resolver) = templates_dir_with("filed", WELCOME);
+    let program_dir = tempfile::tempdir_in(
+        std::path::Path::new(env!("CARGO_BIN_EXE_catapulte"))
+            .parent()
+            .unwrap(),
+    )
+    .unwrap();
+    let program = program_dir.path().join("catapulte");
+    std::fs::hard_link(env!("CARGO_BIN_EXE_catapulte"), &program).unwrap();
+    let render = catapulte::render_sandbox::RenderSandboxConfig::new(program.clone());
+    let db_dir = tempfile::tempdir().unwrap();
+    let base =
+        start_app_with_render(suppression_auth(), None, None, resolver, render, &db_dir).await;
+    std::fs::remove_file(&program).unwrap();
+
+    let upload = put_template(&base, "secret-ops", "new", WELCOME, serde_json::json!({})).await;
+    let previewed = preview(&base, "filed").await;
+    let id = submit_mjml(&base, WELCOME).await;
+
+    assert_eq!(upload.status(), 503);
+    assert_eq!(previewed.status(), 503);
+    let events = wait_for_event(&base, &id, "retrying").await;
+    assert!(
+        events.iter().all(|e| e["event_type"] != "delivery.failed"),
+        "{events:?}"
+    );
+    let retrying = events
+        .iter()
+        .find(|e| e["event_type"] == "retrying")
+        .unwrap();
+    assert_eq!(
+        retrying["error_class"], "template_interpolate",
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn previews_and_sends_share_one_admission_limit() {
+    let (_files, resolver) = templates_dir_with("hostile", &hostile_body());
+    let render = catapulte::render_sandbox::RenderSandboxConfig {
+        concurrency: 1,
+        ..base_render()
+    };
+    let db_dir = tempfile::tempdir().unwrap();
+    let base =
+        start_app_with_render(suppression_auth(), None, None, resolver, render, &db_dir).await;
+
+    let hostile_base = base.clone();
+    let hostile = tokio::spawn(async move { preview(&hostile_base, "hostile").await.status() });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let id = submit_mjml(&base, STATIC_MJML).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
+
+    let during = event_types(&base, &id).await;
+    assert!(
+        !during.contains(&"delivery.succeeded".to_owned()),
+        "{during:?}"
+    );
+    assert_eq!(hostile.await.unwrap(), 400);
+    wait_for_event(&base, &id, "delivery.succeeded").await;
 }

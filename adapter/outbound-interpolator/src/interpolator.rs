@@ -1,7 +1,6 @@
 use anyhow::Context;
 use catapulte_domain::entity::body::{InterpolatedBody, Plain, ResolvedBody};
-use catapulte_domain::port::template_interpolator::{InterpolateError, TemplateInterpolator};
-use catapulte_domain::port::template_validator::TemplateValidator;
+use catapulte_domain::port::template_interpolator::InterpolateError;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -299,26 +298,6 @@ impl MiniJinjaInterpolator {
             }
             ResolvedBody::Plain(plain) => interpolate_plain(plain, variables),
         }
-    }
-}
-
-impl TemplateValidator for MiniJinjaInterpolator {
-    async fn validate(
-        &self,
-        source: &str,
-        variables: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<String, InterpolateError> {
-        Self::validate(self, source, variables)
-    }
-}
-
-impl TemplateInterpolator for MiniJinjaInterpolator {
-    async fn interpolate(
-        &self,
-        body: ResolvedBody,
-        variables: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<InterpolatedBody, InterpolateError> {
-        Self::interpolate(self, body, variables)
     }
 }
 

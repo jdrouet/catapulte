@@ -746,3 +746,125 @@ fn the_default_memory_limit_leaves_headroom_over_the_heaviest_normal_job() {
         assert!(peak * 4 <= default_limit, "{name}: {peak} KiB");
     }
 }
+
+// ---- startup and shutdown ---------------------------------------------------------------
+
+#[tokio::test]
+#[serial]
+async fn the_self_test_passes_with_the_real_child_and_fails_without_one() {
+    sandbox().self_test().await.unwrap();
+
+    let broken = sandbox_with(RenderSandboxConfig {
+        program: PathBuf::from("/nonexistent/render-child"),
+        ..config()
+    });
+
+    assert!(broken.self_test().await.is_err());
+}
+
+fn app_config(http_port: u16, dir: &tempfile::TempDir) -> catapulte::AppConfig {
+    use std::collections::HashSet;
+
+    use catapulte::attachment_store::AttachmentStoreBackendConfig;
+    use catapulte::publisher::PublisherAdapterConfig;
+    use catapulte::queue::QueueBackendConfig;
+    use catapulte::storage::StorageBackendConfig;
+    use catapulte_inbound_http::InboundHttpConfig;
+    use catapulte_inbound_worker::worker::WorkerConfig;
+    use catapulte_outbound_attachment_fs::store::FsAttachmentStoreConfig;
+    use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
+    use catapulte_outbound_smtp::multi_sender::MultiSenderConfig;
+    use catapulte_outbound_sqlite::SqliteConfig;
+
+    catapulte::AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", dir.path().join("app.db").display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+            auth: None,
+            feedback_secret: None,
+            request_timeout: Duration::from_secs(30),
+        },
+        inbound_nats: None,
+        smtp: MultiSenderConfig::empty().with_sink_sender("ci", 100),
+        resolver: TemplateResolverConfig {
+            allowed_domains: HashSet::new(),
+            templates_dir: None,
+            auth_entries: Vec::new(),
+            fetch_timeout: Duration::from_secs(30),
+            max_bytes: 1_048_576,
+        },
+        worker: WorkerConfig::default(),
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
+        attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
+            root: dir.path().join("attachments"),
+        }),
+        attachment_fetcher:
+            catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcherConfig::default(),
+        include_loader: IncludeLoaderConfig::default(),
+        render: config(),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
+        max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
+        bounce: None,
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn the_shutdown_drain_finishes_in_time_and_leaves_no_children() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let app = app_config(port, &dir).build().await.unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let running = tokio::spawn(app.run_with_shutdown(cancel.clone()));
+    let base = format!("http://127.0.0.1:{port}");
+    for _ in 0..100 {
+        if reqwest::get(format!("{base}/health/live")).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let hostile = format!(
+        "<mjml><mj-body><mj-text>{}</mj-text></mj-body></mjml>",
+        eq_template()
+    );
+    let submitted = reqwest::Client::new()
+        .post(format!("{base}/emails"))
+        .json(&serde_json::json!({
+            "sender": "s@example.com",
+            "recipients": [{ "kind": "to", "address": "r@example.com" }],
+            "body": { "kind": "mjml_inline", "source": hostile },
+            "variables": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(submitted.status().is_success(), "{}", submitted.status());
+    let started = Instant::now();
+    while children().is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "no child started"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let shutdown_started = Instant::now();
+    cancel.cancel();
+    running.await.unwrap().unwrap();
+
+    assert!(
+        shutdown_started.elapsed() < Duration::from_secs(30),
+        "{:?}",
+        shutdown_started.elapsed()
+    );
+    wait_for_no_children().await;
+}
