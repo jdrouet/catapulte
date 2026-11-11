@@ -291,6 +291,12 @@ side channel in private-key operations). Some receivers do not yet verify Ed2551
 |----------|-------------|---------|
 | `CATAPULTE_QUEUE_BACKEND` | `storage`, `memory`, or `nats` | `storage` |
 
+#### Storage queue
+
+Each queue row carries the time from which it can be claimed. Workers claim the row with the earliest availability time first (earliest-availability ordering, not strict arrival order; ties are unspecified). Rows that are due immediately keep their order, and a retried row is now ordered by its retry time.
+
+Upgrading to this version runs a migration that locks `email_queue` while it rewrites rows with a NULL availability time, so apply it in a maintenance window. The queue is normally small, so the lock is short. Afterwards a NULL availability time cannot be stored: PostgreSQL rejects it, and on SQLite a trigger fills it in, so older writers cannot strand a row.
+
 #### NATS Queue (if backend is `nats`)
 Enqueue waits for the JetStream publish acknowledgement before it succeeds.
 

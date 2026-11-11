@@ -96,6 +96,17 @@ fn now_ms() -> i64 {
     .unwrap_or(i64::MAX)
 }
 
+/// Claims the row with the earliest availability time that is due.
+const CLAIM_SQL: &str = "UPDATE email_queue \
+     SET attempt_count = attempt_count + 1, claimed_until = ? \
+     WHERE id = ( \
+         SELECT id FROM email_queue \
+         WHERE claimed_until <= ? \
+         ORDER BY claimed_until ASC \
+         LIMIT 1 \
+     ) \
+     RETURNING id, email_id, attempt_count, trace_context";
+
 /// A failed `COMMIT` leaves the outcome unknown; every earlier failure rolled back.
 fn commit_error(e: sqlx::Error) -> EmailQueueError {
     EmailQueueError::Uncertain {
@@ -114,7 +125,7 @@ fn deserialize_trace_context(raw: Option<String>) -> TraceCarrier {
 
 impl SqliteAdapter {
     /// Returns the count of queue entries that are eligible to be claimed now
-    /// (i.e. `claimed_until IS NULL OR claimed_until < now_ms`).
+    /// (i.e. `claimed_until <= now_ms`).
     ///
     /// # Errors
     ///
@@ -122,13 +133,12 @@ impl SqliteAdapter {
     pub async fn pending(&self) -> anyhow::Result<u64> {
         use anyhow::Context as _;
         let now = now_ms();
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM email_queue WHERE claimed_until IS NULL OR claimed_until < ?",
-        )
-        .bind(now)
-        .fetch_one(self.pool())
-        .await
-        .context("counting pending email_queue entries")?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM email_queue WHERE claimed_until <= ?")
+                .bind(now)
+                .fetch_one(self.pool())
+                .await
+                .context("counting pending email_queue entries")?;
         Ok(u64::try_from(count).unwrap_or(0))
     }
 
@@ -138,23 +148,13 @@ impl SqliteAdapter {
         let processing_timeout_ms: i64 = 300_000;
         let claim_until = now + processing_timeout_ms;
 
-        let maybe = sqlx::query(
-            "UPDATE email_queue \
-             SET attempt_count = attempt_count + 1, claimed_until = ? \
-             WHERE id = ( \
-                 SELECT id FROM email_queue \
-                 WHERE claimed_until IS NULL OR claimed_until < ? \
-                 ORDER BY enqueued_at ASC \
-                 LIMIT 1 \
-             ) \
-             RETURNING id, email_id, attempt_count, trace_context",
-        )
-        .bind(claim_until)
-        .bind(now)
-        .fetch_optional(self.pool())
-        .await
-        .context("claiming next queue entry")
-        .map_err(|source| EmailQueueError::Storage { source })?;
+        let maybe = sqlx::query(CLAIM_SQL)
+            .bind(claim_until)
+            .bind(now)
+            .fetch_optional(self.pool())
+            .await
+            .context("claiming next queue entry")
+            .map_err(|source| EmailQueueError::Storage { source })?;
 
         let Some(row) = maybe else { return Ok(None) };
         let entry_id_bytes: Vec<u8> = row
@@ -264,7 +264,7 @@ impl EmailQueue for SqliteAdapter {
                 .bind(entry_id)
                 .bind(&email_id_bytes)
                 .bind(trace_context)
-                .bind(envelope.send_at_ms)
+                .bind(envelope.send_at_ms.unwrap_or_else(now_ms))
                 .execute(&mut *tx)
                 .await
                 .context("inserting into email_queue")
@@ -509,7 +509,9 @@ mod tests {
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
         // Insert a queue row with NULL trace_context to simulate a pre-migration row.
-        sqlx::query("INSERT INTO email_queue (id, email_id, trace_context) VALUES (?, ?, NULL)")
+        sqlx::query(
+            "INSERT INTO email_queue (id, email_id, trace_context, claimed_until) VALUES (?, ?, NULL, 0)",
+        )
             .bind(uuid::Uuid::now_v7().as_bytes().to_vec())
             .bind(id.as_uuid().as_bytes().to_vec())
             .execute(adapter.pool())
@@ -573,7 +575,7 @@ mod tests {
             .set_enqueue_state(id, "", EnqueueState::Publishable)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO email_queue (id, email_id) VALUES (?, ?)")
+        sqlx::query("INSERT INTO email_queue (id, email_id, claimed_until) VALUES (?, ?, 0)")
             .bind(uuid::Uuid::now_v7().as_bytes().to_vec())
             .bind(id.as_uuid().as_bytes().to_vec())
             .execute(adapter.pool())
@@ -585,6 +587,7 @@ mod tests {
         assert_eq!(outcome, EnqueueOutcome::Inserted);
         assert_eq!(queue_rows(&adapter, id).await, 1);
         assert_eq!(state_of(&adapter, id).await, "enqueued");
+        assert_eq!(adapter.try_dequeue().await.unwrap().unwrap().id, id);
     }
 
     #[tokio::test]
@@ -769,5 +772,175 @@ mod tests {
 
         assert!(matches!(err, EmailQueueError::Storage { .. }), "{err:?}");
         assert_eq!(queue_rows(&adapter, id).await, 0);
+    }
+
+    /// Seeds `count` emails, each with a queue row available at `base + n` (n from 1).
+    async fn seed_queue(adapter: &SqliteAdapter, count: i64, base: i64) {
+        let proto = EmailId::default();
+        adapter.save(proto, &sample_envelope()).await.unwrap();
+        sqlx::query(
+            "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < ?) \
+             INSERT INTO emails (id, sender, recipients, body, variables) \
+             SELECT CAST(printf('e%015d', n) AS BLOB), sender, recipients, body, variables \
+             FROM c, (SELECT * FROM emails WHERE id = ?)",
+        )
+        .bind(count)
+        .bind(proto.as_uuid().as_bytes().to_vec())
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < ?) \
+             INSERT INTO email_queue (id, email_id, claimed_until) \
+             SELECT CAST(printf('q%015d', n) AS BLOB), CAST(printf('e%015d', n) AS BLOB), ? + n FROM c",
+        )
+        .bind(count)
+        .bind(base)
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+        sqlx::query("ANALYZE")
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn claim_with_many_future_rows_uses_the_availability_index() {
+        use sqlx::Row;
+        let adapter = fresh_adapter().await;
+        seed_queue(&adapter, 100_000, super::now_ms() + 3_600_000).await;
+
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "EXPLAIN QUERY PLAN {}",
+            super::CLAIM_SQL
+        )))
+        .bind(0_i64)
+        .bind(super::now_ms())
+        .fetch_all(adapter.pool())
+        .await
+        .unwrap();
+        let details: Vec<String> = rows
+            .iter()
+            .map(|r| r.try_get::<String, _>("detail").unwrap())
+            .collect();
+        eprintln!("claim plan: {details:?}");
+        assert!(
+            details
+                .iter()
+                .any(|d| d.contains("email_queue_claimed_until")),
+            "{details:?}"
+        );
+        assert!(
+            details.iter().all(|d| !d.contains("SCAN email_queue")),
+            "{details:?}"
+        );
+
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            assert!(adapter.try_dequeue().await.unwrap().is_none());
+        }
+        let elapsed = started.elapsed();
+        eprintln!("100 empty claims: {elapsed:?}");
+        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn an_immediate_row_is_claimed_before_older_future_rows() {
+        let adapter = fresh_adapter().await;
+        let mut future = sample_envelope();
+        future.send_at_ms = Some(super::now_ms() + 3_600_000);
+        for _ in 0..3 {
+            let id = EmailId::default();
+            adapter.save(id, &future).await.unwrap();
+            adapter.enqueue(id, &future).await.unwrap();
+        }
+        let now_id = EmailId::default();
+        adapter.save(now_id, &sample_envelope()).await.unwrap();
+        adapter.enqueue(now_id, &sample_envelope()).await.unwrap();
+
+        assert_eq!(adapter.try_dequeue().await.unwrap().unwrap().id, now_id);
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_due_backlog_is_claimed_earliest_first() {
+        let adapter = fresh_adapter().await;
+        seed_queue(&adapter, 10_000, 0).await;
+        let earliest: Vec<u8> = sqlx::query_scalar(
+            "SELECT email_id FROM email_queue WHERE claimed_until = (SELECT MIN(claimed_until) FROM email_queue)",
+        )
+        .fetch_one(adapter.pool())
+        .await
+        .unwrap();
+
+        let first = adapter.try_dequeue().await.unwrap().unwrap();
+
+        assert_eq!(first.id.as_uuid().as_bytes().to_vec(), earliest);
+    }
+
+    #[tokio::test]
+    async fn the_migration_backfills_null_rows_so_they_are_claimable() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        // Simulate a pre-migration table: no trigger yet.
+        sqlx::query("DROP TRIGGER email_queue_claimed_until_default")
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO email_queue (id, email_id, claimed_until) VALUES (?, ?, NULL)")
+            .bind(uuid::Uuid::now_v7().as_bytes().to_vec())
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
+
+        sqlx::raw_sql(include_str!(
+            "../migrations/20261121000002_queue_availability.sql"
+        ))
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+
+        let nulls: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM email_queue WHERE claimed_until IS NULL")
+                .fetch_one(adapter.pool())
+                .await
+                .unwrap();
+        assert_eq!(nulls, 0);
+        assert_eq!(adapter.try_dequeue().await.unwrap().unwrap().id, id);
+    }
+
+    #[tokio::test]
+    async fn a_zero_delay_nack_makes_the_row_claimable_again() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+        let dequeued = adapter.dequeue().await.unwrap();
+
+        adapter
+            .nack(dequeued.token, std::time::Duration::ZERO)
+            .await
+            .unwrap();
+
+        assert_eq!(adapter.try_dequeue().await.unwrap().unwrap().attempt, 2);
+    }
+
+    #[tokio::test]
+    async fn an_insert_with_a_null_claimed_until_is_claimable() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+
+        sqlx::query("INSERT INTO email_queue (id, email_id, claimed_until) VALUES (?, ?, NULL)")
+            .bind(uuid::Uuid::now_v7().as_bytes().to_vec())
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        assert_eq!(adapter.try_dequeue().await.unwrap().unwrap().id, id);
     }
 }
