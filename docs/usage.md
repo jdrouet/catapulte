@@ -352,7 +352,8 @@ each event as JSON:
 | `sending` | a delivery attempt is starting | `attempt`, `correlation_id` |
 | `delivery.succeeded` | accepted by the upstream SMTP server | `sender_name`, `correlation_id`, `smtp_response`, `message_id` |
 | `retrying` | attempt failed, will retry | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
-| `delivery.failed` | retries exhausted | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
+| `delivery.failed` | retries exhausted, or no recipient left after suppression (`error_class` `suppressed`) | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
+| `suppressed` | recipients were dropped because they are on the suppression list; informational, never changes the status | `addresses`, `correlation_id` |
 
 On `delivery.succeeded`, `smtp_response` is the relay's reply as `"{code} {text}"`
 (for example `250 2.0.0 Ok: queued as 4ABC12D3`), cut to at most 256 characters (the
@@ -436,6 +437,27 @@ the current quota window:
 `quota` is null when none is configured; `range` is `hourly` | `daily` | `weekly`
 | `monthly`.
 
+## Suppression list
+
+Addresses on the suppression list never receive mail. Every `/suppressions` route needs an
+admin key and returns `403` for any other key. Addresses are stored as lowercased bare
+addresses, and a recipient matches on that form in `to`, `cc` and `bcc`.
+
+- `GET /suppressions?reason=&address=&limit=&offset=` lists entries, newest first. `reason`
+  is `bounce`, `complaint`, `unsubscribe` or `manual`; `address` matches a substring.
+- `POST /suppressions` with `{"suppressions": [{"address": "a@b.c", "reason": "manual"}]}`
+  adds up to 100 entries (`reason` defaults to `manual`) and returns `204`. An address that is
+  already listed keeps its first entry.
+- `DELETE /suppressions/{address}` returns `204`, or `404` when the address is not listed.
+
+On submit, suppressed recipients are dropped. If none are left, the request fails with `422`
+(a per-item rejection in a batch, and a discarded message on inbound NATS) and nothing is
+stored. A resubmit with an idempotency key that already identifies an accepted email returns
+that email's id even if a recipient was suppressed afterwards. Dropped recipients are reported
+in a `suppressed` lifecycle event, which does not change the email's status. The worker checks
+the list again before sending: it drops newly suppressed recipients, and if none remain it
+fails the email with `delivery.failed` and `error_class` `suppressed`.
+
 ## Health
 
 Always public (never require the API key):
@@ -458,6 +480,7 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 | `401` | missing/invalid bearer token |
 | `403` | the sender's domain is not in the operator's `CATAPULTE_ALLOWED_SENDER_DOMAINS` list (exact domain match, no subdomains), including an idempotent retry whose sender is no longer allowed, or one that would republish a stored original whose sender is no longer allowed; in a batch the item is rejected instead |
 | `409` | idempotency key matches a submission that never completed; retry later |
+| `422` | every recipient is on the suppression list |
 | `500` | storage / queue / attachment-store failure |
 
 ## Limits

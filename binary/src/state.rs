@@ -9,6 +9,9 @@ use catapulte_domain::service::routed_email_sender::RoutedEmailSender;
 use catapulte_domain::use_case::list_emails::{ListEmailsService, ListEmailsUseCase};
 use catapulte_domain::use_case::list_events::{ListEventsService, ListEventsUseCase};
 use catapulte_domain::use_case::list_senders::{ListSendersService, ListSendersUseCase};
+use catapulte_domain::use_case::manage_suppressions::{
+    ManageSuppressionsService, ManageSuppressionsUseCase,
+};
 use catapulte_domain::use_case::process_queued_email::{
     ProcessQueuedEmailService, ProcessQueuedEmailUseCase,
 };
@@ -61,6 +64,7 @@ pub(crate) struct AppState {
     pub(crate) list_senders: Arc<ListSendersServiceImpl>,
     pub(crate) list_emails: Arc<ListEmailsServiceImpl>,
     pub(crate) list_events: Arc<ListEventsServiceImpl>,
+    pub(crate) manage_suppressions: Arc<ManageSuppressionsService<StorageAdapter>>,
     pub(crate) check_readiness: Arc<CheckReadinessServiceImpl>,
     pub(crate) queue: QueueAdapter,
     pub(crate) publisher: PublisherAdapter,
@@ -91,6 +95,10 @@ impl HttpServerState for AppState {
 
     fn list_senders(&self) -> &impl ListSendersUseCase {
         self.list_senders.as_ref()
+    }
+
+    fn manage_suppressions(&self) -> &impl ManageSuppressionsUseCase {
+        self.manage_suppressions.as_ref()
     }
 }
 

@@ -7,6 +7,7 @@ use serde::Serialize;
 use catapulte_domain::use_case::list_emails::ListEmailsError;
 use catapulte_domain::use_case::list_events::ListEventsError;
 use catapulte_domain::use_case::list_senders::ListSendersError;
+use catapulte_domain::use_case::manage_suppressions::ManageSuppressionsError;
 use catapulte_domain::use_case::submit_email::SubmitEmailError;
 
 use crate::dto::EnvelopeConversionError;
@@ -27,6 +28,12 @@ pub enum AppError {
     ListEvents(#[from] ListEventsError),
     #[error(transparent)]
     ListSenders(#[from] ListSendersError),
+    #[error(transparent)]
+    ManageSuppressions(#[from] ManageSuppressionsError),
+    #[error("admin key required")]
+    Forbidden,
+    #[error("not found")]
+    NotFound,
     #[error("invalid email id")]
     InvalidEmailId,
     #[error("invalid error_class value")]
@@ -57,6 +64,8 @@ impl IntoResponse for AppError {
             Self::Submit(SubmitEmailError::SenderDomainNotAllowed { .. }) => {
                 (StatusCode::FORBIDDEN, "sender domain is not allowed")
             }
+            Self::Forbidden => (StatusCode::FORBIDDEN, "admin key required"),
+            Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
             Self::Submit(SubmitEmailError::AllRecipientsSuppressed) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "every recipient is on the suppression list",
@@ -73,7 +82,8 @@ impl IntoResponse for AppError {
             )
             | Self::ListEmails(_)
             | Self::ListEvents(_)
-            | Self::ListSenders(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+            | Self::ListSenders(_)
+            | Self::ManageSuppressions(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
         };
         tracing::error!(error = ?self, status = %status.as_u16(), "request failed");
         (status, Json(ErrorBody { error: message })).into_response()

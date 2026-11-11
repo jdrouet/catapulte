@@ -168,6 +168,13 @@ mod tests {
         fn list_senders(&self) -> &impl ListSendersUseCase {
             self.list_senders.as_ref()
         }
+
+        fn manage_suppressions(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
+        {
+            &crate::routes::suppressions::NoopManageSuppressions
+        }
     }
 
     #[derive(Clone)]
@@ -196,6 +203,13 @@ mod tests {
 
         fn list_senders(&self) -> &impl ListSendersUseCase {
             &FailingListSenders
+        }
+
+        fn manage_suppressions(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
+        {
+            &crate::routes::suppressions::NoopManageSuppressions
         }
     }
 

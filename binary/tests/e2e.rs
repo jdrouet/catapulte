@@ -1516,3 +1516,177 @@ async fn identity_fields_in_the_body_cannot_change_the_caller() {
     );
     assert!(!ids(&a_emails, "emails", "id").contains(&b1));
 }
+
+fn suppression_auth() -> Option<AuthConfig> {
+    AuthConfig::new(
+        None,
+        vec![
+            named_key("ops", "secret-ops", true, None),
+            named_key("a", "secret-a", false, None),
+        ],
+    )
+    .unwrap()
+}
+
+async fn send(
+    method: reqwest::Method,
+    base: &str,
+    token: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> reqwest::Response {
+    let mut request = reqwest::Client::new()
+        .request(method, format!("{base}{path}"))
+        .bearer_auth(token);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    request.send().await.unwrap()
+}
+
+#[tokio::test]
+async fn suppression_routes_are_admin_only() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_sink_app(suppression_auth(), &db_dir).await;
+    let add = serde_json::json!({ "suppressions": [{ "address": "x@example.com" }] });
+
+    for (method, path, body) in [
+        (reqwest::Method::GET, "/suppressions", None),
+        (reqwest::Method::POST, "/suppressions", Some(add.clone())),
+        (reqwest::Method::DELETE, "/suppressions/x@example.com", None),
+    ] {
+        let denied = send(method, &base, "secret-a", path, body).await;
+        assert_eq!(denied.status(), 403, "{path}");
+    }
+
+    let added = send(
+        reqwest::Method::POST,
+        &base,
+        "secret-ops",
+        "/suppressions",
+        Some(add),
+    )
+    .await;
+    assert_eq!(added.status(), 204);
+    let bad = send(
+        reqwest::Method::POST,
+        &base,
+        "secret-ops",
+        "/suppressions",
+        Some(serde_json::json!({ "suppressions": [{ "address": "not an address" }] })),
+    )
+    .await;
+    assert_eq!(bad.status(), 400);
+    let listed = get_json(&base, "secret-ops", "/suppressions?reason=manual").await;
+    assert_eq!(
+        ids(&listed, "suppressions", "address"),
+        vec!["x@example.com"]
+    );
+    let deleted = send(
+        reqwest::Method::DELETE,
+        &base,
+        "secret-ops",
+        "/suppressions/X@Example.com",
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status(), 204);
+    let missing = send(
+        reqwest::Method::DELETE,
+        &base,
+        "secret-ops",
+        "/suppressions/x@example.com",
+        None,
+    )
+    .await;
+    assert_eq!(missing.status(), 404);
+}
+
+#[tokio::test]
+async fn suppressed_recipients_are_rejected_dropped_and_released_by_delete() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_sink_app(suppression_auth(), &db_dir).await;
+    let added = send(
+        reqwest::Method::POST,
+        &base,
+        "secret-ops",
+        "/suppressions",
+        Some(serde_json::json!({
+            "suppressions": [{ "address": "Gone@Example.com", "reason": "bounce" }]
+        })),
+    )
+    .await;
+    assert_eq!(added.status(), 204);
+    let only_gone = serde_json::json!({
+        "recipients": [{ "kind": "to", "address": "gone@example.com" }]
+    });
+
+    for _ in 0..2 {
+        let rejected = submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            Some("k"),
+            only_gone.clone(),
+        )
+        .await;
+        assert_eq!(rejected.status(), 422);
+    }
+    let none = get_json(&base, "secret-a", "/emails").await;
+    assert!(
+        none["emails"].as_array().unwrap().is_empty(),
+        "no reservation is left behind"
+    );
+
+    let deleted = send(
+        reqwest::Method::DELETE,
+        &base,
+        "secret-ops",
+        "/suppressions/gone@example.com",
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status(), 204);
+    let id = id_of(
+        submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            Some("k"),
+            only_gone.clone(),
+        )
+        .await,
+    )
+    .await;
+    wait_for_delivery(&base, "secret-ops", &id).await;
+
+    let added = send(
+        reqwest::Method::POST,
+        &base,
+        "secret-ops",
+        "/suppressions",
+        Some(serde_json::json!({ "suppressions": [{ "address": "gone@example.com" }] })),
+    )
+    .await;
+    assert_eq!(added.status(), 204);
+    let again =
+        id_of(submit_as(&base, "secret-a", "s@example.com", Some("k"), only_gone).await).await;
+    assert_eq!(
+        again, id,
+        "a later suppression never turns a resubmit into a 422"
+    );
+
+    let mixed = serde_json::json!({
+        "recipients": [
+            { "kind": "to", "address": "gone@example.com" },
+            { "kind": "to", "address": "kept@example.com" }
+        ]
+    });
+    let partial = id_of(submit_as(&base, "secret-a", "s@example.com", None, mixed).await).await;
+    wait_for_delivery(&base, "secret-ops", &partial).await;
+    let events = get_json(&base, "secret-ops", &format!("/emails/{partial}/events")).await;
+    let types = ids(&events, "events", "event_type");
+    assert!(types.contains(&"suppressed".to_owned()), "{types:?}");
+    let status = get_json(&base, "secret-ops", &format!("/emails?id={partial}")).await;
+    assert_eq!(status["emails"][0]["status"], "sent");
+}

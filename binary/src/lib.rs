@@ -216,6 +216,11 @@ impl AppConfig {
         let list_events = Arc::new(
             catapulte_domain::use_case::list_events::ListEventsService::new(storage.clone()),
         );
+        let manage_suppressions = Arc::new(
+            catapulte_domain::use_case::manage_suppressions::ManageSuppressionsService::new(
+                storage.clone(),
+            ),
+        );
         let resolver = self
             .resolver
             .build()
@@ -270,6 +275,7 @@ impl AppConfig {
             list_senders,
             list_emails,
             list_events,
+            manage_suppressions,
             check_readiness,
             queue,
             publisher,

@@ -176,6 +176,18 @@ mod tests {
     use crate::entity::sender::SenderName;
 
     #[test]
+    fn suppressed_is_informational_for_status_and_worker_evidence() {
+        let e = LifecycleEvent::Suppressed {
+            id: EmailId::default(),
+            addresses: vec!["a@x.com".to_owned()],
+            correlation_id: None,
+        };
+        assert_eq!(e.event_type(), "suppressed");
+        assert!(!TERMINAL_EVENT_TYPES.contains(&e.event_type()));
+        assert!(!WORKER_EVENT_TYPES.contains(&e.event_type()));
+    }
+
+    #[test]
     fn event_type_queued() {
         let e = LifecycleEvent::Queued {
             id: EmailId::default(),

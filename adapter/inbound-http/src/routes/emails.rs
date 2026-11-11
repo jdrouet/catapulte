@@ -445,6 +445,13 @@ mod tests {
         fn list_senders(&self) -> &impl ListSendersUseCase {
             &NoopListSenders
         }
+
+        fn manage_suppressions(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
+        {
+            &crate::routes::suppressions::NoopManageSuppressions
+        }
     }
 
     #[derive(Clone)]
@@ -477,6 +484,13 @@ mod tests {
         fn list_senders(&self) -> &impl ListSendersUseCase {
             &NoopListSenders
         }
+
+        fn manage_suppressions(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
+        {
+            &crate::routes::suppressions::NoopManageSuppressions
+        }
     }
 
     #[derive(Clone)]
@@ -507,6 +521,13 @@ mod tests {
 
         fn list_senders(&self) -> &impl ListSendersUseCase {
             &NoopListSenders
+        }
+
+        fn manage_suppressions(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
+        {
+            &crate::routes::suppressions::NoopManageSuppressions
         }
     }
 
@@ -1353,6 +1374,13 @@ mod tests {
 
         fn list_senders(&self) -> &impl ListSendersUseCase {
             &NoopListSenders
+        }
+
+        fn manage_suppressions(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase
+        {
+            &crate::routes::suppressions::NoopManageSuppressions
         }
     }
 
