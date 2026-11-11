@@ -22,6 +22,7 @@ mod health;
 mod metrics;
 pub mod publisher;
 pub mod queue;
+pub mod render_sandbox;
 mod state;
 pub mod storage;
 

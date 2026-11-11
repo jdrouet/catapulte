@@ -3,8 +3,17 @@ use std::time::Duration;
 use catapulte::AppConfig;
 use catapulte_telemetry::config::TelemetryConfig;
 
+fn main() -> anyhow::Result<()> {
+    // The render child must start before any runtime, telemetry or tracing setup.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some(catapulte::render_sandbox::SANDBOX_ARG) {
+        std::process::exit(catapulte::render_sandbox::run_child(&args[2..]));
+    }
+    serve()
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn serve() -> anyhow::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("healthcheck") {
         return run_healthcheck().await;
     }
