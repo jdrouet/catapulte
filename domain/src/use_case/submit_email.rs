@@ -7,7 +7,7 @@ use crate::entity::lifecycle_event::LifecycleEvent;
 use crate::entity::suppression::suppression_key;
 use crate::port::attachment_fetcher::AttachmentFetcher;
 use crate::port::attachment_store::{AttachmentReader, AttachmentStore};
-use crate::port::email_queue::{EmailQueue, EmailQueueError};
+use crate::port::email_queue::{EmailQueue, EmailQueueError, EnqueueOutcome};
 use crate::port::email_repository::{
     DuplicateState, EmailRepository, EmailRepositoryError, EnqueueState, SaveResult,
 };
@@ -347,8 +347,9 @@ where
         }
         if let Some(envelope) = recovery {
             self.check_sender_allowed(&envelope.sender, caller_domains)?;
-            self.queue.enqueue(id, &envelope).await?;
-            self.mark_enqueued_and_announce(id, &envelope).await;
+            if self.queue.enqueue(id, &envelope).await? == EnqueueOutcome::Inserted {
+                self.mark_enqueued_and_announce(id, &envelope).await;
+            }
         }
         Ok(id)
     }
@@ -459,6 +460,7 @@ where
             unsubscribe: input.unsubscribe.clone(),
             tags: input.tags.clone(),
             metadata: input.metadata.clone(),
+            send_at_ms: None,
         };
 
         let result = self.repository.save(id, &envelope_for_reservation).await?;
@@ -587,6 +589,7 @@ where
             unsubscribe,
             tags,
             metadata,
+            send_at_ms: None,
         };
 
         if let Err(e) = self
@@ -604,8 +607,10 @@ where
         }
 
         match self.queue.enqueue(id, &envelope).await {
-            Ok(()) => {
-                self.mark_enqueued_and_announce(id, &envelope).await;
+            Ok(outcome) => {
+                if outcome == EnqueueOutcome::Inserted {
+                    self.mark_enqueued_and_announce(id, &envelope).await;
+                }
                 self.announce_suppressed(id, &envelope, dropped).await;
             }
             // The message may be queued: keep the row and blobs so a retry can republish it.
@@ -658,7 +663,7 @@ mod tests {
     use crate::port::attachment_store::{
         AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
     };
-    use crate::port::email_queue::{EmailQueue, EmailQueueError};
+    use crate::port::email_queue::{EmailQueue, EmailQueueError, EnqueueOutcome};
     use crate::port::email_repository::{
         DuplicateState, EmailRepository, EmailRepositoryError, EnqueueState, SaveResult,
     };
@@ -882,9 +887,13 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for FakeQueue {
-        async fn enqueue(&self, id: EmailId, _envelope: &Envelope) -> Result<(), EmailQueueError> {
+        async fn enqueue(
+            &self,
+            id: EmailId,
+            _envelope: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
             self.enqueued.lock().unwrap().push(id);
-            Ok(())
+            Ok(EnqueueOutcome::Inserted)
         }
 
         async fn dequeue(
@@ -913,7 +922,11 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for FailingQueue {
-        async fn enqueue(&self, _id: EmailId, _envelope: &Envelope) -> Result<(), EmailQueueError> {
+        async fn enqueue(
+            &self,
+            _id: EmailId,
+            _envelope: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
             Err(EmailQueueError::Storage {
                 source: anyhow::anyhow!("queue down"),
             })
@@ -1551,6 +1564,7 @@ mod tests {
     struct ScriptedQueue {
         calls: QueueCalls,
         script: Arc<Mutex<std::collections::VecDeque<bool>>>,
+        already_enqueued: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl ScriptedQueue {
@@ -1559,19 +1573,30 @@ mod tests {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
                 script: Arc::new(Mutex::new(script.iter().copied().collect())),
+                already_enqueued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }
         }
     }
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for ScriptedQueue {
-        async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
+        async fn enqueue(
+            &self,
+            id: EmailId,
+            envelope: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
             self.calls
                 .lock()
                 .unwrap()
                 .push((id, envelope.attachments.clone()));
             match self.script.lock().unwrap().pop_front() {
-                None => Ok(()),
+                None if self
+                    .already_enqueued
+                    .load(std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    Ok(EnqueueOutcome::AlreadyEnqueued)
+                }
+                None => Ok(EnqueueOutcome::Inserted),
                 Some(true) => Err(EmailQueueError::Uncertain {
                     source: anyhow::anyhow!("ack lost"),
                 }),
@@ -1748,6 +1773,43 @@ mod tests {
         assert_eq!(queued_count(&events), 1);
         assert_eq!(repo.states(), vec![RowState::Enqueued]);
         assert_eq!(store.outstanding_blobs(), 1);
+    }
+
+    #[tokio::test]
+    async fn already_enqueued_recovery_skips_state_write_and_queued_event() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[true]);
+        let events = FakeEventPublisher::new();
+        let store = FakeAttachmentStore::new();
+        let service = service_with(&repo, &queue, &events, &store);
+        service.execute(keyed_input("k", 10)).await.unwrap_err();
+        queue
+            .already_enqueued
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let id = service.execute(keyed_input("k", 10)).await.unwrap();
+
+        assert_eq!(queue.calls.lock().unwrap().len(), 2);
+        assert_eq!(queue.calls.lock().unwrap()[1].0, id);
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+        assert_eq!(queued_count(&events), 0);
+    }
+
+    #[tokio::test]
+    async fn already_enqueued_submit_returns_the_id_without_announcing() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[]);
+        queue
+            .already_enqueued
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let events = FakeEventPublisher::new();
+        let store = FakeAttachmentStore::new();
+        let service = service_with(&repo, &queue, &events, &store);
+
+        service.execute(keyed_input("k", 10)).await.unwrap();
+
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+        assert_eq!(queued_count(&events), 0);
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@ use anyhow::Context;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::port::email_queue::{
-    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, TraceCarrier,
+    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, TraceCarrier,
 };
 
 use crate::SqliteAdapter;
@@ -56,6 +56,7 @@ pub(crate) fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<En
     let tags: Option<sqlx::types::Json<Vec<String>>> =
         row.try_get("tags").context("reading tags")?;
     let owner: String = row.try_get("api_key").context("reading api_key")?;
+    let send_at_ms: Option<i64> = row.try_get("send_at_ms").context("reading send_at_ms")?;
     Ok(Envelope {
         owner,
         idempotency_key,
@@ -75,6 +76,7 @@ pub(crate) fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<En
             .context("parsing unsubscribe")?,
         tags: tags.map(|j| j.0).unwrap_or_default(),
         metadata: extras.metadata,
+        send_at_ms,
     })
 }
 
@@ -92,6 +94,13 @@ fn now_ms() -> i64 {
             .as_millis(),
     )
     .unwrap_or(i64::MAX)
+}
+
+/// A failed `COMMIT` leaves the outcome unknown; every earlier failure rolled back.
+fn commit_error(e: sqlx::Error) -> EmailQueueError {
+    EmailQueueError::Uncertain {
+        source: anyhow::Error::new(e).context("committing enqueue transaction"),
+    }
 }
 
 fn deserialize_trace_context(raw: Option<String>) -> TraceCarrier {
@@ -170,7 +179,7 @@ impl SqliteAdapter {
         let trace = deserialize_trace_context(trace_raw);
 
         let maybe_row = sqlx::query(
-            "SELECT id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, tags FROM emails WHERE id = ?",
+            "SELECT id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, tags, send_at_ms FROM emails WHERE id = ?",
         )
         .bind(&email_id_bytes)
         .fetch_optional(self.pool())
@@ -200,7 +209,12 @@ impl SqliteAdapter {
 }
 
 impl EmailQueue for SqliteAdapter {
-    async fn enqueue(&self, id: EmailId, _envelope: &Envelope) -> Result<(), EmailQueueError> {
+    async fn enqueue(
+        &self,
+        id: EmailId,
+        envelope: &Envelope,
+    ) -> Result<EnqueueOutcome, EmailQueueError> {
+        let storage = |source| EmailQueueError::Storage { source };
         let entry_id = uuid::Uuid::now_v7().as_bytes().to_vec();
         let email_id_bytes = id.as_uuid().as_bytes().to_vec();
         let pairs = catapulte_telemetry::propagation::inject_current();
@@ -210,18 +224,72 @@ impl EmailQueue for SqliteAdapter {
             Some(
                 serde_json::to_string(&pairs)
                     .context("serializing trace context")
-                    .map_err(|source| EmailQueueError::Storage { source })?,
+                    .map_err(storage)?,
             )
         };
-        sqlx::query("INSERT INTO email_queue (id, email_id, trace_context) VALUES (?, ?, ?)")
-            .bind(entry_id)
-            .bind(email_id_bytes)
-            .bind(trace_context)
-            .execute(self.pool())
+
+        let mut tx = self
+            .pool()
+            .begin()
             .await
-            .context("inserting into email_queue")
-            .map_err(|source| EmailQueueError::Storage { source })?;
-        Ok(())
+            .context("beginning enqueue transaction")
+            .map_err(storage)?;
+        // The state flip is the once-only decision and the lock that serialises enqueuers.
+        let claimed = sqlx::query(
+            "UPDATE emails SET enqueue_state = 'enqueued' \
+             WHERE id = ? AND api_key = ? AND enqueue_state <> 'enqueued'",
+        )
+        .bind(&email_id_bytes)
+        .bind(&envelope.owner)
+        .execute(&mut *tx)
+        .await
+        .context("claiming enqueue state")
+        .map_err(storage)?
+        .rows_affected()
+            == 1;
+        let outcome = if claimed {
+            let has_row: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_queue WHERE email_id = ?)")
+                    .bind(&email_id_bytes)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .context("checking for an existing queue row")
+                    .map_err(storage)?;
+            // A row left by an older version is adopted instead of duplicated.
+            if !has_row {
+                sqlx::query(
+                    "INSERT INTO email_queue (id, email_id, trace_context, claimed_until) \
+                     VALUES (?, ?, ?, ?)",
+                )
+                .bind(entry_id)
+                .bind(&email_id_bytes)
+                .bind(trace_context)
+                .bind(envelope.send_at_ms)
+                .execute(&mut *tx)
+                .await
+                .context("inserting into email_queue")
+                .map_err(storage)?;
+            }
+            EnqueueOutcome::Inserted
+        } else {
+            let exists: Option<String> =
+                sqlx::query_scalar("SELECT enqueue_state FROM emails WHERE id = ? AND api_key = ?")
+                    .bind(&email_id_bytes)
+                    .bind(&envelope.owner)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .context("checking the email row")
+                    .map_err(storage)?;
+            if exists.is_none() {
+                return Err(storage(anyhow::anyhow!(
+                    "email not found for owner: id={}",
+                    id.as_uuid()
+                )));
+            }
+            EnqueueOutcome::AlreadyEnqueued
+        };
+        tx.commit().await.map_err(commit_error)?;
+        Ok(outcome)
     }
 
     async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
@@ -265,8 +333,10 @@ mod tests {
     use catapulte_domain::entity::body::{BodySource, Plain};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::port::email_queue::EmailQueue;
-    use catapulte_domain::port::email_repository::EmailRepository;
+    use catapulte_domain::port::email_queue::{EmailQueue, EmailQueueError, EnqueueOutcome};
+    use catapulte_domain::port::email_repository::{
+        DuplicateState, EmailRepository, EnqueueState, SaveResult,
+    };
 
     use crate::SqliteAdapter;
 
@@ -451,5 +521,253 @@ mod tests {
             dequeued.trace.is_empty(),
             "NULL trace_context must decode to an empty carrier"
         );
+    }
+
+    async fn queue_rows(adapter: &SqliteAdapter, id: EmailId) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM email_queue WHERE email_id = ?")
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn state_of(adapter: &SqliteAdapter, id: EmailId) -> String {
+        sqlx::query_scalar("SELECT enqueue_state FROM emails WHERE id = ?")
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn enqueue_inserts_the_row_and_marks_the_email_enqueued() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+
+        let outcome = adapter.enqueue(id, &sample_envelope()).await.unwrap();
+
+        assert_eq!(outcome, EnqueueOutcome::Inserted);
+        assert_eq!(queue_rows(&adapter, id).await, 1);
+        assert_eq!(state_of(&adapter, id).await, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn second_enqueue_inserts_no_row() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+
+        let outcome = adapter.enqueue(id, &sample_envelope()).await.unwrap();
+
+        assert_eq!(outcome, EnqueueOutcome::AlreadyEnqueued);
+        assert_eq!(queue_rows(&adapter, id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn enqueue_adopts_a_legacy_queue_row() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        adapter
+            .set_enqueue_state(id, "", EnqueueState::Publishable)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO email_queue (id, email_id) VALUES (?, ?)")
+            .bind(uuid::Uuid::now_v7().as_bytes().to_vec())
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        let outcome = adapter.enqueue(id, &sample_envelope()).await.unwrap();
+
+        assert_eq!(outcome, EnqueueOutcome::Inserted);
+        assert_eq!(queue_rows(&adapter, id).await, 1);
+        assert_eq!(state_of(&adapter, id).await, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn paused_submit_cannot_enqueue_after_a_recovery_was_acked() {
+        let adapter = fresh_adapter().await;
+        let mut envelope = sample_envelope();
+        envelope.idempotency_key = Some("k".to_owned());
+        let a = EmailId::default();
+        // Submit A saves and becomes publishable, then pauses.
+        adapter.save(a, &envelope).await.unwrap();
+        adapter
+            .set_enqueue_state(a, "", EnqueueState::Publishable)
+            .await
+            .unwrap();
+        // A same-key retry recovers the row and publishes it as B.
+        let SaveResult::Duplicate {
+            id: b,
+            state: DuplicateState::Complete,
+            recovery: Some(recovered),
+        } = adapter.save(EmailId::default(), &envelope).await.unwrap()
+        else {
+            panic!("expected a recovery duplicate");
+        };
+        assert_eq!(b, a);
+        adapter.enqueue(b, &recovered).await.unwrap();
+        let dequeued = adapter.try_dequeue().await.unwrap().unwrap();
+        adapter.ack(dequeued.token).await.unwrap();
+
+        // The paused submit resumes last.
+        let outcome = adapter.enqueue(a, &envelope).await.unwrap();
+
+        assert_eq!(outcome, EnqueueOutcome::AlreadyEnqueued);
+        assert_eq!(queue_rows(&adapter, a).await, 0);
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
+        assert_eq!(state_of(&adapter, a).await, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn late_enqueue_after_a_terminal_event_adds_nothing_and_keeps_blobs_dead() {
+        use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
+        use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
+        use catapulte_domain::port::event_publisher::EventPublisher;
+
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+        adapter
+            .set_attachments(
+                id,
+                &[AttachmentRef {
+                    content_id: None,
+                    filename: "a.pdf".into(),
+                    content_type: "application/pdf".into(),
+                    size_bytes: 1,
+                    blob: BlobRef {
+                        backend: "fs".into(),
+                        key: "late".into(),
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+        let dequeued = adapter.dequeue().await.unwrap();
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id,
+                sender_name: catapulte_domain::entity::sender::SenderName::new("test"),
+                context: EventContext::with_correlation(None),
+                smtp_response: None,
+                message_id: "<m@example.com>".to_owned(),
+            })
+            .await
+            .unwrap();
+        adapter.ack(dequeued.token).await.unwrap();
+
+        let outcome = adapter.enqueue(id, &sample_envelope()).await.unwrap();
+
+        assert_eq!(outcome, EnqueueOutcome::AlreadyEnqueued);
+        assert_eq!(queue_rows(&adapter, id).await, 0);
+        assert!(
+            adapter
+                .list_all_attachment_blobs()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_insert_is_a_storage_error_and_rolls_the_state_back() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_insert BEFORE INSERT ON email_queue \
+             BEGIN SELECT RAISE(ABORT, 'injected'); END",
+        )
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+
+        let err = adapter.enqueue(id, &sample_envelope()).await.unwrap_err();
+
+        assert!(matches!(err, EmailQueueError::Storage { .. }), "{err:?}");
+        assert_eq!(state_of(&adapter, id).await, "reserved");
+        assert_eq!(queue_rows(&adapter, id).await, 0);
+    }
+
+    #[test]
+    fn a_commit_error_is_uncertain() {
+        let err = super::commit_error(sqlx::Error::PoolClosed);
+        assert!(matches!(err, EmailQueueError::Uncertain { .. }));
+    }
+
+    #[tokio::test]
+    async fn send_at_round_trips_through_save_dequeue_and_recovery() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.idempotency_key = Some("k".to_owned());
+        envelope.send_at_ms = Some(1_000);
+        adapter.save(id, &envelope).await.unwrap();
+        adapter
+            .set_enqueue_state(id, "", EnqueueState::Publishable)
+            .await
+            .unwrap();
+
+        let SaveResult::Duplicate {
+            recovery: Some(recovered),
+            ..
+        } = adapter.save(EmailId::default(), &envelope).await.unwrap()
+        else {
+            panic!("expected a recovery duplicate");
+        };
+        assert_eq!(recovered.send_at_ms, Some(1_000));
+
+        adapter.enqueue(id, &recovered).await.unwrap();
+        let dequeued = adapter.try_dequeue().await.unwrap().unwrap();
+        assert_eq!(dequeued.envelope.send_at_ms, Some(1_000));
+    }
+
+    #[tokio::test]
+    async fn a_future_send_at_is_not_dequeued_but_a_past_one_is() {
+        let adapter = fresh_adapter().await;
+        let future = EmailId::default();
+        let past = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.send_at_ms = Some(super::now_ms() + 3_600_000);
+        adapter.save(future, &envelope).await.unwrap();
+        adapter.enqueue(future, &envelope).await.unwrap();
+
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
+
+        envelope.send_at_ms = Some(super::now_ms() - 1_000);
+        adapter.save(past, &envelope).await.unwrap();
+        adapter.enqueue(past, &envelope).await.unwrap();
+
+        assert_eq!(adapter.try_dequeue().await.unwrap().unwrap().id, past);
+    }
+
+    #[tokio::test]
+    async fn enqueue_of_an_unknown_id_is_a_storage_error() {
+        let adapter = fresh_adapter().await;
+
+        let err = adapter
+            .enqueue(EmailId::default(), &sample_envelope())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, EmailQueueError::Storage { .. }), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn enqueue_with_the_wrong_owner_is_a_storage_error() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        let mut other = sample_envelope();
+        other.owner = "someone-else".to_owned();
+
+        let err = adapter.enqueue(id, &other).await.unwrap_err();
+
+        assert!(matches!(err, EmailQueueError::Storage { .. }), "{err:?}");
+        assert_eq!(queue_rows(&adapter, id).await, 0);
     }
 }

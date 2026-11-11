@@ -13,7 +13,9 @@ use catapulte_domain::entity::body::{BodySource, Plain};
 use catapulte_domain::entity::email::{EmailId, RecipientKind};
 use catapulte_domain::entity::envelope::{Envelope, Unsubscribe};
 use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
-use catapulte_domain::port::email_queue::{AckToken, DequeuedEmail, EmailQueue, EmailQueueError};
+use catapulte_domain::port::email_queue::{
+    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome,
+};
 use catapulte_domain::port::email_repository::{
     DuplicateState, EmailRecord, EmailRepository, EmailRepositoryError, EnqueueState,
     ListEmailsParams, SaveResult,
@@ -43,7 +45,11 @@ struct AckLosingQueue {
 }
 
 impl EmailQueue for AckLosingQueue {
-    async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
+    async fn enqueue(
+        &self,
+        id: EmailId,
+        envelope: &Envelope,
+    ) -> Result<EnqueueOutcome, EmailQueueError> {
         self.inner.enqueue(id, envelope).await?;
         self.publishes.fetch_add(1, Ordering::SeqCst);
         *self.last_envelope.lock().unwrap() = Some(envelope.clone());
@@ -52,7 +58,7 @@ impl EmailQueue for AckLosingQueue {
                 source: anyhow::anyhow!("injected: ack lost after a successful publish"),
             });
         }
-        Ok(())
+        Ok(EnqueueOutcome::Inserted)
     }
 
     async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {

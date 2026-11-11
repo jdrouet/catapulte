@@ -80,6 +80,16 @@ pub enum EmailQueueError {
     },
 }
 
+/// Result of a successful [`EmailQueue::enqueue`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnqueueOutcome {
+    /// This call made the email available to workers.
+    Inserted,
+    /// An earlier call already enqueued the email, so nothing was added and the caller must
+    /// not announce it again.
+    AlreadyEnqueued,
+}
+
 pub trait EmailQueue: Send + Sync + 'static {
     /// # Errors
     ///
@@ -89,7 +99,7 @@ pub trait EmailQueue: Send + Sync + 'static {
         &self,
         id: EmailId,
         envelope: &Envelope,
-    ) -> impl std::future::Future<Output = Result<(), EmailQueueError>> + Send;
+    ) -> impl std::future::Future<Output = Result<EnqueueOutcome, EmailQueueError>> + Send;
 
     /// Dequeues the next available email.
     ///

@@ -54,8 +54,8 @@ impl EmailRepository for PostgresAdapter {
         };
 
         let result = sqlx::query(
-            "INSERT INTO emails (id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, tags, enqueue_state) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'reserved') \
+            "INSERT INTO emails (id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, tags, send_at_ms, enqueue_state) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'reserved') \
              ON CONFLICT (api_key, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
         )
         .bind(id_uuid)
@@ -69,6 +69,7 @@ impl EmailRepository for PostgresAdapter {
         .bind(Json(&envelope.variables))
         .bind(Json(&extras_dto))
         .bind(Json(&envelope.tags))
+        .bind(envelope.send_at_ms)
         .execute(self.pool())
         .await
         .context("inserting email")
@@ -387,7 +388,7 @@ impl PostgresAdapter {
 
         let row = sqlx::query(
             "SELECT id, enqueue_state, api_key, idempotency_key, correlation_id, subject, sender, \
-                    recipients, body, variables, extras, tags \
+                    recipients, body, variables, extras, tags, send_at_ms \
              FROM emails WHERE api_key = $1 AND idempotency_key = $2 FOR UPDATE",
         )
         .bind(owner)

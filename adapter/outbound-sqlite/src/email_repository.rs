@@ -55,8 +55,8 @@ impl EmailRepository for SqliteAdapter {
         };
 
         let result = sqlx::query(
-            "INSERT OR IGNORE INTO emails (id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, tags, enqueue_state) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved')",
+            "INSERT OR IGNORE INTO emails (id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, tags, send_at_ms, enqueue_state) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved')",
         )
         .bind(&id_bytes)
         .bind(&envelope.owner)
@@ -69,6 +69,7 @@ impl EmailRepository for SqliteAdapter {
         .bind(Json(&envelope.variables))
         .bind(Json(&extras_dto))
         .bind(Json(&envelope.tags))
+        .bind(envelope.send_at_ms)
         .execute(self.pool())
         .await
         .context("inserting email")
@@ -395,7 +396,7 @@ impl SqliteAdapter {
 
         let row = sqlx::query(
             "SELECT id, enqueue_state, api_key, idempotency_key, correlation_id, subject, sender, \
-                    recipients, body, variables, extras, tags \
+                    recipients, body, variables, extras, tags, send_at_ms \
              FROM emails WHERE api_key = ? AND idempotency_key = ?",
         )
         .bind(owner)

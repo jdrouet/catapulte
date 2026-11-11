@@ -283,7 +283,7 @@ mod tests {
         AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
     };
     use catapulte_domain::port::email_queue::{
-        AckToken, DequeuedEmail, EmailQueue, EmailQueueError, TraceCarrier,
+        AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, TraceCarrier,
     };
     use catapulte_domain::port::email_repository::{
         EmailRecord, EmailRepository, EmailRepositoryError, EnqueueState, ListEmailsParams,
@@ -329,8 +329,12 @@ mod tests {
     struct FailingAckQueue;
 
     impl EmailQueue for FailingAckQueue {
-        async fn enqueue(&self, _: EmailId, _: &Envelope) -> Result<(), EmailQueueError> {
-            Ok(())
+        async fn enqueue(
+            &self,
+            _: EmailId,
+            _: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
+            Ok(EnqueueOutcome::Inserted)
         }
 
         async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
@@ -562,8 +566,12 @@ mod tests {
     struct NoopQueue;
 
     impl EmailQueue for NoopQueue {
-        async fn enqueue(&self, _: EmailId, _: &Envelope) -> Result<(), EmailQueueError> {
-            Ok(())
+        async fn enqueue(
+            &self,
+            _: EmailId,
+            _: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
+            Ok(EnqueueOutcome::Inserted)
         }
 
         async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
@@ -819,8 +827,12 @@ mod tests {
     }
 
     impl EmailQueue for TrackingQueue {
-        async fn enqueue(&self, _: EmailId, _: &Envelope) -> Result<(), EmailQueueError> {
-            Ok(())
+        async fn enqueue(
+            &self,
+            _: EmailId,
+            _: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
+            Ok(EnqueueOutcome::Inserted)
         }
 
         async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
@@ -1239,8 +1251,12 @@ mod tests {
     }
 
     impl EmailQueue for FiniteQueue {
-        async fn enqueue(&self, _: EmailId, _: &Envelope) -> Result<(), EmailQueueError> {
-            Ok(())
+        async fn enqueue(
+            &self,
+            _: EmailId,
+            _: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
+            Ok(EnqueueOutcome::Inserted)
         }
 
         async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
