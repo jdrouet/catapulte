@@ -170,6 +170,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -330,6 +331,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -469,6 +471,7 @@ async fn sent_email_blob_is_deleted_after_delivery() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -609,6 +612,7 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -755,6 +759,7 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -876,6 +881,7 @@ async fn submit_email_with_disallowed_remote_attachment_returns_400() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
 
     let app = config.build().await.expect("failed to build app");
@@ -984,6 +990,7 @@ async fn multi_sender_routes_by_sender_domain() {
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
 
     let app = config.build().await.expect("failed to build app");

@@ -75,6 +75,7 @@ pub async fn submit_email_batch<S: HttpServerState>(
                 }),
                 Err(
                     e @ (SubmitEmailError::MessageTooLarge { .. }
+                    | SubmitEmailError::SenderDomainNotAllowed { .. }
                     | SubmitEmailError::ReservationIncomplete { .. }),
                 ) => {
                     results.push(BatchItemResultDto::Rejected {
@@ -321,6 +322,11 @@ mod tests {
         async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
             if input.subject.as_deref() == Some("too-large") {
                 return Err(SubmitEmailError::MessageTooLarge { max_bytes: 10 });
+            }
+            if input.subject.as_deref() == Some("denied-domain") {
+                return Err(SubmitEmailError::SenderDomainNotAllowed {
+                    domain: "b.c".to_owned(),
+                });
             }
             if input.subject.as_deref() == Some("incomplete") {
                 return Err(SubmitEmailError::ReservationIncomplete {
@@ -1086,6 +1092,48 @@ mod tests {
             json["error"].as_str(),
             Some("submission with this idempotency key is incomplete; retry later")
         );
+    }
+
+    #[tokio::test]
+    async fn single_submit_with_disallowed_sender_domain_returns_403() {
+        let mut payload = valid_email_payload("r@x.y");
+        payload["subject"] = serde_json::json!("denied-domain");
+        let response = make_router()
+            .oneshot(post_json(serde_json::to_vec(&payload).unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"].as_str(), Some("sender domain is not allowed"));
+    }
+
+    #[tokio::test]
+    async fn batch_item_with_disallowed_sender_domain_is_rejected_while_others_are_accepted() {
+        let mut denied = valid_email_payload("r2@x.y");
+        denied["subject"] = serde_json::json!("denied-domain");
+        let payload = serde_json::json!({
+            "emails": [valid_email_payload("r1@x.y"), denied, valid_email_payload("r3@x.y")]
+        });
+        let response = make_router()
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().expect("results array");
+        assert_eq!(results[0]["status"].as_str(), Some("accepted"));
+        assert_eq!(results[1]["status"].as_str(), Some("rejected"));
+        assert!(
+            results[1]["error"]
+                .as_str()
+                .unwrap()
+                .contains("not allowed")
+        );
+        assert_eq!(results[2]["status"].as_str(), Some("accepted"));
     }
 
     #[tokio::test]

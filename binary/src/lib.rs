@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use anyhow::Context;
 use catapulte_domain::use_case::process_queued_email::ProcessQueuedEmailService;
-use catapulte_domain::use_case::submit_email::{SubmitEmailService, SubmitLimits};
+use catapulte_domain::use_case::submit_email::{
+    SubmitEmailService, SubmitLimits, normalize_sender_domains,
+};
 use catapulte_inbound_http::{InboundHttpConfig, InboundHttpServer};
 use catapulte_inbound_nats::server::{InboundNatsConfig, InboundNatsServer};
 use catapulte_inbound_worker::worker::{Worker, WorkerConfig};
@@ -44,6 +46,8 @@ pub struct AppConfig {
     pub gc_grace_period: Duration,
     /// Single limit shared by the submit-time estimate and the SMTP wire-size check.
     pub max_message_bytes: u64,
+    /// `None` accepts any sender domain; `Some` of an empty set denies every sender.
+    pub allowed_sender_domains: Option<std::collections::HashSet<String>>,
 }
 
 const DEFAULT_MAX_MESSAGE_BYTES: u64 = 25 * 1024 * 1024;
@@ -60,6 +64,26 @@ fn parse_max_message_bytes(
             _ => anyhow::bail!("{KEY} must be a positive integer, got {raw:?}"),
         },
     }
+}
+
+fn parse_allowed_sender_domains(
+    lookup: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> anyhow::Result<Option<std::collections::HashSet<String>>> {
+    const KEY: &str = "CATAPULTE_ALLOWED_SENDER_DOMAINS";
+    let raw = match lookup(KEY) {
+        Err(std::env::VarError::NotPresent) => {
+            tracing::warn!("{KEY} is not set: any sender domain is accepted");
+            return Ok(None);
+        }
+        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!("{KEY} is not valid unicode"),
+        Ok(raw) => raw,
+    };
+    let entries = raw.split(',').map(str::trim).filter(|d| !d.is_empty());
+    let set = normalize_sender_domains(entries).with_context(|| format!("invalid {KEY}"))?;
+    if set.is_empty() {
+        tracing::warn!("{KEY} is empty: all senders denied");
+    }
+    Ok(Some(set))
 }
 
 impl AppConfig {
@@ -101,6 +125,7 @@ impl AppConfig {
             .unwrap_or(3600);
         let gc_grace_period = Duration::from_secs(gc_grace_secs);
         let max_message_bytes = parse_max_message_bytes(|k| std::env::var(k))?;
+        let allowed_sender_domains = parse_allowed_sender_domains(|k| std::env::var(k))?;
         Ok(Self {
             storage,
             http,
@@ -116,6 +141,7 @@ impl AppConfig {
             gc_sweep_interval,
             gc_grace_period,
             max_message_bytes,
+            allowed_sender_domains,
         })
     }
 
@@ -216,6 +242,7 @@ impl AppConfig {
             )
             .with_limits(SubmitLimits {
                 max_message_bytes: self.max_message_bytes,
+                allowed_sender_domains: self.allowed_sender_domains.clone(),
             }),
         );
         let mjml_renderer = MjmlRenderer::new(self.include_loader.build());
@@ -394,7 +421,7 @@ impl Application {
 mod tests {
     use std::env::VarError;
 
-    use super::parse_max_message_bytes;
+    use super::{parse_allowed_sender_domains, parse_max_message_bytes};
 
     fn lookup(value: Option<&'static str>) -> impl Fn(&str) -> Result<String, VarError> {
         move |_| value.map(str::to_owned).ok_or(VarError::NotPresent)
@@ -423,5 +450,40 @@ mod tests {
         }
         let non_unicode = |_: &str| Err(VarError::NotUnicode(std::ffi::OsString::from("x")));
         assert!(parse_max_message_bytes(non_unicode).is_err());
+    }
+
+    #[test]
+    fn allowed_sender_domains_unset_means_no_restriction() {
+        assert!(
+            parse_allowed_sender_domains(lookup(None))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn allowed_sender_domains_empty_or_blank_means_deny_all() {
+        for blank in ["", "   ", " , ,"] {
+            let set = parse_allowed_sender_domains(lookup(Some(blank)))
+                .unwrap()
+                .expect("set, not None");
+            assert!(set.is_empty(), "{blank:?}");
+        }
+    }
+
+    #[test]
+    fn allowed_sender_domains_are_normalized_and_blanks_dropped() {
+        let set = parse_allowed_sender_domains(lookup(Some(" Example.com. ,, bücher.de ")))
+            .unwrap()
+            .unwrap();
+        let expected: std::collections::HashSet<String> = ["example.com", "xn--bcher-kva.de"]
+            .map(str::to_owned)
+            .into();
+        assert_eq!(set, expected);
+    }
+
+    #[test]
+    fn allowed_sender_domains_invalid_entry_fails() {
+        assert!(parse_allowed_sender_domains(lookup(Some("ok.com,bad domain\u{0}"))).is_err());
     }
 }

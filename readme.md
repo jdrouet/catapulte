@@ -102,6 +102,7 @@ All configuration is done via environment variables.
 |----------|-------------|---------|
 | `CATAPULTE_GC_SWEEP_INTERVAL_SECS` | Interval in seconds between garbage collection sweeps | `3600` |
 | `CATAPULTE_GC_GRACE_PERIOD_SECS` | Minimum age for data to be eligible for garbage collection | `3600` |
+| `CATAPULTE_ALLOWED_SENDER_DOMAINS` | Comma-separated sender domains the API accepts. Matching is exact (no subdomains), case-insensitive, and IDN domains are compared in punycode. Unset accepts any domain; set but empty denies every sender. An entry that is not a valid domain stops startup | unset |
 
 ### Storage Backend
 

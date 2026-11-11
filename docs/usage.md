@@ -451,6 +451,7 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 |--------|------|
 | `400` | malformed JSON/multipart, validation failure (sender/recipients/reply_to/headers/body/attachment), bad UUID, unreachable/disallowed remote attachment, batch over 100 |
 | `401` | missing/invalid bearer token |
+| `403` | the sender's domain is not in the operator's `CATAPULTE_ALLOWED_SENDER_DOMAINS` list (exact domain match, no subdomains), including an idempotent retry whose sender is no longer allowed, or one that would republish a stored original whose sender is no longer allowed; in a batch the item is rejected instead |
 | `409` | idempotency key matches a submission that never completed; retry later |
 | `500` | storage / queue / attachment-store failure |
 
