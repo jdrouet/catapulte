@@ -2,7 +2,7 @@ use anyhow::Context;
 use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
-use catapulte_domain::entity::lifecycle_event::WORKER_EVENT_TYPES;
+use catapulte_domain::entity::lifecycle_event::{TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES};
 use catapulte_domain::port::email_repository::{
     DuplicateState, EmailRecord, EmailRepository, EmailRepositoryError, EmailStatus, EnqueueState,
     ListEmailsParams, SaveResult,
@@ -17,6 +17,14 @@ use crate::dto::{
     AttachmentRefDto, BodySourceDto, EnvelopeBodyDto, EnvelopeBodyDtoDeser, EnvelopeExtrasDto,
     UnsubscribeDto, recipients_to_dto,
 };
+
+fn terminal_types_sql() -> String {
+    TERMINAL_EVENT_TYPES
+        .iter()
+        .map(|t| format!("'{t}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 impl EmailRepository for SqliteAdapter {
     /// # Errors
@@ -86,7 +94,7 @@ impl EmailRepository for SqliteAdapter {
         &self,
         params: ListEmailsParams,
     ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
-        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(format!(
             "WITH email_status AS (\
                 SELECT \
                     e.id, \
@@ -99,16 +107,18 @@ impl EmailRepository for SqliteAdapter {
                         (SELECT le.event_type \
                          FROM lifecycle_events le \
                          WHERE le.email_id = e.id \
+                           AND le.event_type IN ({terminal}) \
                          ORDER BY le.created_at DESC, le.id DESC \
                          LIMIT 1),\
                         'queued'\
-                    ) AS latest_event_type \
+                    ) AS latest_terminal_event_type \
                 FROM emails e\
             ) \
-            SELECT id, idempotency_key, subject, sender, recipients, created_at_ms, latest_event_type \
+            SELECT id, idempotency_key, subject, sender, recipients, created_at_ms, latest_terminal_event_type \
             FROM email_status \
             WHERE 1=1",
-        );
+            terminal = terminal_types_sql(),
+        ));
 
         if let Some(id) = params.id {
             qb.push(" AND id = ");
@@ -136,15 +146,18 @@ impl EmailRepository for SqliteAdapter {
         }
         match params.status {
             Some(EmailStatus::Sent) => {
-                qb.push(" AND latest_event_type = ");
+                qb.push(" AND latest_terminal_event_type = ");
                 qb.push_bind("delivery.succeeded");
             }
             Some(EmailStatus::Failed) => {
-                qb.push(" AND latest_event_type = ");
+                qb.push(" AND latest_terminal_event_type = ");
                 qb.push_bind("delivery.failed");
             }
             Some(EmailStatus::Queued) => {
-                qb.push(" AND latest_event_type NOT IN ('delivery.succeeded', 'delivery.failed')");
+                qb.push(format!(
+                    " AND latest_terminal_event_type NOT IN ({})",
+                    terminal_types_sql()
+                ));
             }
             None => {}
         }
@@ -264,7 +277,9 @@ impl EmailRepository for SqliteAdapter {
     }
 
     async fn list_all_attachment_blobs(&self) -> Result<Vec<BlobRef>, EmailRepositoryError> {
-        let rows: Vec<String> = sqlx::query_scalar(
+        // Unlike status, any later event (e.g. a redelivered `sending`) revives an email: a
+        // duplicate copy can retry after a terminal event, so its blobs must outlive it.
+        let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "WITH email_status AS (\
                 SELECT e.body, COALESCE(\
                     (SELECT event_type FROM lifecycle_events le \
@@ -275,8 +290,9 @@ impl EmailRepository for SqliteAdapter {
                 FROM emails e\
             ) \
             SELECT body FROM email_status \
-            WHERE latest_event_type NOT IN ('delivery.succeeded', 'delivery.failed')",
-        )
+            WHERE latest_event_type NOT IN ({terminal})",
+            terminal = terminal_types_sql(),
+        )))
         .fetch_all(self.pool())
         .await
         .context("listing email bodies for attachment blobs")
@@ -313,10 +329,10 @@ impl SqliteAdapter {
         let created_at_ms: i64 = row
             .try_get("created_at_ms")
             .context("reading created_at_ms")?;
-        let latest_event_type: String = row
-            .try_get("latest_event_type")
-            .context("reading latest_event_type")?;
-        let status = match latest_event_type.as_str() {
+        let latest_terminal_event_type: String = row
+            .try_get("latest_terminal_event_type")
+            .context("reading latest_terminal_event_type")?;
+        let status = match latest_terminal_event_type.as_str() {
             "delivery.succeeded" => EmailStatus::Sent,
             "delivery.failed" => EmailStatus::Failed,
             _ => EmailStatus::Queued,
@@ -1293,5 +1309,185 @@ mod tests {
         assert_eq!(blobs.len(), 2, "sent and failed emails must be excluded");
         assert_eq!(blobs[0].key, "key-a");
         assert_eq!(blobs[1].key, "key-b");
+    }
+
+    async fn add_event_at(adapter: &SqliteAdapter, id: EmailId, event_type: &str, at_ms: i64) {
+        sqlx::query(
+            "INSERT INTO lifecycle_events (id, email_id, event_type, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(EmailId::default().as_uuid().as_bytes().to_vec())
+        .bind(id.as_uuid().as_bytes().to_vec())
+        .bind(event_type)
+        .bind(at_ms)
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn status_comes_from_the_latest_terminal_event() {
+        let adapter = fresh_adapter().await;
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            let id = EmailId::default();
+            adapter.save(id, &sample_envelope()).await.unwrap();
+            ids.push(id);
+        }
+        let [replayed, flipped, informational, none, bounced] = ids[..] else {
+            unreachable!()
+        };
+        add_event_at(&adapter, replayed, "delivery.succeeded", 1).await;
+        add_event_at(&adapter, replayed, "queued", 2).await;
+        add_event_at(&adapter, flipped, "delivery.succeeded", 1).await;
+        add_event_at(&adapter, flipped, "delivery.failed", 2).await;
+        add_event_at(&adapter, informational, "queued", 1).await;
+        add_event_at(&adapter, informational, "sending", 2).await;
+        add_event_at(&adapter, bounced, "delivery.succeeded", 1).await;
+        add_event_at(&adapter, bounced, "bounced", 2).await;
+
+        let ids_with = |status| {
+            let adapter = &adapter;
+            async move {
+                let mut found: Vec<EmailId> = adapter
+                    .list_emails(ListEmailsParams {
+                        status: Some(status),
+                        ..default_list_params()
+                    })
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|e| e.id)
+                    .collect();
+                found.sort_by_key(EmailId::as_uuid);
+                found
+            }
+        };
+        let sorted = |mut v: Vec<EmailId>| {
+            v.sort_by_key(EmailId::as_uuid);
+            v
+        };
+
+        assert_eq!(
+            ids_with(EmailStatus::Sent).await,
+            sorted(vec![replayed, bounced])
+        );
+        assert_eq!(ids_with(EmailStatus::Failed).await, vec![flipped]);
+        assert_eq!(
+            ids_with(EmailStatus::Queued).await,
+            sorted(vec![informational, none])
+        );
+        let all = adapter.list_emails(default_list_params()).await.unwrap();
+        let status_of = |id| all.iter().find(|e| e.id == id).unwrap().status;
+        assert_eq!(status_of(replayed), EmailStatus::Sent);
+        assert_eq!(status_of(flipped), EmailStatus::Failed);
+        assert_eq!(status_of(informational), EmailStatus::Queued);
+        assert_eq!(status_of(none), EmailStatus::Queued);
+        assert_eq!(status_of(bounced), EmailStatus::Sent);
+    }
+
+    async fn add_event_with_id(
+        adapter: &SqliteAdapter,
+        id: EmailId,
+        event_type: &str,
+        at_ms: i64,
+        event_id: uuid::Uuid,
+    ) {
+        sqlx::query(
+            "INSERT INTO lifecycle_events (id, email_id, event_type, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(event_id.as_bytes().to_vec())
+        .bind(id.as_uuid().as_bytes().to_vec())
+        .bind(event_type)
+        .bind(at_ms)
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+    }
+
+    async fn email_with_blob(adapter: &SqliteAdapter, key: &str) -> EmailId {
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        adapter
+            .set_attachments(
+                id,
+                &[AttachmentRef {
+                    content_id: None,
+                    filename: "a.pdf".into(),
+                    content_type: "application/pdf".into(),
+                    size_bytes: 1,
+                    blob: BlobRef {
+                        backend: "fs".into(),
+                        key: key.into(),
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn gc_liveness_follows_the_latest_event_of_any_type() {
+        let adapter = fresh_adapter().await;
+        let redelivered = email_with_blob(&adapter, "redelivered").await;
+        add_event_at(&adapter, redelivered, "delivery.failed", 1).await;
+        add_event_at(&adapter, redelivered, "sending", 2).await;
+        add_event_at(&adapter, redelivered, "retrying", 3).await;
+        let done = email_with_blob(&adapter, "done").await;
+        add_event_at(&adapter, done, "sending", 1).await;
+        add_event_at(&adapter, done, "delivery.succeeded", 2).await;
+        let replayed = email_with_blob(&adapter, "replayed").await;
+        add_event_at(&adapter, replayed, "delivery.succeeded", 1).await;
+        add_event_at(&adapter, replayed, "queued", 2).await;
+
+        let mut keys: Vec<String> = adapter
+            .list_all_attachment_blobs()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|b| b.key)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["redelivered", "replayed"]);
+    }
+
+    #[tokio::test]
+    async fn status_follows_the_latest_terminal_event_and_breaks_ties_by_id() {
+        let adapter = fresh_adapter().await;
+        let status_of = |id: EmailId| {
+            let adapter = &adapter;
+            async move {
+                adapter
+                    .list_emails(ListEmailsParams {
+                        id: Some(id),
+                        ..default_list_params()
+                    })
+                    .await
+                    .unwrap()[0]
+                    .status
+            }
+        };
+        let low = uuid::Uuid::from_u128(1);
+        let high = uuid::Uuid::from_u128(2);
+
+        let recovered = EmailId::default();
+        adapter.save(recovered, &sample_envelope()).await.unwrap();
+        add_event_at(&adapter, recovered, "delivery.failed", 1).await;
+        add_event_at(&adapter, recovered, "delivery.succeeded", 2).await;
+        assert_eq!(status_of(recovered).await, EmailStatus::Sent);
+
+        let tie_sent = EmailId::default();
+        adapter.save(tie_sent, &sample_envelope()).await.unwrap();
+        add_event_with_id(&adapter, tie_sent, "delivery.failed", 5, low).await;
+        add_event_with_id(&adapter, tie_sent, "delivery.succeeded", 5, high).await;
+        assert_eq!(status_of(tie_sent).await, EmailStatus::Sent);
+
+        let low2 = uuid::Uuid::from_u128(3);
+        let high2 = uuid::Uuid::from_u128(4);
+        let tie_failed = EmailId::default();
+        adapter.save(tie_failed, &sample_envelope()).await.unwrap();
+        add_event_with_id(&adapter, tie_failed, "delivery.succeeded", 5, low2).await;
+        add_event_with_id(&adapter, tie_failed, "delivery.failed", 5, high2).await;
+        assert_eq!(status_of(tie_failed).await, EmailStatus::Failed);
     }
 }
