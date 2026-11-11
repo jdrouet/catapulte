@@ -9,6 +9,16 @@ pub enum RenderError {
         #[source]
         source: anyhow::Error,
     },
+    /// The document used up its render budget (time, CPU, memory or output size). Rendering is
+    /// deterministic, so retrying cannot succeed.
+    #[error("template rendering exceeded its budget (too slow or too large)")]
+    BudgetExceeded,
+    /// The render sandbox itself failed (spawn, crash, abort); retrying can succeed.
+    #[error("template rendering infrastructure failure")]
+    Infrastructure {
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 pub trait TemplateRenderer: Send + Sync + 'static {

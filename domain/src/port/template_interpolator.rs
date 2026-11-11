@@ -13,6 +13,13 @@ pub enum InterpolateError {
         #[source]
         source: anyhow::Error,
     },
+    /// The render sandbox itself failed (spawn, crash, abort); the template is not at fault, so
+    /// retrying can succeed.
+    #[error("template rendering infrastructure failure")]
+    Infrastructure {
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 pub trait TemplateInterpolator: Send + Sync + 'static {

@@ -85,6 +85,10 @@ impl IntoResponse for AppError {
             Self::Templates(ManageTemplatesError::NotFound { .. }) => {
                 (StatusCode::NOT_FOUND, "not found")
             }
+            Self::Templates(ManageTemplatesError::Unavailable { .. }) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "template rendering is unavailable",
+            ),
             Self::Rejected => (StatusCode::UNPROCESSABLE_ENTITY, "report not accepted"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "admin key required"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
@@ -116,5 +120,30 @@ impl IntoResponse for AppError {
         };
         tracing::error!(error = ?self, status = %status.as_u16(), "request failed");
         (status, Json(ErrorBody { error: message })).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use catapulte_domain::use_case::manage_templates::ManageTemplatesError;
+
+    use super::AppError;
+
+    #[test]
+    fn an_unavailable_renderer_is_a_503_and_an_invalid_template_a_400() {
+        let unavailable = AppError::Templates(ManageTemplatesError::Unavailable {
+            source: anyhow::anyhow!("sandbox died"),
+        });
+        let invalid = AppError::Templates(ManageTemplatesError::Invalid {
+            message: "budget".into(),
+        });
+
+        assert_eq!(
+            unavailable.into_response().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(invalid.into_response().status(), StatusCode::BAD_REQUEST);
     }
 }
