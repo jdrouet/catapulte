@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod dto;
 pub mod error;
+pub mod feedback;
 pub mod limited_reader;
 pub mod routes;
 
@@ -12,6 +13,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::get;
 use axum::routing::post;
+use catapulte_domain::use_case::ingest_feedback::IngestFeedbackUseCase;
 use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
 use catapulte_domain::use_case::list_events::ListEventsUseCase;
 use catapulte_domain::use_case::list_senders::ListSendersUseCase;
@@ -19,7 +21,7 @@ use catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase;
 use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 use tokio_util::sync::CancellationToken;
 
-use crate::auth::{AuthConfig, require_api_key, trust_every_caller};
+use crate::auth::{AuthConfig, require_api_key, require_feedback_secret, trust_every_caller};
 use tower_http::trace::TraceLayer;
 
 /// Provides the readiness check that the `/health/ready` route dispatches into.
@@ -40,6 +42,7 @@ pub trait HttpServerState: ReadinessState {
     fn list_events(&self) -> &impl ListEventsUseCase;
     fn list_senders(&self) -> &impl ListSendersUseCase;
     fn manage_suppressions(&self) -> &impl ManageSuppressionsUseCase;
+    fn ingest_feedback(&self) -> &impl IngestFeedbackUseCase;
 }
 
 /// Builds the application router.
@@ -52,6 +55,34 @@ pub fn router<S: HttpServerState>(
     auth: Option<Arc<AuthConfig>>,
     request_timeout: std::time::Duration,
 ) -> Router {
+    router_with_feedback(state, auth, None, request_timeout)
+}
+
+/// Largest report body `POST /inbound/feedback` reads.
+pub const MAX_FEEDBACK_BYTES: usize = 1024 * 1024;
+
+/// Like [`router`], and when `feedback_secret` is set also serves `POST /inbound/feedback`,
+/// guarded by that secret alone and outside the API-key layer.
+pub fn router_with_feedback<S: HttpServerState>(
+    state: S,
+    auth: Option<Arc<AuthConfig>>,
+    feedback_secret: Option<Arc<str>>,
+    request_timeout: std::time::Duration,
+) -> Router {
+    let feedback_routes = match feedback_secret {
+        Some(secret) => Router::new()
+            .route(
+                "/inbound/feedback",
+                post(crate::routes::feedback::ingest_feedback::<S>),
+            )
+            .route_layer(axum::middleware::from_fn_with_state(
+                secret,
+                require_feedback_secret,
+            ))
+            .layer(DefaultBodyLimit::max(MAX_FEEDBACK_BYTES))
+            .with_state(state.clone()),
+        None => Router::new(),
+    };
     // Bounds slow/hung requests. Deliberately NOT applied to the submit routes
     // below: those stream multipart attachment bodies (up to several hundred MiB)
     // and a whole-request deadline would truncate legitimate large uploads over
@@ -110,6 +141,7 @@ pub fn router<S: HttpServerState>(
 
     Router::new()
         .merge(protected_routes)
+        .merge(feedback_routes)
         .merge(health_routes)
         .layer(TraceLayer::new_for_http())
         .layer(DefaultBodyLimit::max(crate::dto::MAX_REQUEST_BODY_BYTES))
@@ -118,7 +150,28 @@ pub fn router<S: HttpServerState>(
 pub struct InboundHttpConfig {
     pub address: SocketAddr,
     pub auth: Option<Arc<AuthConfig>>,
+    /// Enables `POST /inbound/feedback`; `None` leaves the route out.
+    pub feedback_secret: Option<Arc<str>>,
     pub request_timeout: std::time::Duration,
+}
+
+/// Shortest accepted feedback secret, in bytes.
+const MIN_FEEDBACK_SECRET_BYTES: usize = 32;
+
+fn feedback_secret_from_env() -> anyhow::Result<Option<Arc<str>>> {
+    const KEY: &str = "CATAPULTE_BOUNCE_INGEST_SECRET";
+    let Some(raw) = crate::auth::optional_var(&|k: &str| std::env::var(k), KEY)? else {
+        return Ok(None);
+    };
+    let secret = raw.trim();
+    if secret.is_empty() {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        secret.len() >= MIN_FEEDBACK_SECRET_BYTES,
+        "{KEY} must be at least {MIN_FEEDBACK_SECRET_BYTES} bytes (for example `openssl rand -base64 48`)"
+    );
+    Ok(Some(Arc::from(secret)))
 }
 
 impl InboundHttpConfig {
@@ -135,6 +188,13 @@ impl InboundHttpConfig {
         let auth = AuthConfig::from_lookup(&format!("{prefix}_API_KEY"), |key| std::env::var(key))
             .context("loading API keys")?
             .map(Arc::new);
+        let feedback_secret = feedback_secret_from_env()?;
+        if let (Some(secret), Some(auth)) = (&feedback_secret, &auth) {
+            anyhow::ensure!(
+                !auth.has_secret(secret),
+                "CATAPULTE_BOUNCE_INGEST_SECRET must differ from every API key secret"
+            );
+        }
         let timeout_key = format!("{prefix}_REQUEST_TIMEOUT_SECS");
         let request_timeout_secs: u64 = match std::env::var(&timeout_key) {
             Err(std::env::VarError::NotPresent) => 30,
@@ -147,6 +207,7 @@ impl InboundHttpConfig {
         Ok(Self {
             address,
             auth,
+            feedback_secret,
             request_timeout,
         })
     }
@@ -156,6 +217,7 @@ impl InboundHttpConfig {
         InboundHttpServer {
             address: self.address,
             auth: self.auth,
+            feedback_secret: self.feedback_secret,
             request_timeout: self.request_timeout,
         }
     }
@@ -164,6 +226,7 @@ impl InboundHttpConfig {
 pub struct InboundHttpServer {
     address: SocketAddr,
     auth: Option<Arc<AuthConfig>>,
+    feedback_secret: Option<Arc<str>>,
     request_timeout: std::time::Duration,
 }
 
@@ -186,10 +249,13 @@ impl InboundHttpServer {
             .await
             .context("binding http listener")?;
         tracing::info!(address = %self.address, "http server listening");
-        axum::serve(listener, router(state, self.auth, self.request_timeout))
-            .with_graceful_shutdown(async move { cancel.cancelled().await })
-            .await
-            .context("http server stopped")?;
+        axum::serve(
+            listener,
+            router_with_feedback(state, self.auth, self.feedback_secret, self.request_timeout),
+        )
+        .with_graceful_shutdown(async move { cancel.cancelled().await })
+        .await
+        .context("http server stopped")?;
         Ok(())
     }
 }
@@ -327,6 +393,14 @@ mod tests {
                 .unwrap(),
             "ops|true"
         );
+    }
+
+    #[test]
+    fn has_secret_finds_legacy_and_named_secrets_only() {
+        let keys = two_keys().unwrap();
+        assert!(keys.has_secret("secret-a") && keys.has_secret("secret-ops"));
+        assert!(!keys.has_secret("secret-b"));
+        assert!(legacy("legacy").unwrap().has_secret("legacy"));
     }
 
     #[tokio::test]

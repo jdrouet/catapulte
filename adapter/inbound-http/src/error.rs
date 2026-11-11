@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+use catapulte_domain::use_case::ingest_feedback::IngestFeedbackError;
 use catapulte_domain::use_case::list_emails::ListEmailsError;
 use catapulte_domain::use_case::list_events::ListEventsError;
 use catapulte_domain::use_case::list_senders::ListSendersError;
@@ -30,6 +31,12 @@ pub enum AppError {
     ListSenders(#[from] ListSendersError),
     #[error(transparent)]
     ManageSuppressions(#[from] ManageSuppressionsError),
+    #[error(transparent)]
+    Feedback(#[from] IngestFeedbackError),
+    #[error("internal error")]
+    Internal(#[source] anyhow::Error),
+    #[error("feedback report rejected")]
+    Rejected,
     #[error("admin key required")]
     Forbidden,
     #[error("not found")]
@@ -64,6 +71,7 @@ impl IntoResponse for AppError {
             Self::Submit(SubmitEmailError::SenderDomainNotAllowed { .. }) => {
                 (StatusCode::FORBIDDEN, "sender domain is not allowed")
             }
+            Self::Rejected => (StatusCode::UNPROCESSABLE_ENTITY, "report not accepted"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "admin key required"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
             Self::Submit(SubmitEmailError::AllRecipientsSuppressed) => (
@@ -83,7 +91,9 @@ impl IntoResponse for AppError {
             | Self::ListEmails(_)
             | Self::ListEvents(_)
             | Self::ListSenders(_)
-            | Self::ManageSuppressions(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+            | Self::ManageSuppressions(_)
+            | Self::Feedback(_)
+            | Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
         };
         tracing::error!(error = ?self, status = %status.as_u16(), "request failed");
         (status, Json(ErrorBody { error: message })).into_response()

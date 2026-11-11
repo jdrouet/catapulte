@@ -368,6 +368,7 @@ mod tests {
             headers: vec![],
             unsubscribe: None,
             message_id: "<id@example.com>".into(),
+            envelope_from: None,
         }
     }
 
@@ -611,6 +612,7 @@ mod tests {
             headers: vec![],
             unsubscribe: None,
             message_id: "<id@example.com>".into(),
+            envelope_from: None,
         }
     }
 

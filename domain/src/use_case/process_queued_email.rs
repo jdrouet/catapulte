@@ -5,6 +5,7 @@ use crate::entity::attachment::{AttachmentRef, ResolvedAttachment};
 use crate::entity::email::EmailId;
 use crate::entity::envelope::Envelope;
 use crate::entity::error_class::ErrorClass;
+use crate::entity::return_path::BounceConfig;
 use crate::entity::sender::SenderName;
 use crate::entity::suppression::suppression_key;
 use crate::port::attachment_store::AttachmentStore;
@@ -122,6 +123,7 @@ pub struct ProcessQueuedEmailService<R, I, Rdr, S, A, X = NoopSuppressionList> {
     sender: S,
     attachment_store: A,
     suppressions: X,
+    bounce: Option<BounceConfig>,
 }
 
 impl<R, I, Rdr, S, A> ProcessQueuedEmailService<R, I, Rdr, S, A, NoopSuppressionList> {
@@ -139,6 +141,7 @@ impl<R, I, Rdr, S, A> ProcessQueuedEmailService<R, I, Rdr, S, A, NoopSuppression
             sender,
             attachment_store,
             suppressions: NoopSuppressionList,
+            bounce: None,
         }
     }
 }
@@ -157,7 +160,15 @@ impl<R, I, Rdr, S, A, X> ProcessQueuedEmailService<R, I, Rdr, S, A, X> {
             sender: self.sender,
             attachment_store: self.attachment_store,
             suppressions,
+            bounce: self.bounce,
         }
+    }
+
+    /// Sends with a signed return path so bounces can be tied back to the email.
+    #[must_use]
+    pub fn with_bounce(mut self, bounce: BounceConfig) -> Self {
+        self.bounce = Some(bounce);
+        self
     }
 }
 
@@ -229,6 +240,7 @@ where
                 reply_to,
                 headers,
                 unsubscribe,
+                envelope_from: self.bounce.as_ref().map(|b| b.return_path(id)),
             })
             .await?;
         Ok(ProcessedEmail {
@@ -301,6 +313,7 @@ mod tests {
     use crate::entity::email::EmailId;
     use crate::entity::email::RecipientKind;
     use crate::entity::envelope::Envelope;
+    use crate::entity::return_path::BounceConfig;
     use crate::entity::sender::SenderName;
     use crate::port::attachment_store::{
         AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
@@ -786,6 +799,39 @@ mod tests {
             ProcessQueuedEmailError::AllRecipientsSuppressed
         ));
         assert!(spy.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn bounce_config_sets_the_signed_return_path_and_suppressed_recipients_stay_out() {
+        let bounce =
+            BounceConfig::new("bounces.example.com", "0123456789abcdef0123456789abcdef").unwrap();
+        let (service, spy) = capturing_service();
+        let service = service
+            .with_suppression_list(FixedSuppressions(vec!["b@x.com"]))
+            .with_bounce(bounce.clone());
+        let id = EmailId::default();
+
+        service
+            .execute(id, envelope_to(&["a@x.com", "b@x.com"]))
+            .await
+            .unwrap();
+
+        let sent = spy.lock().unwrap().take().unwrap();
+        assert_eq!(sent.envelope_from, Some(bounce.return_path(id)));
+        let rcpts: Vec<_> = sent.recipients.iter().map(|(_, a)| a.as_str()).collect();
+        assert_eq!(rcpts, ["a@x.com"]);
+    }
+
+    #[tokio::test]
+    async fn without_bounce_config_there_is_no_return_path() {
+        let (service, spy) = capturing_service();
+
+        service
+            .execute(EmailId::default(), envelope_to(&["a@x.com"]))
+            .await
+            .unwrap();
+
+        assert_eq!(spy.lock().unwrap().take().unwrap().envelope_from, None);
     }
 
     #[tokio::test]
