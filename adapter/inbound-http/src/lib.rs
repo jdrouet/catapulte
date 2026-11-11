@@ -1,15 +1,15 @@
+pub mod auth;
 pub mod dto;
 pub mod error;
 pub mod limited_reader;
 pub mod routes;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::Context;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::http::StatusCode;
-use axum::middleware::Next;
 use axum::routing::get;
 use axum::routing::post;
 use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
@@ -17,6 +17,8 @@ use catapulte_domain::use_case::list_events::ListEventsUseCase;
 use catapulte_domain::use_case::list_senders::ListSendersUseCase;
 use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 use tokio_util::sync::CancellationToken;
+
+use crate::auth::{AuthConfig, require_api_key, trust_every_caller};
 use tower_http::trace::TraceLayer;
 
 /// Provides the readiness check that the `/health/ready` route dispatches into.
@@ -38,57 +40,14 @@ pub trait HttpServerState: ReadinessState {
     fn list_senders(&self) -> &impl ListSendersUseCase;
 }
 
-/// Compares two byte slices in constant time to avoid timing side-channels.
-///
-/// Returns `true` only when both slices have the same length and identical
-/// contents. A length mismatch short-circuits before the byte loop, which
-/// leaks the length — this is considered acceptable per spec.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
-/// Axum middleware that enforces a static bearer-token check.
-///
-/// Expects `Authorization: Bearer <key>` on every request. Requests that are
-/// missing the header, use a scheme other than `Bearer`, or carry a wrong
-/// token are rejected with `401 Unauthorized`.
-async fn require_api_key(
-    axum::extract::State(expected): axum::extract::State<String>,
-    request: axum::extract::Request,
-    next: Next,
-) -> Result<axum::response::Response, StatusCode> {
-    let auth_header = request
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-
-    if !constant_time_eq(token.as_bytes(), expected.as_bytes()) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
-    Ok(next.run(request).await)
-}
-
 /// Builds the application router.
 ///
-/// When `api_key` is `Some`, all routes except `/health/live` and
-/// `/health/ready` are gated behind `Authorization: Bearer <key>`.
-/// When `api_key` is `None`, no authentication is applied.
+/// When `auth` is `Some`, all routes except `/health/live` and `/health/ready` need
+/// `Authorization: Bearer <secret>` matching one of its keys. When `auth` is `None`, no
+/// authentication is applied and every caller is the trusted administrator.
 pub fn router<S: HttpServerState>(
     state: S,
-    api_key: Option<String>,
+    auth: Option<Arc<AuthConfig>>,
     request_timeout: std::time::Duration,
 ) -> Router {
     // Bounds slow/hung requests. Deliberately NOT applied to the submit routes
@@ -126,11 +85,10 @@ pub fn router<S: HttpServerState>(
 
     let protected_routes = read_routes.merge(submit_routes).with_state(state);
 
-    let protected_routes = match api_key {
-        Some(key) => {
-            protected_routes.route_layer(axum::middleware::from_fn_with_state(key, require_api_key))
-        }
-        None => protected_routes,
+    let protected_routes = match auth {
+        Some(auth) => protected_routes
+            .route_layer(axum::middleware::from_fn_with_state(auth, require_api_key)),
+        None => protected_routes.route_layer(axum::middleware::from_fn(trust_every_caller)),
     };
 
     Router::new()
@@ -142,7 +100,7 @@ pub fn router<S: HttpServerState>(
 
 pub struct InboundHttpConfig {
     pub address: SocketAddr,
-    pub api_key: Option<String>,
+    pub auth: Option<Arc<AuthConfig>>,
     pub request_timeout: std::time::Duration,
 }
 
@@ -157,10 +115,9 @@ impl InboundHttpConfig {
         let address: SocketAddr = raw
             .parse()
             .with_context(|| format!("invalid {address_key}"))?;
-        let api_key = std::env::var(format!("{prefix}_API_KEY"))
-            .ok()
-            .map(|v| v.trim().to_owned())
-            .filter(|v| !v.is_empty());
+        let auth = AuthConfig::from_lookup(&format!("{prefix}_API_KEY"), |key| std::env::var(key))
+            .context("loading API keys")?
+            .map(Arc::new);
         let timeout_key = format!("{prefix}_REQUEST_TIMEOUT_SECS");
         let request_timeout_secs: u64 = match std::env::var(&timeout_key) {
             Err(std::env::VarError::NotPresent) => 30,
@@ -172,7 +129,7 @@ impl InboundHttpConfig {
         let request_timeout = std::time::Duration::from_secs(request_timeout_secs);
         Ok(Self {
             address,
-            api_key,
+            auth,
             request_timeout,
         })
     }
@@ -181,7 +138,7 @@ impl InboundHttpConfig {
     pub fn build(self) -> InboundHttpServer {
         InboundHttpServer {
             address: self.address,
-            api_key: self.api_key,
+            auth: self.auth,
             request_timeout: self.request_timeout,
         }
     }
@@ -189,7 +146,7 @@ impl InboundHttpConfig {
 
 pub struct InboundHttpServer {
     address: SocketAddr,
-    api_key: Option<String>,
+    auth: Option<Arc<AuthConfig>>,
     request_timeout: std::time::Duration,
 }
 
@@ -202,16 +159,17 @@ impl InboundHttpServer {
         state: S,
         cancel: CancellationToken,
     ) -> anyhow::Result<()> {
-        if self.api_key.is_none() {
+        if self.auth.is_none() {
             tracing::warn!(
-                "HTTP API is unauthenticated; set CATAPULTE_HTTP_API_KEY to require a bearer token"
+                "HTTP API is unauthenticated and every caller is a trusted administrator; \
+                 set CATAPULTE_HTTP_API_KEY or CATAPULTE_API_KEYS to require a bearer token"
             );
         }
         let listener = tokio::net::TcpListener::bind(self.address)
             .await
             .context("binding http listener")?;
         tracing::info!(address = %self.address, "http server listening");
-        axum::serve(listener, router(state, self.api_key, self.request_timeout))
+        axum::serve(listener, router(state, self.auth, self.request_timeout))
             .with_graceful_shutdown(async move { cancel.cancelled().await })
             .await
             .context("http server stopped")?;
@@ -226,8 +184,10 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
     use catapulte_domain::use_case::check_readiness::Readiness;
+    use std::sync::Arc;
     use tower::ServiceExt;
 
+    use crate::auth::{ApiKeyIdentity, AuthConfig, NamedApiKey};
     use crate::routes::health::live;
 
     #[derive(Clone)]
@@ -247,27 +207,227 @@ mod tests {
         }
     }
 
+    fn legacy(secret: &str) -> Option<Arc<AuthConfig>> {
+        AuthConfig::new(Some(secret.to_owned()), vec![])
+            .unwrap()
+            .map(Arc::new)
+    }
+
     /// A lightweight router that only includes the health routes with auth applied,
-    /// used to test auth in isolation without needing a full `HttpServerState`.
-    fn auth_test_router(api_key: Option<String>) -> Router {
+    /// used to test auth in isolation without needing a full `HttpServerState`. The
+    /// protected route echoes the caller's identity.
+    fn auth_test_router(auth: Option<Arc<AuthConfig>>) -> Router {
         let mock = M;
         let health_routes = Router::new()
             .route("/health/live", get(live))
             .route("/health/ready", get(crate::routes::health::ready::<M>))
             .with_state(mock);
 
-        // Dummy protected route that always returns 200.
-        let protected = Router::new().route("/protected", get(|| async { StatusCode::OK }));
+        let protected = Router::new().route(
+            "/protected",
+            get(
+                |axum::Extension(id): axum::Extension<ApiKeyIdentity>| async move {
+                    format!("{}|{}", id.owner, id.admin)
+                },
+            ),
+        );
 
-        let protected = match api_key {
-            Some(key) => protected.route_layer(axum::middleware::from_fn_with_state(
-                key,
-                crate::require_api_key,
+        let protected = match auth {
+            Some(auth) => protected.route_layer(axum::middleware::from_fn_with_state(
+                auth,
+                crate::auth::require_api_key,
             )),
-            None => protected,
+            None => {
+                protected.route_layer(axum::middleware::from_fn(crate::auth::trust_every_caller))
+            }
         };
 
         Router::new().merge(protected).merge(health_routes)
+    }
+
+    async fn identity_of(app: Router, token: Option<&str>) -> Result<String, StatusCode> {
+        let mut request = Request::builder().method("GET").uri("/protected");
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        let response = app
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        if response.status() != StatusCode::OK {
+            return Err(response.status());
+        }
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        Ok(String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    fn two_keys() -> Option<Arc<AuthConfig>> {
+        AuthConfig::new(
+            None,
+            vec![
+                NamedApiKey {
+                    name: "a".into(),
+                    secret: "secret-a".into(),
+                    admin: false,
+                    sender_domains: None,
+                },
+                NamedApiKey {
+                    name: "ops".into(),
+                    secret: "secret-ops".into(),
+                    admin: true,
+                    sender_domains: None,
+                },
+            ],
+        )
+        .unwrap()
+        .map(Arc::new)
+    }
+
+    #[tokio::test]
+    async fn identities_follow_the_key_used() {
+        assert_eq!(
+            identity_of(auth_test_router(None), None).await.unwrap(),
+            "|true"
+        );
+        assert_eq!(
+            identity_of(auth_test_router(legacy("secret")), Some("secret"))
+                .await
+                .unwrap(),
+            "|true"
+        );
+        assert_eq!(
+            identity_of(auth_test_router(two_keys()), Some("secret-a"))
+                .await
+                .unwrap(),
+            "a|false"
+        );
+        assert_eq!(
+            identity_of(auth_test_router(two_keys()), Some("secret-ops"))
+                .await
+                .unwrap(),
+            "ops|true"
+        );
+    }
+
+    #[tokio::test]
+    async fn named_keys_alone_still_enforce_auth() {
+        assert_eq!(
+            identity_of(auth_test_router(two_keys()), None).await,
+            Err(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            identity_of(auth_test_router(two_keys()), Some("nope")).await,
+            Err(StatusCode::UNAUTHORIZED)
+        );
+    }
+
+    #[test]
+    fn duplicate_secrets_are_rejected() {
+        let key = |name: &str, secret: &str| NamedApiKey {
+            name: name.into(),
+            secret: secret.into(),
+            admin: false,
+            sender_domains: None,
+        };
+        assert!(AuthConfig::new(None, vec![key("a", "s"), key("b", "s")]).is_err());
+        assert!(AuthConfig::new(Some("s".into()), vec![key("a", "s")]).is_err());
+        assert!(AuthConfig::new(None, vec![key("a", "s1"), key("a", "s2")]).is_err());
+        assert!(AuthConfig::new(None, vec![key("A-b", "s")]).is_err());
+        assert!(AuthConfig::new(None, vec![key("", "s")]).is_err());
+    }
+
+    #[test]
+    fn named_keys_are_read_from_the_environment() {
+        let vars: std::collections::HashMap<&str, &str> = [
+            ("CATAPULTE_API_KEYS", "ci, ops"),
+            ("CATAPULTE_API_KEY_CI_SECRET", "s1"),
+            ("CATAPULTE_API_KEY_CI_SENDER_DOMAINS", "Example.com"),
+            ("CATAPULTE_API_KEY_OPS_SECRET", "s2"),
+            ("CATAPULTE_API_KEY_OPS_ADMIN", "true"),
+        ]
+        .into();
+        let lookup = |k: &str| {
+            vars.get(k)
+                .map(|v| (*v).to_owned())
+                .ok_or(std::env::VarError::NotPresent)
+        };
+
+        let auth = AuthConfig::from_lookup("LEGACY", lookup).unwrap().unwrap();
+
+        let ci = auth.authenticate("s1").unwrap();
+        assert_eq!(ci.owner, "ci");
+        assert!(!ci.admin);
+        assert_eq!(
+            ci.sender_domains,
+            Some(["example.com".to_owned()].into_iter().collect())
+        );
+        assert!(auth.authenticate("s2").unwrap().admin);
+        assert!(auth.authenticate("s3").is_none());
+        assert!(
+            AuthConfig::from_lookup("LEGACY", |_| Err(std::env::VarError::NotPresent))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_value_that_is_not_unicode_fails_startup_naming_the_variable() {
+        let bad = || std::env::VarError::NotUnicode(std::ffi::OsString::new());
+        let present: std::collections::HashMap<&str, &str> = [
+            ("CATAPULTE_API_KEYS", "ci"),
+            ("CATAPULTE_API_KEY_CI_SECRET", "s"),
+        ]
+        .into();
+        for broken in [
+            "LEGACY",
+            "CATAPULTE_API_KEYS",
+            "CATAPULTE_API_KEY_CI_SECRET",
+            "CATAPULTE_API_KEY_CI_SENDER_DOMAINS",
+            "CATAPULTE_API_KEY_CI_ADMIN",
+        ] {
+            let lookup = |k: &str| {
+                if k == broken {
+                    Err(bad())
+                } else {
+                    present
+                        .get(k)
+                        .map(|v| (*v).to_owned())
+                        .ok_or(std::env::VarError::NotPresent)
+                }
+            };
+            let err = AuthConfig::from_lookup("LEGACY", lookup).err().unwrap();
+            assert!(err.to_string().contains(broken), "{broken}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_named_key_without_a_secret_or_with_a_bad_flag_fails() {
+        let lookup_for = |vars: Vec<(&'static str, &'static str)>| {
+            move |k: &str| {
+                vars.iter()
+                    .find(|(name, _)| *name == k)
+                    .map(|(_, v)| (*v).to_owned())
+                    .ok_or(std::env::VarError::NotPresent)
+            }
+        };
+        assert!(
+            AuthConfig::from_lookup("LEGACY", lookup_for(vec![("CATAPULTE_API_KEYS", "ci")]))
+                .is_err()
+        );
+        assert!(
+            AuthConfig::from_lookup(
+                "LEGACY",
+                lookup_for(vec![
+                    ("CATAPULTE_API_KEYS", "ci"),
+                    ("CATAPULTE_API_KEY_CI_SECRET", "s"),
+                    ("CATAPULTE_API_KEY_CI_ADMIN", "yes"),
+                ])
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -288,7 +448,7 @@ mod tests {
 
     #[tokio::test]
     async fn key_configured_correct_bearer_is_allowed() {
-        let app = auth_test_router(Some("secret".to_owned()));
+        let app = auth_test_router(legacy("secret"));
         let response = app
             .oneshot(
                 Request::builder()
@@ -305,7 +465,7 @@ mod tests {
 
     #[tokio::test]
     async fn key_configured_missing_header_returns_401() {
-        let app = auth_test_router(Some("secret".to_owned()));
+        let app = auth_test_router(legacy("secret"));
         let response = app
             .oneshot(
                 Request::builder()
@@ -321,7 +481,7 @@ mod tests {
 
     #[tokio::test]
     async fn key_configured_wrong_key_returns_401() {
-        let app = auth_test_router(Some("secret".to_owned()));
+        let app = auth_test_router(legacy("secret"));
         let response = app
             .oneshot(
                 Request::builder()
@@ -338,7 +498,7 @@ mod tests {
 
     #[tokio::test]
     async fn key_configured_malformed_header_returns_401() {
-        let app = auth_test_router(Some("secret".to_owned()));
+        let app = auth_test_router(legacy("secret"));
         let response = app
             .oneshot(
                 Request::builder()
@@ -355,7 +515,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_live_always_public_with_key_configured() {
-        let app = auth_test_router(Some("secret".to_owned()));
+        let app = auth_test_router(legacy("secret"));
         let response = app
             .oneshot(
                 Request::builder()
@@ -371,7 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_ready_always_public_with_key_configured() {
-        let app = auth_test_router(Some("secret".to_owned()));
+        let app = auth_test_router(legacy("secret"));
         let response = app
             .oneshot(
                 Request::builder()

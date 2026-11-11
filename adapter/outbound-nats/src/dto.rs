@@ -61,6 +61,8 @@ pub struct QueuedEmailPayload {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EnvelopeDto {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner: String,
     pub idempotency_key: Option<String>,
     pub subject: Option<String>,
     pub sender: String,
@@ -169,6 +171,7 @@ impl From<(&EmailId, &Envelope)> for QueuedEmailPayload {
             id: id.as_uuid(),
             correlation_id: envelope.correlation_id.clone(),
             envelope: EnvelopeDto {
+                owner: envelope.owner.clone(),
                 idempotency_key: envelope.idempotency_key.clone(),
                 subject: envelope.subject.clone(),
                 sender: envelope.sender.clone(),
@@ -213,6 +216,7 @@ impl TryFrom<QueuedEmailPayload> for (EmailId, Envelope) {
             .map(AttachmentRef::from)
             .collect();
         let envelope = Envelope {
+            owner: payload.envelope.owner,
             idempotency_key: payload.envelope.idempotency_key,
             correlation_id: payload.correlation_id,
             subject: payload.envelope.subject,

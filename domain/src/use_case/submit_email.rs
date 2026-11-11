@@ -34,6 +34,11 @@ pub enum AttachmentInput {
 }
 
 pub struct SubmitEmailInput {
+    /// Set by the HTTP middleware (or `""` for NATS), never taken from the request body.
+    pub owner: String,
+    /// Sender domains this caller may use, intersected with the global allow-list. `None`
+    /// adds no restriction; `Some` of an empty set denies every sender.
+    pub sender_domains: Option<std::collections::HashSet<String>>,
     pub idempotency_key: Option<String>,
     pub correlation_id: Option<String>,
     pub subject: Option<String>,
@@ -269,12 +274,20 @@ where
         }
     }
 
-    fn check_sender_allowed(&self, sender: &str) -> Result<(), SubmitEmailError> {
-        let Some(allowed) = &self.limits.allowed_sender_domains else {
-            return Ok(());
-        };
+    /// The sender must pass the global allow-list and the caller's own list; each applies
+    /// only when set.
+    fn check_sender_allowed(
+        &self,
+        sender: &str,
+        caller_domains: Option<&std::collections::HashSet<String>>,
+    ) -> Result<(), SubmitEmailError> {
         let domain = bare_address(sender).rsplit_once('@').map_or("", |(_, d)| d);
-        if normalize_sender_domain(domain).is_some_and(|d| allowed.contains(&d)) {
+        let normalized = normalize_sender_domain(domain);
+        let allowed = [self.limits.allowed_sender_domains.as_ref(), caller_domains]
+            .into_iter()
+            .flatten()
+            .all(|set| normalized.as_ref().is_some_and(|d| set.contains(d)));
+        if allowed {
             Ok(())
         } else {
             Err(SubmitEmailError::SenderDomainNotAllowed {
@@ -290,12 +303,13 @@ where
         id: EmailId,
         state: DuplicateState,
         recovery: Option<Envelope>,
+        caller_domains: Option<&std::collections::HashSet<String>>,
     ) -> Result<EmailId, SubmitEmailError> {
         if state == DuplicateState::Reserved {
             return Err(SubmitEmailError::ReservationIncomplete { id });
         }
         if let Some(envelope) = recovery {
-            self.check_sender_allowed(&envelope.sender)?;
+            self.check_sender_allowed(&envelope.sender, caller_domains)?;
             self.queue.enqueue(id, &envelope).await?;
             self.mark_enqueued_and_announce(id, &envelope).await;
         }
@@ -308,7 +322,7 @@ where
     async fn mark_enqueued_and_announce(&self, id: EmailId, envelope: &Envelope) {
         if let Err(e) = self
             .repository
-            .set_enqueue_state(id, EnqueueState::Enqueued)
+            .set_enqueue_state(id, &envelope.owner, EnqueueState::Enqueued)
             .await
         {
             tracing::warn!(
@@ -340,7 +354,7 @@ where
     #[allow(clippy::too_many_lines)]
     #[tracing::instrument(skip_all, name = "submit_email", fields(email_id = tracing::field::Empty, correlation_id = tracing::field::Empty))]
     pub async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
-        self.check_sender_allowed(&input.sender)?;
+        self.check_sender_allowed(&input.sender, input.sender_domains.as_ref())?;
         let id = EmailId::default();
         if let Some(ref cid) = input.correlation_id {
             tracing::Span::current().record("correlation_id", cid.as_str());
@@ -349,6 +363,7 @@ where
         // Reserve the row with an empty attachment list first; the final list is
         // patched in after blobs are written so the worker never sees stale refs.
         let envelope_for_reservation = Envelope {
+            owner: input.owner.clone(),
             idempotency_key: input.idempotency_key.clone(),
             correlation_id: input.correlation_id.clone(),
             subject: input.subject.clone(),
@@ -372,7 +387,9 @@ where
                 // Record the persisted id, not the freshly generated one that is
                 // discarded on an idempotent resubmit.
                 tracing::Span::current().record("email_id", existing_id.as_uuid().to_string());
-                return self.resolve_duplicate(existing_id, state, recovery).await;
+                return self
+                    .resolve_duplicate(existing_id, state, recovery, input.sender_domains.as_ref())
+                    .await;
             }
             SaveResult::Created(_) => {
                 tracing::Span::current().record("email_id", id.as_uuid().to_string());
@@ -380,6 +397,8 @@ where
         }
 
         let SubmitEmailInput {
+            owner,
+            sender_domains: _,
             idempotency_key,
             correlation_id,
             subject,
@@ -463,6 +482,7 @@ where
         }
 
         let envelope = Envelope {
+            owner,
             idempotency_key,
             correlation_id,
             subject,
@@ -478,7 +498,7 @@ where
 
         if let Err(e) = self
             .repository
-            .set_enqueue_state(id, EnqueueState::Publishable)
+            .set_enqueue_state(id, &envelope.owner, EnqueueState::Publishable)
             .await
         {
             // A failed write may still have committed, so a concurrent same-key recovery can
@@ -553,6 +573,8 @@ mod tests {
 
     fn make_input(sender: &str) -> SubmitEmailInput {
         SubmitEmailInput {
+            owner: String::new(),
+            sender_domains: None,
             idempotency_key: None,
             correlation_id: None,
             subject: None,
@@ -627,6 +649,7 @@ mod tests {
         async fn set_enqueue_state(
             &self,
             _id: EmailId,
+            _owner: &str,
             _state: EnqueueState,
         ) -> Result<(), EmailRepositoryError> {
             Ok(())
@@ -679,6 +702,7 @@ mod tests {
         async fn set_enqueue_state(
             &self,
             _id: EmailId,
+            _owner: &str,
             _state: EnqueueState,
         ) -> Result<(), EmailRepositoryError> {
             Ok(())
@@ -731,6 +755,7 @@ mod tests {
         async fn set_enqueue_state(
             &self,
             _id: EmailId,
+            _owner: &str,
             _state: EnqueueState,
         ) -> Result<(), EmailRepositoryError> {
             Ok(())
@@ -1329,7 +1354,9 @@ mod tests {
         ) -> Result<SaveResult, EmailRepositoryError> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(key) = &envelope.idempotency_key
-                && let Some(row) = rows.iter().find(|r| r.key.as_ref() == Some(key))
+                && let Some(row) = rows
+                    .iter()
+                    .find(|r| r.key.as_ref() == Some(key) && r.envelope.owner == envelope.owner)
             {
                 return Ok(SaveResult::Duplicate {
                     id: row.id,
@@ -1372,6 +1399,7 @@ mod tests {
         async fn set_enqueue_state(
             &self,
             id: EmailId,
+            owner: &str,
             state: EnqueueState,
         ) -> Result<(), EmailRepositoryError> {
             use std::sync::atomic::Ordering::SeqCst;
@@ -1385,7 +1413,10 @@ mod tests {
                 });
             }
             let mut rows = self.rows.lock().unwrap();
-            if let Some(row) = rows.iter_mut().find(|r| r.id == id) {
+            if let Some(row) = rows
+                .iter_mut()
+                .find(|r| r.id == id && r.envelope.owner == owner)
+            {
                 row.state = new_state;
             }
             if state == EnqueueState::Publishable && self.fail_publishable_after_commit.load(SeqCst)
@@ -1745,6 +1776,60 @@ mod tests {
         assert_eq!(calls[0].1.len(), 1, "the blob ref survives");
         assert_eq!(store.outstanding_blobs(), 1);
         assert_eq!(repo.states(), vec![RowState::Enqueued]);
+    }
+
+    #[tokio::test]
+    async fn same_idempotency_key_from_another_owner_never_replays_a_publishable_row() {
+        let repo = KeyedRepository::new();
+        repo.fail_publishable_after_commit
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let queue = ScriptedQueue::failing(&[]);
+        let events = FakeEventPublisher::new();
+        let service = service_with(&repo, &queue, &events, &FakeAttachmentStore::new());
+        let mut a = keyed_input("k", 10);
+        a.owner = "a".into();
+        service.execute(a).await.unwrap_err();
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+        repo.fail_publishable_after_commit
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let mut b = keyed_input("k", 10);
+        b.owner = "b".into();
+        service.execute(b).await.unwrap();
+
+        assert_eq!(
+            repo.states(),
+            vec![RowState::Publishable, RowState::Enqueued],
+            "a's row is untouched and b got its own row"
+        );
+        assert_eq!(queue.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn caller_sender_domains_are_intersected_with_the_global_list() {
+        let run = |global: Option<&[&str]>, caller: Option<&[&str]>, sender: &str| {
+            let mut input = make_input(sender);
+            input.sender_domains = caller.map(|d| normalize_sender_domains(d).unwrap());
+            let service = SubmitEmailService::new(
+                FakeRepository::new(),
+                FakeQueue::new(),
+                FakeEventPublisher::new(),
+                FakeAttachmentStore::new(),
+                FakeFetcher,
+            )
+            .with_limits(SubmitLimits {
+                allowed_sender_domains: global.map(|d| normalize_sender_domains(d).unwrap()),
+                ..SubmitLimits::default()
+            });
+            async move { service.execute(input).await.is_ok() }
+        };
+
+        assert!(run(None, Some(&["a.com"]), "x@a.com").await);
+        assert!(!run(None, Some(&["a.com"]), "x@b.com").await);
+        assert!(!run(None, Some(&[]), "x@a.com").await);
+        assert!(!run(Some(&["b.com"]), Some(&["a.com"]), "x@a.com").await);
+        assert!(run(Some(&["a.com", "b.com"]), Some(&["a.com"]), "x@a.com").await);
+        assert!(!run(Some(&["a.com"]), None, "x@b.com").await);
     }
 
     #[tokio::test]

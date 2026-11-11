@@ -6,6 +6,8 @@ use crate::entity::sender::SenderName;
 
 #[derive(Clone, Debug)]
 pub struct ListEventsParams {
+    /// Restricts events to emails submitted by this API key; `None` lists every owner.
+    pub owner: Option<String>,
     pub email_id: Option<EmailId>,
     pub event_type: Option<String>,
     pub sender_name: Option<String>,

@@ -56,11 +56,12 @@ impl EmailRepository for StorageAdapter {
     async fn set_enqueue_state(
         &self,
         id: EmailId,
+        owner: &str,
         state: EnqueueState,
     ) -> Result<(), EmailRepositoryError> {
         match self {
-            Self::Sqlite(a) => a.set_enqueue_state(id, state).await,
-            Self::Postgres(a) => a.set_enqueue_state(id, state).await,
+            Self::Sqlite(a) => a.set_enqueue_state(id, owner, state).await,
+            Self::Postgres(a) => a.set_enqueue_state(id, owner, state).await,
         }
     }
 

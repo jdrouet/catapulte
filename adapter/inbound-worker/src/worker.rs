@@ -441,6 +441,7 @@ mod tests {
         async fn set_enqueue_state(
             &self,
             _: EmailId,
+            _: &str,
             _: EnqueueState,
         ) -> Result<(), EmailRepositoryError> {
             Ok(())
@@ -485,6 +486,7 @@ mod tests {
         async fn set_enqueue_state(
             &self,
             _: EmailId,
+            _: &str,
             _: EnqueueState,
         ) -> Result<(), EmailRepositoryError> {
             Ok(())

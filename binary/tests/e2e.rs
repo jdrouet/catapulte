@@ -8,6 +8,7 @@ use catapulte::publisher::PublisherAdapterConfig;
 use catapulte::queue::QueueBackendConfig;
 use catapulte::storage::StorageBackendConfig;
 use catapulte_inbound_http::InboundHttpConfig;
+use catapulte_inbound_http::auth::{AuthConfig, NamedApiKey};
 use catapulte_inbound_worker::worker::WorkerConfig;
 use catapulte_outbound_attachment_fs::store::FsAttachmentStoreConfig;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
@@ -155,7 +156,7 @@ async fn multi_sender_primary_delivers_email_before_backup() {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
-            api_key: None,
+            auth: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -316,7 +317,7 @@ async fn multi_sender_falls_back_to_backup_when_primary_fails() {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
-            api_key: None,
+            auth: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -454,7 +455,7 @@ async fn sent_email_blob_is_deleted_after_delivery() {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
-            api_key: None,
+            auth: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -589,7 +590,7 @@ async fn submit_email_with_remote_url_attachment_is_delivered() {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
-            api_key: None,
+            auth: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -733,7 +734,7 @@ async fn submit_via_inbound_nats_delivers_and_emits_lifecycle_event_with_correla
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
-            api_key: None,
+            auth: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: Some(catapulte_inbound_nats::server::InboundNatsConfig {
@@ -864,7 +865,7 @@ async fn submit_email_with_disallowed_remote_attachment_returns_400() {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
-            api_key: None,
+            auth: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -975,7 +976,7 @@ async fn multi_sender_routes_by_sender_domain() {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
-            api_key: None,
+            auth: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -1129,7 +1130,7 @@ async fn sink_sender_reaches_delivery_succeeded_without_any_smtp_server() {
         }),
         http: InboundHttpConfig {
             address: format!("127.0.0.1:{http_port}").parse().unwrap(),
-            api_key: None,
+            auth: None,
             request_timeout: std::time::Duration::from_secs(30),
         },
         inbound_nats: None,
@@ -1198,4 +1199,320 @@ async fn sink_sender_reaches_delivery_succeeded_without_any_smtp_server() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(delivered, "no delivery.succeeded event with a sink sender");
+}
+
+fn named_key(name: &str, secret: &str, admin: bool, domains: Option<&[&str]>) -> NamedApiKey {
+    NamedApiKey {
+        name: name.to_owned(),
+        secret: secret.to_owned(),
+        admin,
+        sender_domains: domains.map(|d| d.iter().map(|s| (*s).to_owned()).collect()),
+    }
+}
+
+/// Starts the app with a sink sender and the given auth; returns the HTTP base URL.
+async fn start_sink_app(auth: Option<AuthConfig>, db_dir: &tempfile::TempDir) -> String {
+    let http_port = free_port();
+    let config = AppConfig {
+        storage: StorageBackendConfig::Sqlite(SqliteConfig {
+            url: format!("sqlite:{}", db_dir.path().join("scoped.db").display()),
+        }),
+        http: InboundHttpConfig {
+            address: format!("127.0.0.1:{http_port}").parse().unwrap(),
+            auth: auth.map(std::sync::Arc::new),
+            request_timeout: std::time::Duration::from_secs(30),
+        },
+        inbound_nats: None,
+        smtp: MultiSenderConfig::empty().with_sink_sender("ci", 100),
+        resolver: base_resolver(),
+        worker: WorkerConfig::default(),
+        queue: QueueBackendConfig::Storage,
+        publisher: PublisherAdapterConfig::storage_only(),
+        attachment_store: AttachmentStoreBackendConfig::Fs(FsAttachmentStoreConfig {
+            root: db_dir.path().join("attachments"),
+        }),
+        attachment_fetcher: base_attachment_fetcher(),
+        include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        gc_sweep_interval: Duration::from_hours(1),
+        gc_grace_period: Duration::from_hours(1),
+        max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
+    };
+    let app = config.build().await.expect("failed to build app");
+    tokio::spawn(async move {
+        let _ = app.run().await;
+    });
+    let base = format!("http://127.0.0.1:{http_port}");
+    for _ in 0..100 {
+        if reqwest::get(format!("{base}/health/live")).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    base
+}
+
+async fn submit_as(
+    base: &str,
+    token: &str,
+    sender: &str,
+    idempotency_key: Option<&str>,
+    extra: serde_json::Value,
+) -> reqwest::Response {
+    let mut body = serde_json::json!({
+        "sender": sender,
+        "recipients": [{ "kind": "to", "address": "recipient@example.com" }],
+        "body": { "kind": "plain", "text": "hello" },
+        "variables": {}
+    });
+    if let Some(key) = idempotency_key {
+        body["idempotency_key"] = key.into();
+    }
+    for (k, v) in extra.as_object().into_iter().flatten() {
+        body[k] = v.clone();
+    }
+    reqwest::Client::new()
+        .post(format!("{base}/emails"))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .expect("POST /emails failed")
+}
+
+async fn id_of(response: reqwest::Response) -> String {
+    assert!(response.status().is_success(), "{}", response.status());
+    let body: serde_json::Value = response.json().await.unwrap();
+    body["id"].as_str().unwrap().to_owned()
+}
+
+async fn get_json(base: &str, token: &str, path: &str) -> serde_json::Value {
+    reqwest::Client::new()
+        .get(format!("{base}{path}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+async fn wait_for_delivery(base: &str, token: &str, id: &str) {
+    for _ in 0..100 {
+        let body = get_json(base, token, &format!("/emails/{id}/events")).await;
+        if body["events"].as_array().is_some_and(|events| {
+            events
+                .iter()
+                .any(|e| e["event_type"] == "delivery.succeeded")
+        }) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("email {id} was not delivered");
+}
+
+fn ids(body: &serde_json::Value, field: &str, id_field: &str) -> Vec<String> {
+    body[field]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e[id_field].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn scoped_keys_isolate_idempotency_and_reads() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let auth = AuthConfig::new(
+        Some("legacy-secret".to_owned()),
+        vec![
+            named_key("a", "secret-a", false, None),
+            named_key("b", "secret-b", false, None),
+            named_key("ops", "secret-ops", true, None),
+        ],
+    )
+    .unwrap();
+    let base = start_sink_app(auth, &db_dir).await;
+
+    let a1 = id_of(
+        submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            Some("k"),
+            serde_json::json!({}),
+        )
+        .await,
+    )
+    .await;
+    let b1 = id_of(
+        submit_as(
+            &base,
+            "secret-b",
+            "s@example.com",
+            Some("k"),
+            serde_json::json!({}),
+        )
+        .await,
+    )
+    .await;
+    let a2 = id_of(
+        submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            Some("k"),
+            serde_json::json!({}),
+        )
+        .await,
+    )
+    .await;
+    let l1 = id_of(
+        submit_as(
+            &base,
+            "legacy-secret",
+            "s@example.com",
+            Some("k"),
+            serde_json::json!({}),
+        )
+        .await,
+    )
+    .await;
+    let l2 = id_of(
+        submit_as(
+            &base,
+            "legacy-secret",
+            "s@example.com",
+            Some("k"),
+            serde_json::json!({}),
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(
+        a1, b1,
+        "same idempotency key under different keys is two emails"
+    );
+    assert_eq!(a1, a2, "the same key resubmitting gets its own id back");
+    assert_eq!(l1, l2);
+    assert_ne!(l1, a1);
+    for id in [&a1, &b1, &l1] {
+        wait_for_delivery(&base, "secret-ops", id).await;
+    }
+
+    let a_emails = get_json(&base, "secret-a", "/emails").await;
+    assert_eq!(ids(&a_emails, "emails", "id"), vec![a1.clone()]);
+    let b_emails = get_json(&base, "secret-b", "/emails").await;
+    assert_eq!(ids(&b_emails, "emails", "id"), vec![b1.clone()]);
+    let foreign = get_json(&base, "secret-a", &format!("/emails?id={b1}")).await;
+    assert!(foreign["emails"].as_array().unwrap().is_empty());
+
+    let a_events = get_json(&base, "secret-a", "/events").await;
+    assert!(
+        ids(&a_events, "events", "email_id")
+            .iter()
+            .all(|e| *e == a1),
+        "a only sees its own events"
+    );
+    assert!(!a_events["events"].as_array().unwrap().is_empty());
+    let foreign_events = get_json(&base, "secret-a", &format!("/emails/{b1}/events")).await;
+    assert!(foreign_events["events"].as_array().unwrap().is_empty());
+    let own_events = get_json(&base, "secret-b", &format!("/emails/{b1}/events")).await;
+    assert!(!own_events["events"].as_array().unwrap().is_empty());
+
+    let ops_emails = get_json(&base, "secret-ops", "/emails").await;
+    assert_eq!(ids(&ops_emails, "emails", "id").len(), 3);
+    let legacy_emails = get_json(&base, "legacy-secret", "/emails").await;
+    assert_eq!(ids(&legacy_emails, "emails", "id").len(), 3);
+}
+
+#[tokio::test]
+async fn named_keys_without_a_legacy_key_still_require_a_token() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let auth = AuthConfig::new(None, vec![named_key("a", "secret-a", false, None)]).unwrap();
+    let base = start_sink_app(auth, &db_dir).await;
+
+    let anonymous = reqwest::get(format!("{base}/emails")).await.unwrap();
+    assert_eq!(anonymous.status(), 401);
+    let wrong = submit_as(&base, "nope", "s@example.com", None, serde_json::json!({})).await;
+    assert_eq!(wrong.status(), 401);
+}
+
+#[tokio::test]
+async fn named_key_sender_domains_restrict_the_sender() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let auth = AuthConfig::new(
+        None,
+        vec![named_key("a", "secret-a", false, Some(&["allowed.com"]))],
+    )
+    .unwrap();
+    let base = start_sink_app(auth, &db_dir).await;
+
+    let denied = submit_as(
+        &base,
+        "secret-a",
+        "s@example.com",
+        None,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(denied.status(), 403);
+    let allowed = submit_as(
+        &base,
+        "secret-a",
+        "s@allowed.com",
+        None,
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(allowed.status().is_success());
+}
+
+#[tokio::test]
+async fn identity_fields_in_the_body_cannot_change_the_caller() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let auth = AuthConfig::new(
+        None,
+        vec![
+            named_key("a", "secret-a", false, Some(&["allowed.com"])),
+            named_key("b", "secret-b", false, None),
+        ],
+    )
+    .unwrap();
+    let base = start_sink_app(auth, &db_dir).await;
+    let b1 = id_of(
+        submit_as(
+            &base,
+            "secret-b",
+            "s@example.com",
+            None,
+            serde_json::json!({}),
+        )
+        .await,
+    )
+    .await;
+
+    let forged = serde_json::json!({
+        "owner": "b",
+        "admin": true,
+        "api_key": "secret-b",
+        "sender_domains": ["example.com"]
+    });
+    let denied = submit_as(&base, "secret-a", "s@example.com", None, forged.clone()).await;
+    assert_eq!(
+        denied.status(),
+        403,
+        "the key's own sender list still applies"
+    );
+    let a1 = id_of(submit_as(&base, "secret-a", "s@allowed.com", None, forged).await).await;
+
+    let a_emails = get_json(&base, "secret-a", "/emails").await;
+    assert_eq!(
+        ids(&a_emails, "emails", "id"),
+        vec![a1],
+        "stored under a, and a stays non-admin"
+    );
+    assert!(!ids(&a_emails, "emails", "id").contains(&b1));
 }

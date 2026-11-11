@@ -106,6 +106,7 @@ impl EmailRepository for StateFailingRepository {
     async fn set_enqueue_state(
         &self,
         id: EmailId,
+        owner: &str,
         state: EnqueueState,
     ) -> Result<(), EmailRepositoryError> {
         if state == EnqueueState::Enqueued && self.fail_enqueued.load(Ordering::SeqCst) {
@@ -113,7 +114,7 @@ impl EmailRepository for StateFailingRepository {
                 source: anyhow::anyhow!("injected: enqueued state write failed"),
             });
         }
-        self.inner.set_enqueue_state(id, state).await
+        self.inner.set_enqueue_state(id, owner, state).await
     }
 
     async fn delete(&self, id: EmailId) -> Result<(), EmailRepositoryError> {
@@ -213,6 +214,8 @@ fn input_with(
     let mut variables = serde_json::Map::new();
     variables.insert("name".to_owned(), serde_json::json!(subject));
     SubmitEmailInput {
+        owner: String::new(),
+        sender_domains: None,
         idempotency_key: Some("recovery-key".to_owned()),
         correlation_id: Some(correlation_id.to_owned()),
         subject: Some(subject.to_owned()),

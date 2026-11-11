@@ -41,7 +41,8 @@ delivers them over SMTP. The following are **in scope**:
 - **Server-side request forgery (SSRF)** in the remote-fetch paths: URL-based
   attachments and remote MJML templates (`mj-include` fetched over HTTP).
 - **Authentication / authorization** flaws on the HTTP API (the
-  `CATAPULTE_HTTP_API_KEY` bearer check), including bypasses.
+  `CATAPULTE_HTTP_API_KEY` bearer check and the scoped `CATAPULTE_API_KEYS`
+  owner and admin checks), including bypasses and cross-owner reads.
 - **Injection**: email header/recipient injection, or template injection via
   MJML plus caller-supplied variables.
 - **Credential or data exposure**: leaking SMTP sender credentials, storage or
@@ -53,13 +54,14 @@ delivers them over SMTP. The following are **in scope**:
 The following are **out of scope**:
 
 - **Operator misconfiguration** — most importantly, exposing the API with
-  `CATAPULTE_HTTP_API_KEY` unset on an untrusted network. Unauthenticated mode
-  is documented as trusted-network-only.
+  `CATAPULTE_HTTP_API_KEY` and `CATAPULTE_API_KEYS` unset on an untrusted
+  network. With no key configured every caller is a trusted administrator; this
+  trusted-network mode is documented as trusted-network-only.
 - **Volumetric denial of service / abuse.** catapulte has no built-in rate
   limiting or abuse protection by design; operators are expected to run it
   behind a gateway or reverse proxy that enforces limits.
 - Features explicitly listed as out of scope in the [readme](./readme.md)
-  (bounce ingestion, scheduled sends, suppression lists, multi-tenant auth).
+  (bounce ingestion, scheduled sends, suppression lists).
 - Vulnerabilities already tracked by the repository's dependency scanning, or
   in dependencies that are not reachable from the shipped binary (for example,
   test-only tooling).
@@ -70,7 +72,7 @@ The following are **out of scope**:
 
 To run catapulte safely:
 
-- Set `CATAPULTE_HTTP_API_KEY` and run behind a reverse proxy; do not expose the
+- Set `CATAPULTE_HTTP_API_KEY` or `CATAPULTE_API_KEYS` and run behind a reverse proxy; do not expose the
   service directly to the public internet.
 - Enforce request rate limits at that proxy/gateway.
 - Keep SMTP credentials and connection strings in a secret store, not in plain

@@ -692,6 +692,8 @@ impl EnvelopeCoreDto {
             }
         }
         Ok(SubmitEmailInput {
+            owner: String::new(),
+            sender_domains: None,
             idempotency_key: self.idempotency_key,
             correlation_id: self.correlation_id,
             subject: self.subject,
@@ -801,6 +803,16 @@ mod tests {
         serde_json::from_value::<SubmitEmailRequest>(env)
             .unwrap()
             .into_submit_input()
+    }
+
+    #[test]
+    fn request_conversion_never_sets_the_caller_identity() {
+        let input = convert_with(serde_json::json!({
+            "owner": "x", "admin": true, "api_key": "k", "sender_domains": ["a.com"]
+        }))
+        .unwrap();
+        assert_eq!(input.owner, "", "legacy key and NATS share this namespace");
+        assert_eq!(input.sender_domains, None);
     }
 
     #[test]

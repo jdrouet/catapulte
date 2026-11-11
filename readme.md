@@ -120,10 +120,16 @@ All configuration is done via environment variables.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CATAPULTE_HTTP_ADDRESS` | Bind address for the HTTP server | - |
-| `CATAPULTE_HTTP_API_KEY` | Static bearer token required on all HTTP routes except health checks; unset = no auth | - |
+| `CATAPULTE_HTTP_API_KEY` | Legacy admin bearer token; with `CATAPULTE_API_KEYS` unset, unset here = no auth | - |
+| `CATAPULTE_API_KEYS` | Comma-separated names of scoped API keys. Names use lowercase letters, digits and `_` | - |
+| `CATAPULTE_API_KEY_{NAME}_SECRET` | **(Required per key)** The bearer token for this key. Secrets must be unique across all keys, including the legacy one | - |
+| `CATAPULTE_API_KEY_{NAME}_SENDER_DOMAINS` | Comma-separated sender domains this key may use, intersected with `CATAPULTE_ALLOWED_SENDER_DOMAINS`. Set but empty denies every sender | unset (no extra limit) |
+| `CATAPULTE_API_KEY_{NAME}_ADMIN` | `true` lets the key read every owner's emails and events | `false` |
 | `CATAPULTE_HTTP_REQUEST_TIMEOUT_SECS` | Request deadline for read/list and health endpoints; the email submit routes are exempt so large attachment uploads over slow links are not truncated | 30 |
 
-**Authentication:** set `CATAPULTE_HTTP_API_KEY` to a secret value and include `Authorization: Bearer <key>` on every request. The health endpoints (`/health/live`, `/health/ready`) are always public regardless of this setting. When the variable is unset the API is unauthenticated — suitable only when running behind a trusted network boundary.
+**Authentication:** set `CATAPULTE_HTTP_API_KEY` to a secret value and include `Authorization: Bearer <key>` on every request. The health endpoints (`/health/live`, `/health/ready`) are always public regardless of this setting. When neither `CATAPULTE_HTTP_API_KEY` nor any named key is set, the API is unauthenticated and every caller is a trusted administrator (startup logs a warning) — suitable only when running behind a trusted network boundary.
+
+**Scoped API keys:** each named key is its own owner. Idempotency keys are unique per owner, so two keys can reuse the same `idempotency_key` without seeing each other's emails. A key that is not an admin only lists its own emails and events through `GET /emails`, `GET /events` and `GET /emails/{id}/events`; another owner's id returns an empty list. `POST /emails`, `POST /emails/batch` and `GET /senders` accept any key. The legacy `CATAPULTE_HTTP_API_KEY`, trusted mode and inbound NATS all share the default owner `""`, and the legacy key is an admin. A request body cannot set the owner or admin status. `GET /senders` is available to every key and exposes sender names, routing domains, quotas and aggregate sent and failed counts across all owners.
 
 #### NATS
 
@@ -412,7 +418,7 @@ Emitted gauges:
 
 ## Out of scope (for now)
 
-Bounce and complaint ingestion, scheduled sends, recipient suppression lists, multi-tenant auth. Listed so they aren't mistaken for missing stories.
+Bounce and complaint ingestion, scheduled sends, recipient suppression lists. Listed so they aren't mistaken for missing stories.
 
 ## License
 
