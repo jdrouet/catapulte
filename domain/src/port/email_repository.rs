@@ -112,6 +112,8 @@ pub enum EmailStatus {
 
 #[derive(Clone, Debug)]
 pub struct ListEmailsParams {
+    /// Only emails carrying this tag.
+    pub tag: Option<String>,
     /// Restricts the list to emails submitted by this API key; `None` lists every owner.
     pub owner: Option<String>,
     pub status: Option<EmailStatus>,
@@ -133,4 +135,6 @@ pub struct EmailRecord {
     pub recipients: Vec<(RecipientKind, String)>,
     pub created_at_ms: i64,
     pub status: EmailStatus,
+    pub tags: Vec<String>,
+    pub metadata: std::collections::BTreeMap<String, String>,
 }

@@ -77,6 +77,10 @@ pub struct EnvelopeDto {
     pub headers: Vec<(String, String)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsubscribe: Option<UnsubscribeDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub metadata: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -193,6 +197,8 @@ impl From<(&EmailId, &Envelope)> for QueuedEmailPayload {
                 reply_to: envelope.reply_to.clone(),
                 headers: envelope.headers.clone(),
                 unsubscribe: envelope.unsubscribe.as_ref().map(UnsubscribeDto::from),
+                tags: envelope.tags.clone(),
+                metadata: envelope.metadata.clone(),
             },
         }
     }
@@ -232,6 +238,8 @@ impl TryFrom<QueuedEmailPayload> for (EmailId, Envelope) {
                 .unsubscribe
                 .map(Unsubscribe::try_from)
                 .transpose()?,
+            tags: payload.envelope.tags,
+            metadata: payload.envelope.metadata,
         };
         Ok((EmailId::from(payload.id), envelope))
     }
@@ -406,5 +414,41 @@ mod tests {
         let payload: QueuedEmailPayload = serde_json::from_value(legacy).unwrap();
         let (_, env) = <(EmailId, Envelope)>::try_from(payload).unwrap();
         assert!(env.unsubscribe.is_none());
+    }
+
+    #[test]
+    fn tags_and_metadata_round_trip_and_legacy_payload_loads() {
+        let id = EmailId::default();
+        let mut envelope = Envelope::new(
+            "sender@example.com",
+            vec![(RecipientKind::To, "to@example.com".into())],
+            BodySource::Plain(Plain::try_new(Some("hi".into()), None).unwrap()),
+        );
+        envelope.tags = vec!["welcome".to_owned()];
+        envelope
+            .metadata
+            .insert("order".to_owned(), "42".to_owned());
+        let bytes = serde_json::to_vec(&QueuedEmailPayload::from((&id, &envelope))).unwrap();
+        let (_, back) = <(EmailId, Envelope)>::try_from(
+            serde_json::from_slice::<QueuedEmailPayload>(&bytes).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(back.tags, envelope.tags);
+        assert_eq!(back.metadata, envelope.metadata);
+
+        let plain = Envelope::new("a@b.c", vec![], envelope.body.clone());
+        let json = serde_json::to_string(&QueuedEmailPayload::from((&id, &plain))).unwrap();
+        assert!(!json.contains("tags") && !json.contains("metadata"));
+        let legacy = serde_json::json!({
+            "id": uuid::Uuid::nil(),
+            "envelope": {
+                "idempotency_key": null, "subject": null, "sender": "a@b.c",
+                "recipients": [], "body": {"kind": "plain", "text": "x", "html": null},
+                "variables": {}
+            }
+        });
+        let payload: QueuedEmailPayload = serde_json::from_value(legacy).unwrap();
+        let (_, env) = <(EmailId, Envelope)>::try_from(payload).unwrap();
+        assert!(env.tags.is_empty() && env.metadata.is_empty());
     }
 }

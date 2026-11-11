@@ -245,6 +245,7 @@ pub async fn list_emails<S: HttpServerState>(
         before_ms: query.before_ms,
         recipient: query.recipient,
         template: query.template,
+        tag: query.tag,
         id,
         limit,
         offset,
@@ -579,6 +580,8 @@ mod tests {
             recipients: vec![],
             created_at_ms: 1000,
             status: EmailStatus::Queued,
+            tags: vec![],
+            metadata: std::collections::BTreeMap::new(),
         }
     }
 

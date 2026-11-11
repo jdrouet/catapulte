@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::entity::attachment::AttachmentRef;
 use crate::entity::email::{EmailId, bare_address};
 use crate::entity::envelope::Envelope;
-use crate::entity::lifecycle_event::{EventContext, LifecycleEvent};
+use crate::entity::lifecycle_event::LifecycleEvent;
 use crate::entity::suppression::suppression_key;
 use crate::port::attachment_fetcher::AttachmentFetcher;
 use crate::port::attachment_store::{AttachmentReader, AttachmentStore};
@@ -54,6 +54,8 @@ pub struct SubmitEmailInput {
     pub reply_to: Vec<String>,
     pub headers: Vec<(String, String)>,
     pub unsubscribe: Option<crate::entity::envelope::Unsubscribe>,
+    pub tags: Vec<String>,
+    pub metadata: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Error)]
@@ -370,7 +372,7 @@ where
             .event_publisher
             .publish(&LifecycleEvent::Queued {
                 id,
-                context: EventContext::with_correlation(envelope.correlation_id.clone()),
+                context: envelope.event_context(),
             })
             .await
         {
@@ -387,7 +389,7 @@ where
             .publish(&LifecycleEvent::Suppressed {
                 id,
                 addresses,
-                context: EventContext::with_correlation(envelope.correlation_id.clone()),
+                context: envelope.event_context(),
             })
             .await
         {
@@ -455,6 +457,8 @@ where
             reply_to: input.reply_to.clone(),
             headers: input.headers.clone(),
             unsubscribe: input.unsubscribe.clone(),
+            tags: input.tags.clone(),
+            metadata: input.metadata.clone(),
         };
 
         let result = self.repository.save(id, &envelope_for_reservation).await?;
@@ -495,6 +499,8 @@ where
             reply_to,
             headers,
             unsubscribe,
+            tags,
+            metadata,
         } = input;
 
         let mut written_refs: Vec<AttachmentRef> = Vec::with_capacity(attachments.len());
@@ -579,6 +585,8 @@ where
             reply_to,
             headers,
             unsubscribe,
+            tags,
+            metadata,
         };
 
         if let Err(e) = self
@@ -677,6 +685,8 @@ mod tests {
             reply_to: vec![],
             headers: vec![],
             unsubscribe: None,
+            tags: vec![],
+            metadata: std::collections::BTreeMap::new(),
         }
     }
 
@@ -2025,6 +2035,35 @@ mod tests {
         suppressions.0.lock().unwrap().clear();
         service.execute(two_recipient_input("k")).await.unwrap();
         assert_eq!(queue.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn every_event_of_a_submission_carries_its_tags_and_metadata() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[]);
+        let events = FakeEventPublisher::new();
+        let service = service_with(&repo, &queue, &events, &FakeAttachmentStore::new())
+            .with_suppression_list(FakeSuppressions::with(&["b@x.com"]));
+        let mut input = two_recipient_input("k");
+        input.tags = vec!["welcome".to_owned()];
+        input.metadata.insert("order".to_owned(), "42".to_owned());
+
+        service.execute(input).await.unwrap();
+
+        let published = events.published.lock().unwrap();
+        assert_eq!(published.len(), 2);
+        for event in published.iter() {
+            let payload = event.payload();
+            assert_eq!(
+                payload["tags"],
+                serde_json::json!(["welcome"]),
+                "{}",
+                event.event_type()
+            );
+            assert_eq!(payload["metadata"], serde_json::json!({ "order": "42" }));
+        }
+        let stored = repo.rows.lock().unwrap();
+        assert_eq!(stored[0].envelope.tags, vec!["welcome".to_owned()]);
     }
 
     #[tokio::test]

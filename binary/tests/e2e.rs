@@ -1731,3 +1731,84 @@ async fn idn_forms_of_a_suppressed_address_match_at_submit_and_delete() {
     .await;
     assert_eq!(deleted.status(), 204);
 }
+
+async fn submit_multipart(
+    base: &str,
+    token: &str,
+    envelope: &serde_json::Value,
+) -> reqwest::Response {
+    let body = format!(
+        "--B\r\nContent-Disposition: form-data; name=\"envelope\"\r\nContent-Type: application/json\r\n\r\n{envelope}\r\n--B--\r\n"
+    );
+    reqwest::Client::new()
+        .post(format!("{base}/emails"))
+        .bearer_auth(token)
+        .header("Content-Type", "multipart/form-data; boundary=B")
+        .body(body)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn tags_and_metadata_are_validated_filtered_and_echoed_in_events() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_sink_app(suppression_auth(), &db_dir).await;
+    let too_many = serde_json::json!({ "tags": ["a", "b", "c", "d", "e", "f"] });
+    let bad_json = submit_as(&base, "secret-a", "s@example.com", None, too_many).await;
+    assert_eq!(bad_json.status(), 400);
+    let bad_multipart = submit_multipart(
+        &base,
+        "secret-a",
+        &serde_json::json!({
+            "sender": "s@example.com",
+            "recipients": [{ "kind": "to", "address": "r@example.com" }],
+            "body": { "kind": "plain", "text": "hi" },
+            "tags": ["Bad Tag"]
+        }),
+    )
+    .await;
+    assert_eq!(bad_multipart.status(), 400);
+
+    let tagged = serde_json::json!({ "tags": ["welcome"], "metadata": { "order": "42" } });
+    let id = id_of(submit_as(&base, "secret-a", "s@example.com", None, tagged).await).await;
+    let other = id_of(
+        submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            None,
+            serde_json::json!({}),
+        )
+        .await,
+    )
+    .await;
+    wait_for_delivery(&base, "secret-a", &id).await;
+    wait_for_delivery(&base, "secret-a", &other).await;
+
+    let listed = get_json(&base, "secret-a", "/emails?tag=welcome").await;
+    assert_eq!(ids(&listed, "emails", "id"), vec![id.clone()]);
+    assert_eq!(listed["emails"][0]["tags"], serde_json::json!(["welcome"]));
+    assert_eq!(listed["emails"][0]["metadata"]["order"], "42");
+    let hidden = get_json(&base, "secret-ops", "/emails?tag=welcome").await;
+    assert_eq!(ids(&hidden, "emails", "id"), vec![id.clone()]);
+
+    let events = get_json(&base, "secret-a", &format!("/emails/{id}/events")).await;
+    let payloads: Vec<_> = events["events"].as_array().unwrap().iter().collect();
+    assert!(
+        payloads.len() >= 3,
+        "queued, sending and delivery.succeeded"
+    );
+    for event in payloads {
+        assert_eq!(
+            event["payload"]["tags"],
+            serde_json::json!(["welcome"]),
+            "{event}"
+        );
+        assert_eq!(event["payload"]["metadata"]["order"], "42");
+    }
+    let plain = get_json(&base, "secret-a", &format!("/emails/{other}/events")).await;
+    for event in plain["events"].as_array().unwrap() {
+        assert!(event["payload"].get("tags").is_none(), "{event}");
+    }
+}

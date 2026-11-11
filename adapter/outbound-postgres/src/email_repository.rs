@@ -50,11 +50,12 @@ impl EmailRepository for PostgresAdapter {
             reply_to: envelope.reply_to.clone(),
             headers: envelope.headers.clone(),
             unsubscribe: envelope.unsubscribe.as_ref().map(UnsubscribeDto::from),
+            metadata: envelope.metadata.clone(),
         };
 
         let result = sqlx::query(
-            "INSERT INTO emails (id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, enqueue_state) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'reserved') \
+            "INSERT INTO emails (id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, tags, enqueue_state) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'reserved') \
              ON CONFLICT (api_key, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
         )
         .bind(id_uuid)
@@ -67,6 +68,7 @@ impl EmailRepository for PostgresAdapter {
         .bind(Json(&body_dto))
         .bind(Json(&envelope.variables))
         .bind(Json(&extras_dto))
+        .bind(Json(&envelope.tags))
         .execute(self.pool())
         .await
         .context("inserting email")
@@ -100,6 +102,8 @@ impl EmailRepository for PostgresAdapter {
                     e.subject, \
                     e.sender, \
                     e.recipients, \
+                    e.tags, \
+                    e.extras, \
                     e.created_at, \
                     COALESCE(\
                         (SELECT le.event_type \
@@ -112,7 +116,7 @@ impl EmailRepository for PostgresAdapter {
                     ) AS latest_terminal_event_type \
                 FROM emails e\
             ) \
-            SELECT id, idempotency_key, subject, sender, recipients, created_at, latest_terminal_event_type \
+            SELECT id, idempotency_key, subject, sender, recipients, tags, extras, created_at, latest_terminal_event_type \
             FROM email_status \
             WHERE 1=1",
             terminal = sql_list(TERMINAL_EVENT_TYPES),
@@ -125,6 +129,11 @@ impl EmailRepository for PostgresAdapter {
         if let Some(owner) = params.owner {
             qb.push(" AND api_key = ");
             qb.push_bind(owner);
+        }
+        if let Some(tag) = params.tag {
+            qb.push(" AND tags ? ");
+            qb.push_bind(tag);
+            qb.push("");
         }
         if let Some(after) = params.after_ms {
             qb.push(" AND created_at > ");
@@ -336,6 +345,10 @@ impl PostgresAdapter {
         let latest_terminal_event_type: String = row
             .try_get("latest_terminal_event_type")
             .context("reading latest_terminal_event_type")?;
+        let tags: Option<sqlx::types::Json<Vec<String>>> =
+            row.try_get("tags").context("reading tags")?;
+        let extras: Option<sqlx::types::Json<crate::dto::EnvelopeExtrasDto>> =
+            row.try_get("extras").context("reading extras")?;
         let status = match latest_terminal_event_type.as_str() {
             "delivery.succeeded" => EmailStatus::Sent,
             "delivery.failed" => EmailStatus::Failed,
@@ -349,6 +362,8 @@ impl PostgresAdapter {
             recipients: crate::dto::recipients_from_dto(recipients_json.0),
             created_at_ms,
             status,
+            tags: tags.map(|j| j.0).unwrap_or_default(),
+            metadata: extras.map(|j| j.0.metadata).unwrap_or_default(),
         })
     }
 }
@@ -372,7 +387,7 @@ impl PostgresAdapter {
 
         let row = sqlx::query(
             "SELECT id, enqueue_state, api_key, idempotency_key, correlation_id, subject, sender, \
-                    recipients, body, variables, extras \
+                    recipients, body, variables, extras, tags \
              FROM emails WHERE api_key = $1 AND idempotency_key = $2 FOR UPDATE",
         )
         .bind(owner)
@@ -696,6 +711,7 @@ mod tests {
 
     fn default_list_params() -> ListEmailsParams {
         ListEmailsParams {
+            tag: None,
             owner: None,
             status: None,
             after_ms: None,
@@ -1622,5 +1638,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(admin.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn tag_filter_combines_with_owner_scoping_and_records_carry_tags() {
+        let (adapter, _container) = fresh_adapter().await;
+        let tagged = |owner: &str, key: &str, tags: &[&str]| {
+            let mut envelope = owned_envelope(owner, key);
+            envelope.tags = tags.iter().map(|t| (*t).to_owned()).collect();
+            envelope
+                .metadata
+                .insert("order".to_owned(), "42".to_owned());
+            envelope
+        };
+        let a_welcome = EmailId::default();
+        let a_other = EmailId::default();
+        let b_welcome = EmailId::default();
+        adapter
+            .save(a_welcome, &tagged("a", "k1", &["welcome", "x"]))
+            .await
+            .unwrap();
+        adapter
+            .save(a_other, &tagged("a", "k2", &["other"]))
+            .await
+            .unwrap();
+        adapter
+            .save(b_welcome, &tagged("b", "k3", &["welcome"]))
+            .await
+            .unwrap();
+
+        let list = |owner: Option<&str>, tag: &str| {
+            let adapter = &adapter;
+            let params = ListEmailsParams {
+                owner: owner.map(str::to_owned),
+                tag: Some(tag.to_owned()),
+                ..default_list_params()
+            };
+            async move { adapter.list_emails(params).await.unwrap() }
+        };
+        let admin = list(None, "welcome").await;
+        assert_eq!(admin.len(), 2);
+        let scoped = list(Some("a"), "welcome").await;
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].id, a_welcome);
+        assert_eq!(scoped[0].tags, vec!["welcome".to_owned(), "x".to_owned()]);
+        assert_eq!(scoped[0].metadata["order"], "42");
+        assert!(list(None, "missing").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn recovery_replays_tags_and_metadata() {
+        let (adapter, _container) = fresh_adapter().await;
+        let id = EmailId::default();
+        let mut envelope = owned_envelope("", "key-abc");
+        envelope.tags = vec!["welcome".to_owned()];
+        envelope
+            .metadata
+            .insert("order".to_owned(), "42".to_owned());
+        adapter.save(id, &envelope).await.unwrap();
+        adapter
+            .set_enqueue_state(id, "", EnqueueState::Publishable)
+            .await
+            .unwrap();
+
+        let result = adapter.save(EmailId::default(), &envelope).await.unwrap();
+
+        let SaveResult::Duplicate {
+            recovery: Some(replayed),
+            ..
+        } = result
+        else {
+            panic!("expected a recovery envelope");
+        };
+        assert_eq!(replayed.tags, envelope.tags);
+        assert_eq!(replayed.metadata, envelope.metadata);
     }
 }

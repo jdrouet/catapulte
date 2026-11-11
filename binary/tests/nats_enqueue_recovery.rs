@@ -216,6 +216,8 @@ fn input_with(
     SubmitEmailInput {
         owner: String::new(),
         sender_domains: None,
+        tags: vec![],
+        metadata: std::collections::BTreeMap::new(),
         idempotency_key: Some("recovery-key".to_owned()),
         correlation_id: Some(correlation_id.to_owned()),
         subject: Some(subject.to_owned()),

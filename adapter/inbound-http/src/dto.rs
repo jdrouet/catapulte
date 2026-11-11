@@ -20,6 +20,11 @@ pub const MAX_EMAILS_PER_BATCH: usize = 100;
 pub const MAX_HEADERS_PER_EMAIL: usize = 10;
 pub const MAX_HEADER_VALUE_BYTES: usize = 998;
 pub const MAX_REPLY_TO_PER_EMAIL: usize = 10;
+pub const MAX_TAGS_PER_EMAIL: usize = 5;
+pub const MAX_TAG_CHARS: usize = 64;
+pub const MAX_METADATA_KEYS: usize = 10;
+pub const MAX_METADATA_KEY_BYTES: usize = 64;
+pub const MAX_METADATA_VALUE_BYTES: usize = 1024;
 /// RFC 5322 limit on a physical header line, excluding CRLF.
 const MAX_HEADER_LINE_CHARS: usize = 998;
 
@@ -149,6 +154,10 @@ pub enum EnvelopeConversionError {
     InvalidHeader(&'static str),
     #[error("invalid unsubscribe: {0}")]
     InvalidUnsubscribe(&'static str),
+    #[error("invalid tags: {0}")]
+    InvalidTags(&'static str),
+    #[error("invalid metadata: {0}")]
+    InvalidMetadata(&'static str),
     #[error("recipients must not be empty")]
     EmptyRecipients,
     #[error("invalid recipient address")]
@@ -620,6 +629,47 @@ pub struct EnvelopeCoreDto {
     pub headers: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub unsubscribe: Option<UnsubscribeDto>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub metadata: std::collections::BTreeMap<String, String>,
+}
+
+fn validate_tags(tags: &[String]) -> Result<(), EnvelopeConversionError> {
+    use EnvelopeConversionError::InvalidTags;
+    if tags.len() > MAX_TAGS_PER_EMAIL {
+        return Err(InvalidTags("too many tags"));
+    }
+    for tag in tags {
+        let valid = (1..=MAX_TAG_CHARS).contains(&tag.len())
+            && tag.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'-')
+            });
+        if !valid {
+            return Err(InvalidTags(
+                "each tag is 1-64 characters from a-z, 0-9, _, . and -",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_metadata(
+    metadata: &std::collections::BTreeMap<String, String>,
+) -> Result<(), EnvelopeConversionError> {
+    use EnvelopeConversionError::InvalidMetadata;
+    if metadata.len() > MAX_METADATA_KEYS {
+        return Err(InvalidMetadata("too many keys"));
+    }
+    for (key, value) in metadata {
+        if key.is_empty() || key.len() > MAX_METADATA_KEY_BYTES {
+            return Err(InvalidMetadata("keys are 1-64 bytes"));
+        }
+        if value.len() > MAX_METADATA_VALUE_BYTES {
+            return Err(InvalidMetadata("value too long"));
+        }
+    }
+    Ok(())
 }
 
 /// Rejects a JSON object that repeats a header name, which a plain map would silently
@@ -671,6 +721,8 @@ impl EnvelopeCoreDto {
         let reply_to = validate_reply_to(self.reply_to)?;
         let headers = validate_headers(self.headers)?;
         let unsubscribe = validate_unsubscribe(self.unsubscribe)?;
+        validate_tags(&self.tags)?;
+        validate_metadata(&self.metadata)?;
         check_header_lines(
             &sender,
             &recipients,
@@ -705,6 +757,8 @@ impl EnvelopeCoreDto {
             reply_to,
             headers,
             unsubscribe,
+            tags: self.tags,
+            metadata: self.metadata,
         })
     }
 }
@@ -774,6 +828,8 @@ mod tests {
             variables: serde_json::Map::new(),
             reply_to: None,
             unsubscribe: None,
+            tags: vec![],
+            metadata: std::collections::BTreeMap::new(),
             headers: std::collections::BTreeMap::new(),
         }
     }
@@ -813,6 +869,40 @@ mod tests {
         .unwrap();
         assert_eq!(input.owner, "", "legacy key and NATS share this namespace");
         assert_eq!(input.sender_domains, None);
+    }
+
+    #[test]
+    fn tags_and_metadata_are_validated() {
+        let ok = convert_with(serde_json::json!({
+            "tags": ["a", "b.c_d-1"], "metadata": { "order": "42" }
+        }))
+        .unwrap();
+        assert_eq!(ok.tags, vec!["a".to_owned(), "b.c_d-1".to_owned()]);
+        assert_eq!(ok.metadata["order"], "42");
+
+        let long_tag = "a".repeat(65);
+        let long_key = "k".repeat(65);
+        let long_value = "v".repeat(1025);
+        let many_keys: serde_json::Map<String, serde_json::Value> =
+            (0..11).map(|i| (format!("k{i}"), "v".into())).collect();
+        for bad in [
+            serde_json::json!({ "tags": ["a", "b", "c", "d", "e", "f"] }),
+            serde_json::json!({ "tags": [""] }),
+            serde_json::json!({ "tags": ["Upper"] }),
+            serde_json::json!({ "tags": ["has space"] }),
+            serde_json::json!({ "tags": [long_tag] }),
+            serde_json::json!({ "metadata": many_keys }),
+            serde_json::json!({ "metadata": { "": "v" } }),
+            serde_json::json!({ "metadata": { long_key: "v" } }),
+            serde_json::json!({ "metadata": { "k": long_value } }),
+        ] {
+            assert!(convert_with(bad.clone()).is_err(), "{bad}");
+        }
+        let edge = serde_json::json!({
+            "tags": ["a", "b", "c", "d", "e"],
+            "metadata": { "k".repeat(64): "v".repeat(1024) }
+        });
+        assert!(convert_with(edge).is_ok());
     }
 
     #[test]
@@ -1848,6 +1938,8 @@ pub struct ListEmailsQuery {
     #[serde(default)]
     pub template: Option<String>,
     #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
     pub limit: Option<u32>,
@@ -1873,6 +1965,10 @@ pub struct EmailRecordDto {
     pub recipients: Vec<RecipientResponseDto>,
     pub created_at_ms: i64,
     pub status: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub metadata: std::collections::BTreeMap<String, String>,
 }
 
 impl From<catapulte_domain::port::email_repository::EmailRecord> for EmailRecordDto {
@@ -1904,6 +2000,8 @@ impl From<catapulte_domain::port::email_repository::EmailRecord> for EmailRecord
             recipients,
             created_at_ms: r.created_at_ms,
             status: status.to_owned(),
+            tags: r.tags,
+            metadata: r.metadata,
         }
     }
 }
