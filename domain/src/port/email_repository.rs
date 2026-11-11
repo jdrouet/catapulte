@@ -106,6 +106,8 @@ pub trait EmailRepository: Send + Sync + 'static {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EmailStatus {
     Queued,
+    /// Accepted and held until its `send_at_ms`.
+    Scheduled,
     Sent,
     Failed,
 }
@@ -137,4 +139,5 @@ pub struct EmailRecord {
     pub status: EmailStatus,
     pub tags: Vec<String>,
     pub metadata: std::collections::BTreeMap<String, String>,
+    pub send_at_ms: Option<i64>,
 }

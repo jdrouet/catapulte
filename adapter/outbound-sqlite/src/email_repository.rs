@@ -96,12 +96,13 @@ impl EmailRepository for SqliteAdapter {
         self.resolve_duplicate(&envelope.owner, key).await
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn list_emails(
         &self,
         params: ListEmailsParams,
     ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
         let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(format!(
-            "WITH email_status AS (\
+            "WITH latest AS (\
                 SELECT \
                     e.id, \
                     e.api_key, \
@@ -112,6 +113,7 @@ impl EmailRepository for SqliteAdapter {
                     e.tags, \
                     e.extras, \
                     e.created_at_ms, \
+                    e.send_at_ms, \
                     COALESCE(\
                         (SELECT le.event_type \
                          FROM lifecycle_events le \
@@ -119,15 +121,30 @@ impl EmailRepository for SqliteAdapter {
                            AND le.event_type IN ({terminal}) \
                          ORDER BY le.created_at DESC, le.id DESC \
                          LIMIT 1),\
-                        'queued'\
+                        ''\
                     ) AS latest_terminal_event_type \
                 FROM emails e\
-            ) \
-            SELECT id, idempotency_key, subject, sender, recipients, tags, extras, created_at_ms, latest_terminal_event_type \
-            FROM email_status \
-            WHERE 1=1",
+            ), \
+            email_status AS (\
+                SELECT latest.*, \
+                    CASE \
+                        WHEN latest_terminal_event_type = 'delivery.succeeded' THEN 'sent' \
+                        WHEN latest_terminal_event_type = 'delivery.failed' THEN 'failed' \
+                        WHEN send_at_ms > ",
             terminal = sql_list(TERMINAL_EVENT_TYPES),
         ));
+        qb.push_bind(crate::email_queue::now_ms());
+        qb.push(
+            " THEN 'scheduled' \
+                        ELSE 'queued' \
+                    END AS status \
+                FROM latest\
+            ) \
+            SELECT id, idempotency_key, subject, sender, recipients, tags, extras, created_at_ms, \
+                   send_at_ms, status \
+            FROM email_status \
+            WHERE 1=1",
+        );
 
         if let Some(id) = params.id {
             qb.push(" AND id = ");
@@ -162,22 +179,14 @@ impl EmailRepository for SqliteAdapter {
             qb.push_bind(template);
             qb.push(")");
         }
-        match params.status {
-            Some(EmailStatus::Sent) => {
-                qb.push(" AND latest_terminal_event_type = ");
-                qb.push_bind("delivery.succeeded");
-            }
-            Some(EmailStatus::Failed) => {
-                qb.push(" AND latest_terminal_event_type = ");
-                qb.push_bind("delivery.failed");
-            }
-            Some(EmailStatus::Queued) => {
-                qb.push(format!(
-                    " AND latest_terminal_event_type NOT IN ({})",
-                    sql_list(TERMINAL_EVENT_TYPES)
-                ));
-            }
-            None => {}
+        if let Some(status) = params.status {
+            qb.push(" AND status = ");
+            qb.push_bind(match status {
+                EmailStatus::Sent => "sent",
+                EmailStatus::Failed => "failed",
+                EmailStatus::Queued => "queued",
+                EmailStatus::Scheduled => "scheduled",
+            });
         }
 
         qb.push(" ORDER BY created_at_ms DESC, id DESC LIMIT ");
@@ -352,16 +361,16 @@ impl SqliteAdapter {
         let created_at_ms: i64 = row
             .try_get("created_at_ms")
             .context("reading created_at_ms")?;
-        let latest_terminal_event_type: String = row
-            .try_get("latest_terminal_event_type")
-            .context("reading latest_terminal_event_type")?;
+        let status: String = row.try_get("status").context("reading status")?;
+        let send_at_ms: Option<i64> = row.try_get("send_at_ms").context("reading send_at_ms")?;
         let tags: Option<sqlx::types::Json<Vec<String>>> =
             row.try_get("tags").context("reading tags")?;
         let extras: Option<sqlx::types::Json<crate::dto::EnvelopeExtrasDto>> =
             row.try_get("extras").context("reading extras")?;
-        let status = match latest_terminal_event_type.as_str() {
-            "delivery.succeeded" => EmailStatus::Sent,
-            "delivery.failed" => EmailStatus::Failed,
+        let status = match status.as_str() {
+            "sent" => EmailStatus::Sent,
+            "failed" => EmailStatus::Failed,
+            "scheduled" => EmailStatus::Scheduled,
             _ => EmailStatus::Queued,
         };
         Ok(EmailRecord {
@@ -374,6 +383,7 @@ impl SqliteAdapter {
             status,
             tags: tags.map(|j| j.0).unwrap_or_default(),
             metadata: extras.map(|j| j.0.metadata).unwrap_or_default(),
+            send_at_ms,
         })
     }
 }
@@ -737,6 +747,151 @@ mod tests {
             limit: 20,
             offset: 0,
         }
+    }
+
+    async fn save_with_send_at(adapter: &SqliteAdapter, send_at_ms: Option<i64>) -> EmailId {
+        let id = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.send_at_ms = send_at_ms;
+        adapter.save(id, &envelope).await.unwrap();
+        id
+    }
+
+    async fn statuses(
+        adapter: &SqliteAdapter,
+    ) -> std::collections::HashMap<EmailId, catapulte_domain::port::email_repository::EmailRecord>
+    {
+        adapter
+            .list_emails(default_list_params())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.id, r))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn status_is_scheduled_until_send_at_passes_then_queued() {
+        let adapter = fresh_adapter().await;
+        let now = crate::email_queue::now_ms();
+        let future = save_with_send_at(&adapter, Some(now + 3_600_000)).await;
+        let past = save_with_send_at(&adapter, Some(now - 3_600_000)).await;
+        let plain = save_with_send_at(&adapter, None).await;
+
+        let all = statuses(&adapter).await;
+
+        assert_eq!(all[&future].status, EmailStatus::Scheduled);
+        assert_eq!(all[&future].send_at_ms, Some(now + 3_600_000));
+        assert_eq!(all[&past].status, EmailStatus::Queued);
+        assert_eq!(all[&past].send_at_ms, Some(now - 3_600_000));
+        assert_eq!(all[&plain].status, EmailStatus::Queued);
+        assert_eq!(all[&plain].send_at_ms, None);
+    }
+
+    #[tokio::test]
+    async fn a_terminal_event_beats_a_future_send_at() {
+        let adapter = fresh_adapter().await;
+        let future = crate::email_queue::now_ms() + 3_600_000;
+        let sent = save_with_send_at(&adapter, Some(future)).await;
+        let failed = save_with_send_at(&adapter, Some(future)).await;
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id: sent,
+                sender_name: SenderName::new("test"),
+                context: EventContext::with_correlation(None),
+                smtp_response: None,
+                message_id: "<m@example.com>".to_owned(),
+            })
+            .await
+            .unwrap();
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id: failed,
+                attempt: 1,
+                reason: "r".to_owned(),
+                error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
+                sender_name: None,
+                context: EventContext::with_correlation(None),
+            })
+            .await
+            .unwrap();
+
+        let all = statuses(&adapter).await;
+
+        assert_eq!(all[&sent].status, EmailStatus::Sent);
+        assert_eq!(all[&failed].status, EmailStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn queued_and_scheduled_filters_are_disjoint() {
+        let adapter = fresh_adapter().await;
+        let now = crate::email_queue::now_ms();
+        let scheduled = save_with_send_at(&adapter, Some(now + 3_600_000)).await;
+        let queued = save_with_send_at(&adapter, None).await;
+        let ids_with = |status: EmailStatus| {
+            let adapter = adapter.clone();
+            async move {
+                adapter
+                    .list_emails(ListEmailsParams {
+                        status: Some(status),
+                        ..default_list_params()
+                    })
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        assert_eq!(ids_with(EmailStatus::Scheduled).await, vec![scheduled]);
+        assert_eq!(ids_with(EmailStatus::Queued).await, vec![queued]);
+    }
+
+    #[tokio::test]
+    async fn a_row_turns_from_scheduled_to_queued_when_send_at_passes() {
+        let adapter = fresh_adapter().await;
+        let id = save_with_send_at(&adapter, Some(crate::email_queue::now_ms() + 1_500)).await;
+        assert_eq!(statuses(&adapter).await[&id].status, EmailStatus::Scheduled);
+
+        tokio::time::sleep(std::time::Duration::from_millis(1_800)).await;
+
+        assert_eq!(statuses(&adapter).await[&id].status, EmailStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn scheduled_filter_combines_with_owner_and_tag() {
+        let adapter = fresh_adapter().await;
+        let future = crate::email_queue::now_ms() + 3_600_000;
+        let save = |owner: &'static str, tags: Vec<String>, send_at_ms: Option<i64>| {
+            let adapter = adapter.clone();
+            async move {
+                let id = EmailId::default();
+                let mut envelope = sample_envelope();
+                envelope.owner = owner.to_owned();
+                envelope.tags = tags;
+                envelope.send_at_ms = send_at_ms;
+                adapter.save(id, &envelope).await.unwrap();
+                id
+            }
+        };
+        let wanted = save("a", vec!["t".to_owned()], Some(future)).await;
+        save("a", vec![], Some(future)).await;
+        save("b", vec!["t".to_owned()], Some(future)).await;
+        save("a", vec!["t".to_owned()], None).await;
+
+        let found = adapter
+            .list_emails(ListEmailsParams {
+                owner: Some("a".to_owned()),
+                tag: Some("t".to_owned()),
+                status: Some(EmailStatus::Scheduled),
+                ..default_list_params()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, wanted);
     }
 
     #[tokio::test]

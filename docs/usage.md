@@ -300,7 +300,7 @@ with `500`. Batch items use the inline/remote attachment form (no multipart).
 
 | Query param | Notes |
 |-------------|-------|
-| `status` | `queued` \| `sent` \| `failed` |
+| `status` | `queued` \| `scheduled` \| `sent` \| `failed` |
 | `recipient` | substring filter on the recipient's bare email address; display names are not matched |
 | `template` | filter by named MJML template name; only matches emails submitted with `kind: mjml_named` |
 | `id` | exact email id (UUID) |
@@ -312,6 +312,11 @@ with `500`. Batch items use the inline/remote attachment form (no multipart).
 ```bash
 curl "http://localhost:3000/emails?status=failed&limit=50"
 ```
+
+An email's status is `sent` or `failed` once its latest delivery event says so. Otherwise it
+is `scheduled` while its `send_at_ms` is in the future and `queued` after that (and for
+emails without `send_at_ms`). `status=queued` therefore does not match scheduled emails.
+Emails submitted with `send_at_ms` also return it in the record.
 
 ```json
 {

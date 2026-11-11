@@ -626,6 +626,7 @@ mod tests {
             status: EmailStatus::Queued,
             tags: vec![],
             metadata: std::collections::BTreeMap::new(),
+            send_at_ms: None,
         }
     }
 
@@ -2015,5 +2016,55 @@ mod tests {
         assert_eq!(results[0]["status"].as_str(), Some("accepted"));
         assert_eq!(results[1]["status"].as_str(), Some("rejected"));
         assert_eq!(results[2]["status"].as_str(), Some("rejected"));
+    }
+
+    #[tokio::test]
+    async fn list_emails_scheduled_filter_forwarded() {
+        let list_emails = Arc::new(FakeListEmails::new());
+        let captured = list_emails.captured_params.clone();
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit::default()),
+                list_emails,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        app.oneshot(get_emails("?status=scheduled")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(
+            params.as_ref().unwrap().status,
+            Some(EmailStatus::Scheduled)
+        );
+    }
+
+    #[tokio::test]
+    async fn list_emails_serialises_scheduled_status_and_send_at_ms_only_when_set() {
+        let scheduled = EmailRecord {
+            status: EmailStatus::Scheduled,
+            send_at_ms: Some(1_900_000_000_000),
+            ..sample_email_record()
+        };
+        let list_emails = Arc::new(FakeListEmails::with_records(vec![
+            scheduled,
+            sample_email_record(),
+        ]));
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit::default()),
+                list_emails,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+
+        let response = app.oneshot(get_emails("")).await.unwrap();
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["emails"][0]["status"], "scheduled");
+        assert_eq!(json["emails"][0]["send_at_ms"], 1_900_000_000_000_i64);
+        assert_eq!(json["emails"][1]["status"], "queued");
+        assert!(json["emails"][1].get("send_at_ms").is_none());
     }
 }

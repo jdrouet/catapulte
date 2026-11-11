@@ -2011,6 +2011,7 @@ pub struct ListEventsResponse {
 #[serde(rename_all = "snake_case")]
 pub enum EmailStatusDto {
     Queued,
+    Scheduled,
     Sent,
     Failed,
 }
@@ -2019,6 +2020,7 @@ impl From<EmailStatusDto> for catapulte_domain::port::email_repository::EmailSta
     fn from(s: EmailStatusDto) -> Self {
         match s {
             EmailStatusDto::Queued => Self::Queued,
+            EmailStatusDto::Scheduled => Self::Scheduled,
             EmailStatusDto::Sent => Self::Sent,
             EmailStatusDto::Failed => Self::Failed,
         }
@@ -2069,6 +2071,8 @@ pub struct EmailRecordDto {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub metadata: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_at_ms: Option<i64>,
 }
 
 impl From<catapulte_domain::port::email_repository::EmailRecord> for EmailRecordDto {
@@ -2077,6 +2081,7 @@ impl From<catapulte_domain::port::email_repository::EmailRecord> for EmailRecord
         use catapulte_domain::port::email_repository::EmailStatus;
         let status = match r.status {
             EmailStatus::Queued => "queued",
+            EmailStatus::Scheduled => "scheduled",
             EmailStatus::Sent => "sent",
             EmailStatus::Failed => "failed",
         };
@@ -2102,6 +2107,7 @@ impl From<catapulte_domain::port::email_repository::EmailRecord> for EmailRecord
             status: status.to_owned(),
             tags: r.tags,
             metadata: r.metadata,
+            send_at_ms: r.send_at_ms,
         }
     }
 }
