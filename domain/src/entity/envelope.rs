@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+
 use crate::entity::attachment::AttachmentRef;
 use crate::entity::body::BodySource;
 use crate::entity::email::RecipientKind;
+use crate::entity::lifecycle_event::EventContext;
 
 /// List-Unsubscribe targets, validated at intake. At least one field is set.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,9 +79,23 @@ pub struct Envelope {
     /// Validated custom headers, in name order.
     pub headers: Vec<(String, String)>,
     pub unsubscribe: Option<Unsubscribe>,
+    /// Validated labels, used to filter emails and echoed in every event.
+    pub tags: Vec<String>,
+    /// Validated free-form key/value pairs, echoed in every event.
+    pub metadata: BTreeMap<String, String>,
 }
 
 impl Envelope {
+    /// The context every lifecycle event of this email carries.
+    #[must_use]
+    pub fn event_context(&self) -> EventContext {
+        EventContext {
+            correlation_id: self.correlation_id.clone(),
+            tags: self.tags.clone(),
+            metadata: self.metadata.clone(),
+        }
+    }
+
     /// Builds an envelope with every optional field empty, for tests. Production code
     /// builds the struct literally so that a new field fails to compile until handled.
     #[must_use]
@@ -100,6 +117,8 @@ impl Envelope {
             reply_to: vec![],
             headers: vec![],
             unsubscribe: None,
+            tags: vec![],
+            metadata: BTreeMap::new(),
         }
     }
 }

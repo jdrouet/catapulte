@@ -319,6 +319,14 @@ mod tests {
         let legacy: EnvelopeExtrasDto =
             serde_json::from_str(r#"{"reply_to":[],"headers":[]}"#).unwrap();
         assert!(legacy.unsubscribe.is_none());
+        assert!(legacy.metadata.is_empty());
+        let mut with_metadata = EnvelopeExtrasDto::default();
+        with_metadata
+            .metadata
+            .insert("k".to_owned(), "v".to_owned());
+        let json = serde_json::to_string(&with_metadata).unwrap();
+        let back: EnvelopeExtrasDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.metadata["k"], "v");
         assert!(
             !serde_json::to_string(&legacy)
                 .unwrap()
@@ -357,6 +365,8 @@ pub struct EnvelopeExtrasDto {
     pub headers: Vec<(String, String)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsubscribe: Option<UnsubscribeDto>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub metadata: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

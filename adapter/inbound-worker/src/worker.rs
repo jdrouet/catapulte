@@ -149,6 +149,7 @@ async fn process_one<S: WorkerState>(
 
     async move {
         let correlation_id = envelope.correlation_id.clone();
+        let context = envelope.event_context();
         if let Some(ref cid) = correlation_id {
             tracing::Span::current().record("correlation_id", cid.as_str());
         }
@@ -158,7 +159,7 @@ async fn process_one<S: WorkerState>(
             .publish(&LifecycleEvent::Sending {
                 id,
                 attempt,
-                correlation_id: correlation_id.clone(),
+                context: context.clone(),
             })
             .await
         {
@@ -194,7 +195,7 @@ async fn process_one<S: WorkerState>(
                     .publish(&LifecycleEvent::Sent {
                         id,
                         sender_name: processed.sender_name,
-                        correlation_id: correlation_id.clone(),
+                        context: context.clone(),
                         smtp_response: processed.smtp_response,
                         message_id: processed.message_id,
                     })
@@ -208,7 +209,7 @@ async fn process_one<S: WorkerState>(
                         .publish(&LifecycleEvent::Suppressed {
                             id,
                             addresses: processed.suppressed,
-                            correlation_id: correlation_id.clone(),
+                            context: context.clone(),
                         })
                         .await
                 {
@@ -222,7 +223,7 @@ async fn process_one<S: WorkerState>(
                     attempt,
                     "failed to process email"
                 );
-                let reason = e.to_string();
+                let reason = e.to_string().replace('\0', "");
                 let error_class = e.error_class();
                 let sender_name = e.sender_name().cloned();
                 let is_terminal = e.is_permanent() || attempt >= MAX_ATTEMPTS;
@@ -237,7 +238,7 @@ async fn process_one<S: WorkerState>(
                         reason,
                         error_class,
                         sender_name,
-                        correlation_id: correlation_id.clone(),
+                        context: context.clone(),
                     }
                 } else {
                     let delay = backoff(attempt);
@@ -254,7 +255,7 @@ async fn process_one<S: WorkerState>(
                         reason,
                         error_class,
                         sender_name,
-                        correlation_id: correlation_id.clone(),
+                        context: context.clone(),
                     }
                 };
                 if let Err(pub_err) = state.event_publisher().publish(&event).await {
@@ -1111,6 +1112,44 @@ mod tests {
         .await;
         let events = state.publisher.events.lock().unwrap().clone();
         (state.queue, events)
+    }
+
+    #[tokio::test]
+    async fn worker_events_carry_the_envelope_tags_and_metadata() {
+        let state = ScriptedState {
+            processor: ScriptedProcessor {
+                all_suppressed: false,
+            },
+            queue: TrackingQueue::default(),
+            publisher: CapturingEventPublisher::default(),
+        };
+        let mut envelope = sample_envelope();
+        envelope.tags = vec!["welcome".to_owned()];
+        envelope
+            .metadata
+            .insert("order".to_owned(), "42".to_owned());
+        process_one(
+            &state,
+            EmailId::default(),
+            envelope,
+            1,
+            AckToken::new(vec![0u8; 8]),
+            TraceCarrier::default(),
+        )
+        .await;
+
+        let events = state.publisher.events.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        for event in events.iter() {
+            let payload = event.payload();
+            assert_eq!(
+                payload["tags"],
+                serde_json::json!(["welcome"]),
+                "{}",
+                event.event_type()
+            );
+            assert_eq!(payload["metadata"], serde_json::json!({ "order": "42" }));
+        }
     }
 
     #[tokio::test]

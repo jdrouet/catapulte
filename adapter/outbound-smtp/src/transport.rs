@@ -364,8 +364,9 @@ pub(crate) fn classify(permanent: bool, text: &str) -> TransportErrorKind {
 const MAX_REPLY_CHARS: usize = 256;
 
 /// Caps remote-controlled reply text, ellipsis included, at 256 characters before it reaches
-/// events and logs.
+/// events and logs. NUL is dropped because storage cannot hold it.
 fn truncate_reply(text: &str) -> String {
+    let text = &text.replace('\0', "");
     if text.chars().count() <= MAX_REPLY_CHARS {
         return text.to_owned();
     }
@@ -910,6 +911,17 @@ mod tests {
     fn message_build_errors_are_permanent_message() {
         let err = message_error(anyhow::anyhow!("invalid address"));
         assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+    }
+
+    #[test]
+    fn relay_text_is_stored_without_nul() {
+        assert_eq!(truncate_reply("250 o\0k"), "250 ok");
+        assert_eq!(
+            super::format_smtp_response(250, ["queued \0as", "1\0"].into_iter()),
+            "250 queued as 1"
+        );
+        let err = smtp_text_error(false, "temporary error (451): try\0 later");
+        assert_eq!(err.source.to_string(), "temporary error (451): try later");
     }
 
     #[test]

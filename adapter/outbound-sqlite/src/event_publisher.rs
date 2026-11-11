@@ -45,7 +45,7 @@ mod tests {
     use catapulte_domain::entity::body::{BodySource, Plain};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+    use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
     use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::EmailRepository;
     use catapulte_domain::port::event_publisher::EventPublisher;
@@ -85,7 +85,7 @@ mod tests {
                 reason: "smtp error".to_owned(),
                 error_class: ErrorClass::Delivery,
                 sender_name: Some(SenderName::new("test")),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -119,7 +119,7 @@ mod tests {
         adapter
             .publish(&LifecycleEvent::Queued {
                 id,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -146,7 +146,7 @@ mod tests {
         adapter
             .publish(&LifecycleEvent::Queued {
                 id,
-                correlation_id: Some("corr-abc".to_owned()),
+                context: EventContext::with_correlation(Some("corr-abc".to_owned())),
             })
             .await
             .unwrap();
@@ -168,7 +168,7 @@ mod tests {
             .publish(&LifecycleEvent::Sending {
                 id,
                 attempt: 2,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -194,7 +194,7 @@ mod tests {
                 reason: "timeout".to_owned(),
                 error_class: ErrorClass::Delivery,
                 sender_name: Some(SenderName::new("test")),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -223,7 +223,7 @@ mod tests {
                 reason: "no route".to_owned(),
                 error_class: ErrorClass::Routing,
                 sender_name: None,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();

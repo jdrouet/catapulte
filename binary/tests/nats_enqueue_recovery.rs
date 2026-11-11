@@ -12,7 +12,7 @@ use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::body::{BodySource, Plain};
 use catapulte_domain::entity::email::{EmailId, RecipientKind};
 use catapulte_domain::entity::envelope::{Envelope, Unsubscribe};
-use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
 use catapulte_domain::port::email_queue::{AckToken, DequeuedEmail, EmailQueue, EmailQueueError};
 use catapulte_domain::port::email_repository::{
     DuplicateState, EmailRecord, EmailRepository, EmailRepositoryError, EnqueueState,
@@ -216,6 +216,8 @@ fn input_with(
     SubmitEmailInput {
         owner: String::new(),
         sender_domains: None,
+        tags: vec![],
+        metadata: std::collections::BTreeMap::new(),
         idempotency_key: Some("recovery-key".to_owned()),
         correlation_id: Some(correlation_id.to_owned()),
         subject: Some(subject.to_owned()),
@@ -368,7 +370,7 @@ async fn worker_started_and_published_sending_so_retry_does_not_republish() {
         .publish(&LifecycleEvent::Sending {
             id: got.id,
             attempt: 1,
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         })
         .await
         .unwrap();

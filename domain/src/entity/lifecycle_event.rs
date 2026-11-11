@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::entity::email::EmailId;
 use crate::entity::error_class::ErrorClass;
 use crate::entity::sender::SenderName;
@@ -24,21 +26,59 @@ pub const PIPELINE_EVENT_TYPES: &[&str] = &[
 /// Event types that settle an email's status; every other event is informational.
 pub const TERMINAL_EVENT_TYPES: &[&str] = &["delivery.succeeded", "delivery.failed"];
 
+/// What every event of one email carries besides its own fields.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventContext {
+    pub correlation_id: Option<String>,
+    pub tags: Vec<String>,
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl EventContext {
+    /// A context with a correlation id and no tags or metadata.
+    #[must_use]
+    pub fn with_correlation(correlation_id: Option<String>) -> Self {
+        Self {
+            correlation_id,
+            ..Self::default()
+        }
+    }
+
+    /// Writes the context into an event payload. `correlation_id` is always present;
+    /// `tags` and `metadata` appear only when non-empty, so payloads of emails without them
+    /// are unchanged.
+    fn extend_payload(&self, payload: &mut serde_json::Value) {
+        let Some(object) = payload.as_object_mut() else {
+            return;
+        };
+        object.insert(
+            "correlation_id".to_owned(),
+            serde_json::json!(self.correlation_id),
+        );
+        if !self.tags.is_empty() {
+            object.insert("tags".to_owned(), serde_json::json!(self.tags));
+        }
+        if !self.metadata.is_empty() {
+            object.insert("metadata".to_owned(), serde_json::json!(self.metadata));
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LifecycleEvent {
     Queued {
         id: EmailId,
-        correlation_id: Option<String>,
+        context: EventContext,
     },
     Sending {
         id: EmailId,
         attempt: u32,
-        correlation_id: Option<String>,
+        context: EventContext,
     },
     Sent {
         id: EmailId,
         sender_name: SenderName,
-        correlation_id: Option<String>,
+        context: EventContext,
         /// The relay's reply to the accepted message, capped in length.
         smtp_response: Option<String>,
         message_id: String,
@@ -49,7 +89,7 @@ pub enum LifecycleEvent {
         reason: String,
         error_class: ErrorClass,
         sender_name: Option<SenderName>,
-        correlation_id: Option<String>,
+        context: EventContext,
     },
     Failed {
         id: EmailId,
@@ -57,13 +97,13 @@ pub enum LifecycleEvent {
         reason: String,
         error_class: ErrorClass,
         sender_name: Option<SenderName>,
-        correlation_id: Option<String>,
+        context: EventContext,
     },
     /// Informational: recipients were dropped because they are on the suppression list.
     Suppressed {
         id: EmailId,
         addresses: Vec<String>,
-        correlation_id: Option<String>,
+        context: EventContext,
     },
 }
 
@@ -126,38 +166,34 @@ impl LifecycleEvent {
     /// webhook and NATS publishers push to consumers.
     #[must_use]
     pub fn payload(&self) -> serde_json::Value {
-        match self {
-            Self::Queued { correlation_id, .. } => {
-                serde_json::json!({ "correlation_id": correlation_id })
-            }
+        let (mut payload, context) = match self {
+            Self::Queued { context, .. } => (serde_json::json!({}), context),
             Self::Suppressed {
-                addresses,
-                correlation_id,
-                ..
-            } => serde_json::json!({ "addresses": addresses, "correlation_id": correlation_id }),
+                addresses, context, ..
+            } => (serde_json::json!({ "addresses": addresses }), context),
             Self::Sending {
-                attempt,
-                correlation_id,
-                ..
-            } => serde_json::json!({ "attempt": attempt, "correlation_id": correlation_id }),
+                attempt, context, ..
+            } => (serde_json::json!({ "attempt": attempt }), context),
             Self::Sent {
                 sender_name,
-                correlation_id,
+                context,
                 smtp_response,
                 message_id,
                 ..
-            } => serde_json::json!({
-                "sender_name": sender_name.as_str(),
-                "correlation_id": correlation_id,
-                "smtp_response": smtp_response,
-                "message_id": message_id,
-            }),
+            } => (
+                serde_json::json!({
+                    "sender_name": sender_name.as_str(),
+                    "smtp_response": smtp_response,
+                    "message_id": message_id,
+                }),
+                context,
+            ),
             Self::Retrying {
                 attempt,
                 reason,
                 error_class,
                 sender_name,
-                correlation_id,
+                context,
                 ..
             }
             | Self::Failed {
@@ -165,16 +201,20 @@ impl LifecycleEvent {
                 reason,
                 error_class,
                 sender_name,
-                correlation_id,
+                context,
                 ..
-            } => serde_json::json!({
-                "attempt": attempt,
-                "reason": reason,
-                "error_class": error_class.as_str(),
-                "sender_name": sender_name.as_ref().map(SenderName::as_str),
-                "correlation_id": correlation_id,
-            }),
-        }
+            } => (
+                serde_json::json!({
+                    "attempt": attempt,
+                    "reason": reason,
+                    "error_class": error_class.as_str(),
+                    "sender_name": sender_name.as_ref().map(SenderName::as_str),
+                }),
+                context,
+            ),
+        };
+        context.extend_payload(&mut payload);
+        payload
     }
 }
 
@@ -190,18 +230,110 @@ mod tests {
         let e = LifecycleEvent::Suppressed {
             id: EmailId::default(),
             addresses: vec!["a@x.com".to_owned()],
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         };
         assert_eq!(e.event_type(), "suppressed");
         assert!(!TERMINAL_EVENT_TYPES.contains(&e.event_type()));
         assert!(!WORKER_EVENT_TYPES.contains(&e.event_type()));
     }
 
+    fn ctx() -> EventContext {
+        EventContext::with_correlation(Some("c1".to_owned()))
+    }
+
+    #[test]
+    fn payloads_without_tags_or_metadata_keep_their_original_shape() {
+        let id = EmailId::default();
+        let cases = [
+            (
+                LifecycleEvent::Queued { id, context: ctx() },
+                serde_json::json!({ "correlation_id": "c1" }),
+            ),
+            (
+                LifecycleEvent::Sending {
+                    id,
+                    attempt: 2,
+                    context: ctx(),
+                },
+                serde_json::json!({ "attempt": 2, "correlation_id": "c1" }),
+            ),
+            (
+                LifecycleEvent::Sent {
+                    id,
+                    sender_name: SenderName::new("p"),
+                    context: ctx(),
+                    smtp_response: Some("250 ok".to_owned()),
+                    message_id: "<m@x>".to_owned(),
+                },
+                serde_json::json!({
+                    "sender_name": "p", "correlation_id": "c1",
+                    "smtp_response": "250 ok", "message_id": "<m@x>"
+                }),
+            ),
+            (
+                LifecycleEvent::Retrying {
+                    id,
+                    attempt: 1,
+                    reason: "r".to_owned(),
+                    error_class: ErrorClass::Delivery,
+                    sender_name: None,
+                    context: ctx(),
+                },
+                serde_json::json!({
+                    "attempt": 1, "reason": "r", "error_class": "delivery",
+                    "sender_name": null, "correlation_id": "c1"
+                }),
+            ),
+            (
+                LifecycleEvent::Failed {
+                    id,
+                    attempt: 3,
+                    reason: "r".to_owned(),
+                    error_class: ErrorClass::Rejected,
+                    sender_name: Some(SenderName::new("p")),
+                    context: ctx(),
+                },
+                serde_json::json!({
+                    "attempt": 3, "reason": "r", "error_class": "rejected",
+                    "sender_name": "p", "correlation_id": "c1"
+                }),
+            ),
+            (
+                LifecycleEvent::Suppressed {
+                    id,
+                    addresses: vec!["a@x.com".to_owned()],
+                    context: ctx(),
+                },
+                serde_json::json!({ "addresses": ["a@x.com"], "correlation_id": "c1" }),
+            ),
+        ];
+        for (event, expected) in cases {
+            assert_eq!(event.payload(), expected, "{}", event.event_type());
+        }
+    }
+
+    #[test]
+    fn tags_and_metadata_appear_in_the_payload_only_when_set() {
+        let mut context = ctx();
+        context.tags = vec!["welcome".to_owned()];
+        context.metadata.insert("order".to_owned(), "42".to_owned());
+        let event = LifecycleEvent::Queued {
+            id: EmailId::default(),
+            context,
+        };
+        assert_eq!(
+            event.payload(),
+            serde_json::json!({
+                "correlation_id": "c1", "tags": ["welcome"], "metadata": { "order": "42" }
+            })
+        );
+    }
+
     #[test]
     fn event_type_queued() {
         let e = LifecycleEvent::Queued {
             id: EmailId::default(),
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         };
         assert_eq!(e.event_type(), "queued");
     }
@@ -211,7 +343,7 @@ mod tests {
         let e = LifecycleEvent::Sending {
             id: EmailId::default(),
             attempt: 1,
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         };
         assert_eq!(e.event_type(), "sending");
     }
@@ -221,7 +353,7 @@ mod tests {
         let e = LifecycleEvent::Sent {
             id: EmailId::default(),
             sender_name: SenderName::new("primary"),
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
             smtp_response: None,
             message_id: "<test@example.com>".to_owned(),
         };
@@ -236,7 +368,7 @@ mod tests {
             reason: "timeout".to_owned(),
             error_class: ErrorClass::Delivery,
             sender_name: None,
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         };
         assert_eq!(e.event_type(), "retrying");
     }
@@ -249,7 +381,7 @@ mod tests {
             reason: "smtp error".to_owned(),
             error_class: ErrorClass::Delivery,
             sender_name: None,
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         };
         assert_eq!(e.event_type(), "delivery.failed");
     }
@@ -260,17 +392,17 @@ mod tests {
         let variants = [
             LifecycleEvent::Queued {
                 id,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             },
             LifecycleEvent::Sending {
                 id,
                 attempt: 1,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             },
             LifecycleEvent::Sent {
                 id,
                 sender_name: SenderName::new("s"),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
                 smtp_response: None,
                 message_id: "<test@example.com>".to_owned(),
             },
@@ -280,7 +412,7 @@ mod tests {
                 reason: "r".to_owned(),
                 error_class: ErrorClass::Delivery,
                 sender_name: None,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             },
             LifecycleEvent::Failed {
                 id,
@@ -288,7 +420,7 @@ mod tests {
                 reason: "r".to_owned(),
                 error_class: ErrorClass::Delivery,
                 sender_name: None,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             },
         ];
         for e in &variants {
@@ -302,7 +434,7 @@ mod tests {
         assert!(
             LifecycleEvent::Queued {
                 id,
-                correlation_id: None
+                context: EventContext::default()
             }
             .sender_name()
             .is_none()
@@ -311,7 +443,7 @@ mod tests {
             LifecycleEvent::Sending {
                 id,
                 attempt: 1,
-                correlation_id: None
+                context: EventContext::default()
             }
             .sender_name()
             .is_none()
@@ -324,7 +456,7 @@ mod tests {
         let e = LifecycleEvent::Sent {
             id,
             sender_name: SenderName::new("primary"),
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
             smtp_response: None,
             message_id: "<test@example.com>".to_owned(),
         };
@@ -340,7 +472,7 @@ mod tests {
             reason: "r".to_owned(),
             error_class: ErrorClass::Delivery,
             sender_name: Some(SenderName::new("fallback")),
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         };
         assert_eq!(e.sender_name().map(SenderName::as_str), Some("fallback"));
     }
@@ -354,7 +486,7 @@ mod tests {
             reason: "r".to_owned(),
             error_class: ErrorClass::Delivery,
             sender_name: None,
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         };
         assert!(e.sender_name().is_none());
     }
@@ -365,7 +497,7 @@ mod tests {
         assert!(
             LifecycleEvent::Queued {
                 id,
-                correlation_id: None
+                context: EventContext::default()
             }
             .error_class()
             .is_none()
@@ -374,7 +506,7 @@ mod tests {
             LifecycleEvent::Sending {
                 id,
                 attempt: 1,
-                correlation_id: None
+                context: EventContext::default()
             }
             .error_class()
             .is_none()
@@ -383,7 +515,7 @@ mod tests {
             LifecycleEvent::Sent {
                 id,
                 sender_name: SenderName::new("s"),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
                 smtp_response: None,
                 message_id: "<test@example.com>".to_owned(),
             }
@@ -396,7 +528,7 @@ mod tests {
             reason: "r".to_owned(),
             error_class: ErrorClass::Routing,
             sender_name: None,
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         }
         .error_class()
         .map(ErrorClass::as_str);
@@ -408,7 +540,7 @@ mod tests {
         let id = EmailId::default();
         let e = LifecycleEvent::Queued {
             id,
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         };
         let expected = serde_json::json!({ "correlation_id": null });
         assert_eq!(e.payload(), expected);
@@ -419,7 +551,7 @@ mod tests {
         let id = EmailId::default();
         let e = LifecycleEvent::Queued {
             id,
-            correlation_id: Some("corr-123".to_owned()),
+            context: EventContext::with_correlation(Some("corr-123".to_owned())),
         };
         let expected = serde_json::json!({ "correlation_id": "corr-123" });
         assert_eq!(e.payload(), expected);
@@ -431,7 +563,7 @@ mod tests {
         let e = LifecycleEvent::Sending {
             id,
             attempt: 2,
-            correlation_id: Some("c".to_owned()),
+            context: EventContext::with_correlation(Some("c".to_owned())),
         };
         let expected = serde_json::json!({ "attempt": 2, "correlation_id": "c" });
         assert_eq!(e.payload(), expected);
@@ -443,7 +575,7 @@ mod tests {
         let e = LifecycleEvent::Sent {
             id,
             sender_name: SenderName::new("primary"),
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
             smtp_response: Some("250 2.0.0 Ok: queued as 4ABC".to_owned()),
             message_id: "<test@example.com>".to_owned(),
         };
@@ -465,7 +597,7 @@ mod tests {
             reason: "timeout".to_owned(),
             error_class: ErrorClass::Delivery,
             sender_name: Some(SenderName::new("primary")),
-            correlation_id: Some("c".to_owned()),
+            context: EventContext::with_correlation(Some("c".to_owned())),
         };
         let expected = serde_json::json!({
             "attempt": 1,
@@ -486,7 +618,7 @@ mod tests {
             reason: "smtp error".to_owned(),
             error_class: ErrorClass::Delivery,
             sender_name: Some(SenderName::new("primary")),
-            correlation_id: Some("corr-xyz".to_owned()),
+            context: EventContext::with_correlation(Some("corr-xyz".to_owned())),
         };
         let expected = serde_json::json!({
             "attempt": 3,
@@ -507,7 +639,7 @@ mod tests {
             reason: "no route".to_owned(),
             error_class: ErrorClass::Routing,
             sender_name: None,
-            correlation_id: None,
+            context: EventContext::with_correlation(None),
         };
         let expected = serde_json::json!({
             "attempt": 1,

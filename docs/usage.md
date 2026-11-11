@@ -71,6 +71,8 @@ addresses with an IP-literal domain or a quoted local part, which the SMTP libra
 | `reply_to` | string, `{ name, address }`, or an array of either | `Reply-To` mailboxes, validated like the sender (see [Reply-To and custom headers](#reply-to-and-custom-headers)) |
 | `headers` | object of string to string | custom headers (see [Reply-To and custom headers](#reply-to-and-custom-headers)) |
 | `unsubscribe` | object `{ url?, mailto? }` | `List-Unsubscribe` and one-click unsubscribe (see [Unsubscribe](#unsubscribe)) |
+| `tags` | array of strings | labels for filtering (`GET /emails?tag=`); up to 5, each 1-64 characters from `a-z`, `0-9`, `_`, `.` and `-` |
+| `metadata` | object of string to string | free-form pairs echoed in every lifecycle event; up to 10 keys, keys 1-64 bytes, values up to 1024 bytes |
 
 ### Reply-To and custom headers
 
@@ -260,6 +262,7 @@ with `500`. Batch items use the inline/remote attachment form (no multipart).
 | `recipient` | substring filter on the recipient's bare email address; display names are not matched |
 | `template` | filter by named MJML template name; only matches emails submitted with `kind: mjml_named` |
 | `id` | exact email id (UUID) |
+| `tag` | only emails carrying this tag |
 | `after_ms`, `before_ms` | created-at bounds, Unix epoch ms |
 | `limit` | default 20, max 100 |
 | `offset` | default 0 |
@@ -354,6 +357,10 @@ each event as JSON:
 | `retrying` | attempt failed, will retry | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
 | `delivery.failed` | retries exhausted, or no recipient left after suppression (`error_class` `suppressed`) | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
 | `suppressed` | recipients were dropped because they are on the suppression list; informational, never changes the status | `addresses`, `correlation_id` |
+
+Every event also carries the email's `tags` and `metadata` in `payload`, but only when the
+email has some; events of an email without them have the payload shown above. `GET /emails`
+returns the same two fields on each email, again only when set.
 
 On `delivery.succeeded`, `smtp_response` is the relay's reply as `"{code} {text}"`
 (for example `250 2.0.0 Ok: queued as 4ABC12D3`), cut to at most 256 characters (the
@@ -493,6 +500,8 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 | Max attachments per email | 10 |
 | Max message size | 25 MiB by default (`CATAPULTE_MAX_MESSAGE_BYTES`) |
 | Max emails per batch | 100 |
+| Tags per email | 5 (1-64 characters each) |
+| Metadata keys per email | 10 (keys 1-64 bytes, values up to 1024 bytes) |
 | List page size | default 20, max 100 |
 
 The message size limit is checked twice. At submit, Catapulte estimates the size as

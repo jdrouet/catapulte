@@ -53,6 +53,8 @@ pub(crate) fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<En
     let extras: Option<sqlx::types::Json<EnvelopeExtrasDto>> =
         row.try_get("extras").context("reading extras")?;
     let extras = extras.map(|j| j.0).unwrap_or_default();
+    let tags: Option<sqlx::types::Json<Vec<String>>> =
+        row.try_get("tags").context("reading tags")?;
     let owner: String = row.try_get("api_key").context("reading api_key")?;
     Ok(Envelope {
         owner,
@@ -71,6 +73,8 @@ pub(crate) fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<En
             .map(catapulte_domain::entity::envelope::Unsubscribe::try_from)
             .transpose()
             .context("parsing unsubscribe")?,
+        tags: tags.map(|j| j.0).unwrap_or_default(),
+        metadata: extras.metadata,
     })
 }
 
@@ -166,7 +170,7 @@ impl SqliteAdapter {
         let trace = deserialize_trace_context(trace_raw);
 
         let maybe_row = sqlx::query(
-            "SELECT id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras FROM emails WHERE id = ?",
+            "SELECT id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, tags FROM emails WHERE id = ?",
         )
         .bind(&email_id_bytes)
         .fetch_optional(self.pool())

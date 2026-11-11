@@ -76,7 +76,7 @@ mod tests {
     use catapulte_domain::entity::body::{BodySource, Plain};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+    use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
     use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::EmailRepository;
     use catapulte_domain::port::event_publisher::EventPublisher;
@@ -121,7 +121,7 @@ mod tests {
             .publish(&LifecycleEvent::Sent {
                 id: id1,
                 sender_name: SenderName::new("primary"),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
                 smtp_response: None,
                 message_id: "<test@example.com>".to_owned(),
             })
@@ -131,7 +131,7 @@ mod tests {
             .publish(&LifecycleEvent::Sent {
                 id: id2,
                 sender_name: SenderName::new("primary"),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
                 smtp_response: None,
                 message_id: "<test@example.com>".to_owned(),
             })
@@ -144,7 +144,7 @@ mod tests {
                 reason: "err".to_owned(),
                 error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
                 sender_name: Some(SenderName::new("backup")),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -176,7 +176,7 @@ mod tests {
             .publish(&LifecycleEvent::Sent {
                 id,
                 sender_name: SenderName::new("primary"),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
                 smtp_response: None,
                 message_id: "<test@example.com>".to_owned(),
             })
