@@ -415,7 +415,7 @@ Every template render (send, validation and preview) runs in a short-lived child
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CATAPULTE_RENDER_TIMEOUT_MS` | Deadline for one render stage, covering the wait for a free slot, the child's work and its cleanup. A render that hits it fails permanently | `7000` |
-| `CATAPULTE_RENDER_MAX_MEMORY_BYTES` | Address-space limit of each child, in bytes | `268435456` |
+| `CATAPULTE_RENDER_MAX_MEMORY_BYTES` | Address-space limit of each child, in bytes | `536870912` |
 | `CATAPULTE_RENDER_CONCURRENCY` | Children running at the same time, shared by sends, validation and preview; further renders wait | available CPU cores |
 
 A send renders in up to two stages (interpolate, then MJML) and an upload or preview in two, so startup refuses to run unless `2 x (CATAPULTE_RENDER_TIMEOUT_MS + 1 s) + 5 s` is at most the smaller of `CATAPULTE_HTTP_REQUEST_TIMEOUT_SECS` and the 30 s shutdown drain. With the default that is 21 s. This bounds the time spent rendering, not the whole request, which also includes storage and SMTP. The HTTP include timeout is lowered to half of `CATAPULTE_RENDER_TIMEOUT_MS` when it is longer, and a warning is logged.

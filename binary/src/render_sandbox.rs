@@ -38,7 +38,7 @@ const REAP_GRACE: Duration = Duration::from_secs(1);
 const SETUP_FAILED_EXIT: i32 = 2;
 
 const DEFAULT_TIMEOUT_MS: u64 = 7_000;
-const DEFAULT_MAX_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+const DEFAULT_MAX_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Variables copied into the child on top of an empty environment. Proxy URLs can hold
 /// credentials, so the resulting environment is never logged.
@@ -493,7 +493,7 @@ fn parse_positive(
 }
 
 impl RenderSandboxConfig {
-    /// Defaults: 7 s deadline, 256 MiB per child, one child per available core.
+    /// Defaults: 7 s deadline, 512 MiB per child, one child per available core.
     #[must_use]
     pub fn new(program: PathBuf) -> Self {
         Self {
@@ -1341,7 +1341,7 @@ mod tests {
         let config = RenderSandboxConfig::from_lookup("p".into(), lookup(&[])).unwrap();
 
         assert_eq!(config.timeout, Duration::from_secs(7));
-        assert_eq!(config.max_memory_bytes, 268_435_456);
+        assert_eq!(config.max_memory_bytes, 536_870_912);
         assert_eq!(config.concurrency, default_concurrency());
     }
 

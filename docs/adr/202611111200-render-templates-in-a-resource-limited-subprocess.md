@@ -60,7 +60,7 @@ valid outcome and end of file.
 
 The child sets, in order: a parent-death signal (SIGKILL) with a check that its parent is
 still the expected process, `RLIMIT_CORE` 0, `RLIMIT_CPU` (soft 2 s, hard 3 s) and
-`RLIMIT_AS` (memory, default 256 MiB). On Linux a failure to set any limit is fatal.
+`RLIMIT_AS` (memory, default 512 MiB). On Linux a failure to set any limit is fatal.
 It then asks the kernel to prefer it as an out-of-memory victim (`oom_score_adj` 1000,
 best effort). The limits arrive as arguments, are read before stdin and are parsed
 strictly. The child runs on a single-threaded runtime with at most two blocking threads.
@@ -172,8 +172,9 @@ The cost is small against the 7 s deadline, which is why a warm pool is not need
 
 **Memory.** The peak virtual size (`VmPeak`, sampled while the child runs, so a lower bound)
 of the debug build was 61 MiB for a 5,000-row table and 61 MiB for a 3.4 MiB request with a
-0.9 MiB response. The release build peaked at about 32 MiB for a trivial job. The default
-limit of 256 MiB is above four times the debug peak, so it stays.
+0.9 MiB response, and 68 MiB under coverage instrumentation in CI. The release build peaked at
+about 32 MiB for a trivial job. The default limit is 512 MiB, at least four times every measured
+peak including instrumented builds.
 With a 40 MB limit a 2.5 MiB request aborts the child on a failed allocation (SIGABRT), and
 with 30 MB or less the child fails earlier with a typed setup failure. Both are infrastructure
 failures.

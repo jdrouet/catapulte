@@ -889,10 +889,10 @@ fn the_default_memory_limit_leaves_headroom_over_the_heaviest_normal_job() {
     let table = serde_json::json!({ "Interpolate": { "body": { "Mjml": TABLE }, "variables": table_rows() } });
     let big = serde_json::json!({ "Validate": { "source": "{{ s }}", "variables": {
         "pad": "x".repeat(2_500_000), "s": "y".repeat(900_000) } } });
-    let default_limit = 256 * 1024;
+    let default_limit = 512 * 1024;
 
     for (name, job) in [("table", table), ("big ipc", big)] {
-        let peak = peak_vm_kib(&job.to_string(), "268435456");
+        let peak = peak_vm_kib(&job.to_string(), "536870912");
 
         eprintln!("VmPeak {name}: {peak} KiB");
         assert!(peak > 0, "no sample for {name}");
