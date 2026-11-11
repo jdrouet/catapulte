@@ -7,6 +7,7 @@ pub mod event_repository;
 mod health;
 pub mod sender_usage;
 pub mod suppression_repository;
+pub mod template_repository;
 
 use std::str::FromStr;
 

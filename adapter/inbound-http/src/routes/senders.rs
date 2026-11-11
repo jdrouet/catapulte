@@ -181,6 +181,12 @@ mod tests {
         ) -> &impl catapulte_domain::use_case::ingest_feedback::IngestFeedbackUseCase {
             &crate::routes::feedback::NoopIngestFeedback
         }
+
+        fn manage_templates(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_templates::ManageTemplatesUseCase {
+            &crate::routes::templates::NoopManageTemplates
+        }
     }
 
     #[derive(Clone)]
@@ -222,6 +228,12 @@ mod tests {
             &self,
         ) -> &impl catapulte_domain::use_case::ingest_feedback::IngestFeedbackUseCase {
             &crate::routes::feedback::NoopIngestFeedback
+        }
+
+        fn manage_templates(
+            &self,
+        ) -> &impl catapulte_domain::use_case::manage_templates::ManageTemplatesUseCase {
+            &crate::routes::templates::NoopManageTemplates
         }
     }
 

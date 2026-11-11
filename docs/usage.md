@@ -461,6 +461,50 @@ the current quota window:
 `quota` is null when none is configured; `range` is `hourly` | `daily` | `weekly`
 | `monthly`.
 
+## Templates
+
+Admin keys manage named MJML templates that emails reference with `{"kind": "mjml_named", "name": "..."}`.
+Every route needs an admin key and returns `403` for any other key.
+
+- `GET /templates` lists the latest version of each stored template (`name`, `version`, `created_at_ms`).
+- `GET /templates/{name}` returns the latest version with its `source`, or `404`.
+- `PUT /templates/{name}` with `{"source": "<mjml>...", "validation_variables": {...}}` validates the
+  source and stores it as the next version (`validation_variables` is optional). Sends use the latest
+  version.
+- `DELETE /templates/{name}` removes every version and returns `204`, or `404`.
+- `POST /templates/{name}/preview` with `{"variables": {...}}` returns `{"html", "text"}` rendered
+  exactly as a send would render it, without sending anything.
+
+Names are 1-128 characters from `a-z`, `0-9`, `_`, `.` and `-`, and cannot start with a dot. The
+source is limited to 512 KiB, and neither the source nor the variables may contain NUL.
+
+**Precedence.** The files in `CATAPULTE_RESOLVER_TEMPLATES_DIR` are authoritative. A name that exists on
+disk is always rendered from disk, and `PUT` and `DELETE` for it return `409`. Stored templates only
+serve names the files do not have.
+
+**Validation.** `PUT` renders the source with `validation_variables` (default empty) using the send
+engine's HTML escaping, then compiles the result as MJML. A failure returns `400` with the message.
+Validation is lenient about missing data: a missing variable or a missing nested attribute such as
+`{{ customer.name }}` prints as empty and iterates as empty, so the MJML structure still validates.
+Operations that need a real value still fail without data: arithmetic (`{{ total + 1 }}`),
+comparisons used as a value, and filters that need a type (`|round`, `|int`, `|join` on a non-sequence).
+Pass representative `validation_variables` for those. A passing validation proves syntax and MJML
+structure, not that the template renders for every input; sends are strict, and a missing nested
+attribute fails at send time.
+
+Every render (send, validation and preview) has a fixed budget of work. A template that exceeds it, for
+example a runaway nested loop, fails permanently at send time (`delivery.failed` with `error_class`
+`template_interpolate`, no retry) and is rejected with `400` on upload or preview. A table of 500 rows uses
+about 3% of the budget.
+
+Rendering also writes at most 1 MiB of output per part, and a filter that turns a list or map into text
+fails once the text would pass 1 MiB. To keep that bound, the `format`, `pprint` and `indent` filters are
+not available, and `replace` takes no `count`.
+
+These limits do not yet cover every template operation: string concatenation with `~` and comparisons of
+large nested lists can still use excessive CPU and memory. Until rendering moves into a resource-limited
+process (tracked in #815), only give API keys to callers you trust not to submit hostile templates.
+
 ## Suppression list
 
 Addresses on the suppression list never receive mail. Every `/suppressions` route needs an

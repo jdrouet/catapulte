@@ -247,10 +247,14 @@ impl AppConfig {
                 storage.clone(),
             ),
         );
-        let resolver = self
-            .resolver
-            .build()
-            .context("building template resolver")?;
+        let resolver = Arc::new(
+            catapulte_domain::service::stored_template_resolver::StoredTemplateResolver::new(
+                storage.clone(),
+                self.resolver
+                    .build()
+                    .context("building template resolver")?,
+            ),
+        );
 
         let attachment_store = self
             .attachment_store
@@ -277,10 +281,20 @@ impl AppConfig {
                 allowed_sender_domains: self.allowed_sender_domains.clone(),
             }),
         );
-        let mjml_renderer = MjmlRenderer::new(
+        let mjml_renderer = Arc::new(MjmlRenderer::new(
             self.include_loader
                 .build()
                 .context("building include loader")?,
+        ));
+        let manage_templates = Arc::new(
+            catapulte_domain::use_case::manage_templates::ManageTemplatesService::new(
+                storage.clone(),
+                Arc::clone(&resolver),
+                MiniJinjaInterpolator::new(),
+                MiniJinjaInterpolator::new(),
+                Arc::clone(&mjml_renderer),
+                catapulte_domain::port::clock::SystemClock,
+            ),
         );
         let ingest_feedback = Arc::new(
             catapulte_domain::use_case::ingest_feedback::IngestFeedbackService::new(
@@ -292,7 +306,7 @@ impl AppConfig {
             ),
         );
         let mut process_queued_email = ProcessQueuedEmailService::new(
-            resolver,
+            Arc::clone(&resolver),
             MiniJinjaInterpolator::new(),
             mjml_renderer,
             smtp,
@@ -317,6 +331,7 @@ impl AppConfig {
             list_emails,
             list_events,
             manage_suppressions,
+            manage_templates,
             ingest_feedback,
             check_readiness,
             queue,

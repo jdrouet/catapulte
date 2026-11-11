@@ -6,6 +6,7 @@ use catapulte_domain::port::email_queue::EmailQueue;
 use catapulte_domain::port::email_repository::EmailRepository;
 use catapulte_domain::port::event_publisher::EventPublisher;
 use catapulte_domain::service::routed_email_sender::RoutedEmailSender;
+use catapulte_domain::service::stored_template_resolver::StoredTemplateResolver;
 use catapulte_domain::use_case::list_emails::{ListEmailsService, ListEmailsUseCase};
 use catapulte_domain::use_case::list_events::{ListEventsService, ListEventsUseCase};
 use catapulte_domain::use_case::list_senders::{ListSendersService, ListSendersUseCase};
@@ -31,10 +32,22 @@ use crate::publisher::PublisherAdapter;
 use crate::queue::QueueAdapter;
 use crate::storage::StorageAdapter;
 
+pub(crate) type StoredResolver = StoredTemplateResolver<StorageAdapter, TemplateResolverAdapter>;
+
+pub(crate) type ManageTemplates =
+    catapulte_domain::use_case::manage_templates::ManageTemplatesService<
+        StorageAdapter,
+        TemplateResolverAdapter,
+        MiniJinjaInterpolator,
+        MiniJinjaInterpolator,
+        Arc<MjmlRenderer>,
+        SystemClock,
+    >;
+
 pub(crate) type ProcessService = ProcessQueuedEmailService<
-    TemplateResolverAdapter,
+    Arc<StoredResolver>,
     MiniJinjaInterpolator,
-    MjmlRenderer,
+    Arc<MjmlRenderer>,
     RoutedEmailSender<SenderTransport, StorageAdapter>,
     AttachmentStoreAdapter,
     StorageAdapter,
@@ -72,6 +85,7 @@ pub(crate) struct AppState {
             catapulte_domain::port::clock::SystemClock,
         >,
     >,
+    pub(crate) manage_templates: Arc<ManageTemplates>,
     pub(crate) manage_suppressions: Arc<ManageSuppressionsService<StorageAdapter>>,
     pub(crate) check_readiness: Arc<CheckReadinessServiceImpl>,
     pub(crate) queue: QueueAdapter,
@@ -107,6 +121,12 @@ impl HttpServerState for AppState {
 
     fn manage_suppressions(&self) -> &impl ManageSuppressionsUseCase {
         self.manage_suppressions.as_ref()
+    }
+
+    fn manage_templates(
+        &self,
+    ) -> &impl catapulte_domain::use_case::manage_templates::ManageTemplatesUseCase {
+        self.manage_templates.as_ref()
     }
 
     fn ingest_feedback(

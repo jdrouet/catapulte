@@ -25,3 +25,12 @@ pub trait TemplateResolver: Send + Sync + 'static {
         body: BodySource,
     ) -> impl std::future::Future<Output = Result<ResolvedBody, ResolveError>> + Send;
 }
+
+impl<T: TemplateResolver> TemplateResolver for std::sync::Arc<T> {
+    fn resolve(
+        &self,
+        body: BodySource,
+    ) -> impl std::future::Future<Output = Result<ResolvedBody, ResolveError>> + Send {
+        T::resolve(self, body)
+    }
+}

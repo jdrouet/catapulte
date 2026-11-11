@@ -18,6 +18,7 @@ use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
 use catapulte_domain::use_case::list_events::ListEventsUseCase;
 use catapulte_domain::use_case::list_senders::ListSendersUseCase;
 use catapulte_domain::use_case::manage_suppressions::ManageSuppressionsUseCase;
+use catapulte_domain::use_case::manage_templates::ManageTemplatesUseCase;
 use catapulte_domain::use_case::submit_email::SubmitEmailUseCase;
 use tokio_util::sync::CancellationToken;
 
@@ -43,6 +44,7 @@ pub trait HttpServerState: ReadinessState {
     fn list_senders(&self) -> &impl ListSendersUseCase;
     fn manage_suppressions(&self) -> &impl ManageSuppressionsUseCase;
     fn ingest_feedback(&self) -> &impl IngestFeedbackUseCase;
+    fn manage_templates(&self) -> &impl ManageTemplatesUseCase;
 }
 
 /// Builds the application router.
@@ -121,6 +123,26 @@ pub fn router_with_feedback<S: HttpServerState>(
         )
         .layer(timeout_layer);
 
+    let template_routes = Router::new()
+        .route(
+            "/templates",
+            get(crate::routes::templates::list_templates::<S>),
+        )
+        .route(
+            "/templates/{name}",
+            get(crate::routes::templates::get_template::<S>)
+                .put(crate::routes::templates::put_template::<S>)
+                .delete(crate::routes::templates::delete_template::<S>),
+        )
+        .route(
+            "/templates/{name}/preview",
+            post(crate::routes::templates::preview_template::<S>),
+        )
+        .layer(DefaultBodyLimit::max(
+            crate::routes::templates::MAX_TEMPLATE_REQUEST_BYTES,
+        ))
+        .layer(timeout_layer);
+
     let submit_routes = Router::new()
         .route("/emails", post(crate::routes::emails::submit_email::<S>))
         .route(
@@ -130,6 +152,7 @@ pub fn router_with_feedback<S: HttpServerState>(
 
     let protected_routes = read_routes
         .merge(suppression_routes)
+        .merge(template_routes)
         .merge(submit_routes)
         .with_state(state);
 
