@@ -154,6 +154,8 @@ pub enum EnvelopeConversionError {
     InvalidHeader(&'static str),
     #[error("invalid unsubscribe: {0}")]
     InvalidUnsubscribe(&'static str),
+    #[error("{0} contains a NUL character")]
+    ContainsNul(&'static str),
     #[error("invalid tags: {0}")]
     InvalidTags(&'static str),
     #[error("invalid metadata: {0}")]
@@ -635,6 +637,52 @@ pub struct EnvelopeCoreDto {
     pub metadata: std::collections::BTreeMap<String, String>,
 }
 
+fn json_contains_nul(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(s) => s.contains('\0'),
+        serde_json::Value::Array(items) => items.iter().any(json_contains_nul),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .any(|(key, value)| key.contains('\0') || json_contains_nul(value)),
+        _ => false,
+    }
+}
+
+impl EnvelopeCoreDto {
+    /// Storage cannot hold NUL in text or JSON, so it is rejected up front. Other control
+    /// characters stay legal in bodies and variables.
+    fn reject_nul(&self) -> Result<(), EnvelopeConversionError> {
+        use EnvelopeConversionError::ContainsNul;
+        let has = |s: &Option<String>| s.as_deref().is_some_and(|s| s.contains('\0'));
+        if has(&self.subject) {
+            return Err(ContainsNul("subject"));
+        }
+        if has(&self.idempotency_key) {
+            return Err(ContainsNul("idempotency_key"));
+        }
+        if has(&self.correlation_id) {
+            return Err(ContainsNul("correlation_id"));
+        }
+        let body_has_nul = match &self.body {
+            BodyDto::Plain { text, html } => has(text) || has(html),
+            BodyDto::MjmlInline { source } => source.contains('\0'),
+            BodyDto::MjmlNamed { name } => name.contains('\0'),
+            BodyDto::MjmlRemote { url } => url.contains('\0'),
+        };
+        if body_has_nul {
+            return Err(ContainsNul("body"));
+        }
+        if self
+            .variables
+            .iter()
+            .any(|(key, value)| key.contains('\0') || json_contains_nul(value))
+        {
+            return Err(ContainsNul("variables"));
+        }
+        Ok(())
+    }
+}
+
 fn validate_tags(tags: &[String]) -> Result<(), EnvelopeConversionError> {
     use EnvelopeConversionError::InvalidTags;
     if tags.len() > MAX_TAGS_PER_EMAIL {
@@ -719,6 +767,7 @@ impl EnvelopeCoreDto {
         self,
         attachments: Vec<AttachmentInput>,
     ) -> Result<SubmitEmailInput, EnvelopeConversionError> {
+        self.reject_nul()?;
         let sender = validate_sender(self.sender)?;
         let recipients = validate_recipients(self.recipients)?;
         let reply_to = validate_reply_to(self.reply_to)?;
@@ -872,6 +921,36 @@ mod tests {
         .unwrap();
         assert_eq!(input.owner, "", "legacy key and NATS share this namespace");
         assert_eq!(input.sender_domains, None);
+    }
+
+    #[test]
+    fn nul_is_rejected_everywhere_storage_would_choke_on_it() {
+        for bad in [
+            serde_json::json!({ "subject": "a\u{0}b" }),
+            serde_json::json!({ "idempotency_key": "a\u{0}b" }),
+            serde_json::json!({ "correlation_id": "a\u{0}b" }),
+            serde_json::json!({ "body": { "kind": "plain", "text": "a\u{0}b" } }),
+            serde_json::json!({ "body": { "kind": "plain", "html": "a\u{0}b" } }),
+            serde_json::json!({ "body": { "kind": "mjml_inline", "source": "a\u{0}b" } }),
+            serde_json::json!({ "body": { "kind": "mjml_named", "name": "a\u{0}b" } }),
+            serde_json::json!({ "body": { "kind": "mjml_remote", "url": "https://x.y/a\u{0}b" } }),
+            serde_json::json!({ "variables": { "k": "a\u{0}b" } }),
+            serde_json::json!({ "variables": { "a\u{0}b": 1 } }),
+            serde_json::json!({ "variables": { "k": { "n": ["x", "a\u{0}b"] } } }),
+        ] {
+            assert!(
+                matches!(
+                    convert_with(bad.clone()),
+                    Err(EnvelopeConversionError::ContainsNul(_))
+                ),
+                "{bad}"
+            );
+        }
+        let ok = convert_with(serde_json::json!({
+            "body": { "kind": "plain", "text": "line1\nline2\ttab" },
+            "variables": { "k": "a\nb" }
+        }));
+        assert!(ok.is_ok());
     }
 
     #[test]

@@ -223,7 +223,7 @@ async fn process_one<S: WorkerState>(
                     attempt,
                     "failed to process email"
                 );
-                let reason = e.to_string();
+                let reason = e.to_string().replace('\0', "");
                 let error_class = e.error_class();
                 let sender_name = e.sender_name().cloned();
                 let is_terminal = e.is_permanent() || attempt >= MAX_ATTEMPTS;

@@ -1863,3 +1863,57 @@ async fn control_characters_in_metadata_are_rejected_per_item_and_on_single_subm
         .collect();
     assert_eq!(statuses, ["accepted", "rejected", "accepted"]);
 }
+
+#[tokio::test]
+async fn nul_in_request_fields_is_rejected_per_item_and_on_single_submit() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_sink_app(suppression_auth(), &db_dir).await;
+    for extra in [
+        serde_json::json!({ "subject": "a\u{0}b" }),
+        serde_json::json!({ "correlation_id": "a\u{0}b" }),
+        serde_json::json!({ "variables": { "k": ["a\u{0}b"] } }),
+        serde_json::json!({ "body": { "kind": "plain", "text": "a\u{0}b" } }),
+    ] {
+        let single = submit_as(&base, "secret-a", "s@example.com", None, extra.clone()).await;
+        assert_eq!(single.status(), 400, "{extra}");
+    }
+    let keyed = submit_as(
+        &base,
+        "secret-a",
+        "s@example.com",
+        Some("k\u{0}"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(keyed.status(), 400);
+
+    let email = |variables: serde_json::Value| {
+        serde_json::json!({
+            "sender": "s@example.com",
+            "recipients": [{ "kind": "to", "address": "r@example.com" }],
+            "body": { "kind": "plain", "text": "hi" },
+            "variables": variables
+        })
+    };
+    let batch = send(
+        reqwest::Method::POST,
+        &base,
+        "secret-a",
+        "/emails/batch",
+        Some(serde_json::json!({ "emails": [
+            email(serde_json::json!({ "k": "ok" })),
+            email(serde_json::json!({ "k": "a\u{0}b" })),
+            email(serde_json::json!({ "k": "also ok" })),
+        ]})),
+    )
+    .await;
+    assert!(batch.status().is_success());
+    let body: serde_json::Value = batch.json().await.unwrap();
+    let statuses: Vec<_> = body["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["status"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(statuses, ["accepted", "rejected", "accepted"]);
+}
