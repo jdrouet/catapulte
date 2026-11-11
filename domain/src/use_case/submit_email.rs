@@ -187,7 +187,7 @@ pub fn normalize_sender_domains<S: AsRef<str>>(
 }
 
 /// Renders an error and its sources as `a: b: c`.
-fn error_chain(e: &dyn std::error::Error) -> String {
+pub(crate) fn error_chain(e: &dyn std::error::Error) -> String {
     let mut out = e.to_string();
     let mut source = e.source();
     while let Some(s) = source {

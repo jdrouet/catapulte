@@ -247,10 +247,14 @@ impl AppConfig {
                 storage.clone(),
             ),
         );
-        let resolver = self
-            .resolver
-            .build()
-            .context("building template resolver")?;
+        let resolver = Arc::new(
+            catapulte_domain::service::stored_template_resolver::StoredTemplateResolver::new(
+                storage.clone(),
+                self.resolver
+                    .build()
+                    .context("building template resolver")?,
+            ),
+        );
 
         let attachment_store = self
             .attachment_store

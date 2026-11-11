@@ -1,8 +1,9 @@
 use anyhow::Context;
 use catapulte_domain::entity::body::{InterpolatedBody, Plain, ResolvedBody};
 use catapulte_domain::port::template_interpolator::{InterpolateError, TemplateInterpolator};
+use catapulte_domain::port::template_validator::TemplateValidator;
 use minijinja::value::Value;
-use minijinja::{AutoEscape, Environment, Output, State};
+use minijinja::{AutoEscape, Environment, Output, State, UndefinedBehavior};
 
 const HTML_FIVE: &str = "html-five";
 
@@ -30,11 +31,7 @@ fn format_value(
     Ok(())
 }
 
-fn render_str(
-    source: &str,
-    variables: &serde_json::Map<String, serde_json::Value>,
-    escape: bool,
-) -> Result<String, InterpolateError> {
+fn build_env<'a>(escape: bool, undefined: UndefinedBehavior) -> Environment<'a> {
     let mut env = Environment::new();
     // Variables are HTML-escaped unless the part is plain text; `|safe` opts out.
     env.set_auto_escape_callback(move |_| {
@@ -45,6 +42,15 @@ fn render_str(
         }
     });
     env.set_formatter(format_value);
+    env.set_undefined_behavior(undefined);
+    env
+}
+
+fn render_with<'a>(
+    env: &mut Environment<'a>,
+    source: &'a str,
+    variables: &serde_json::Map<String, serde_json::Value>,
+) -> Result<String, InterpolateError> {
     env.add_template("t", source)
         .context("adding template")
         .map_err(|source| InterpolateError::Engine { source })?;
@@ -55,6 +61,18 @@ fn render_str(
     tmpl.render(minijinja::value::Serde(variables))
         .context("rendering template")
         .map_err(|source| InterpolateError::Engine { source })
+}
+
+fn render_str(
+    source: &str,
+    variables: &serde_json::Map<String, serde_json::Value>,
+    escape: bool,
+) -> Result<String, InterpolateError> {
+    render_with(
+        &mut build_env(escape, UndefinedBehavior::Lenient),
+        source,
+        variables,
+    )
 }
 
 pub struct MiniJinjaInterpolator;
@@ -83,6 +101,21 @@ fn interpolate_plain(
         .context("reconstructing plain body")
         .map_err(|source| InterpolateError::Engine { source })?;
     Ok(InterpolatedBody::Plain(plain))
+}
+
+impl TemplateValidator for MiniJinjaInterpolator {
+    /// Same escaping as a send, but missing variables and attributes render as empty.
+    fn validate(
+        &self,
+        source: &str,
+        variables: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<String, InterpolateError> {
+        render_with(
+            &mut build_env(true, UndefinedBehavior::Chainable),
+            source,
+            variables,
+        )
+    }
 }
 
 impl TemplateInterpolator for MiniJinjaInterpolator {
@@ -332,5 +365,56 @@ mod tests {
             InterpolatedBody::Mjml(s) => assert_eq!(s, "&lt;&amp;&gt;|<&>|&lt;&amp;&gt;"),
             InterpolatedBody::Plain(_) => panic!("expected Mjml variant"),
         }
+    }
+
+    #[test]
+    fn validation_accepts_missing_nested_attributes_but_sending_still_fails() {
+        use catapulte_domain::port::template_validator::TemplateValidator;
+
+        let source = "<mj-text>{{ customer.name }}</mj-text>";
+        let none = Map::new();
+
+        let validated = MiniJinjaInterpolator::new()
+            .validate(source, &none)
+            .unwrap();
+        assert_eq!(validated, "<mj-text></mj-text>");
+
+        let sent =
+            MiniJinjaInterpolator::new().interpolate(ResolvedBody::Mjml(source.to_owned()), &none);
+        assert!(sent.is_err(), "send-time behaviour is unchanged");
+    }
+
+    #[test]
+    fn validation_needs_representative_data_for_value_requiring_expressions() {
+        use catapulte_domain::port::template_validator::TemplateValidator;
+
+        let source = "<mj-text>{{ total + 1 }}</mj-text>";
+        let interpolator = MiniJinjaInterpolator::new();
+
+        assert!(interpolator.validate(source, &Map::new()).is_err());
+        let mut variables = Map::new();
+        variables.insert("total".to_owned(), Value::from(1));
+        assert_eq!(
+            interpolator.validate(source, &variables).unwrap(),
+            "<mj-text>2</mj-text>"
+        );
+    }
+
+    #[test]
+    fn validation_reports_syntax_errors_and_escapes_like_a_send() {
+        use catapulte_domain::port::template_validator::TemplateValidator;
+
+        let interpolator = MiniJinjaInterpolator::new();
+        assert!(interpolator.validate("{% if %}", &Map::new()).is_err());
+
+        let mut variables = Map::new();
+        variables.insert("name".to_owned(), Value::String("<script>".to_owned()));
+        let source = "<mj-text>{{ name }}</mj-text>";
+        let validated = interpolator.validate(source, &variables).unwrap();
+        let sent = interpolator
+            .interpolate(ResolvedBody::Mjml(source.to_owned()), &variables)
+            .unwrap();
+        assert_eq!(validated, "<mj-text>&lt;script&gt;</mj-text>");
+        assert!(matches!(sent, InterpolatedBody::Mjml(m) if m == validated));
     }
 }
