@@ -13,5 +13,5 @@ pub trait TemplateValidator: Send + Sync + 'static {
         &self,
         source: &str,
         variables: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<String, InterpolateError>;
+    ) -> impl std::future::Future<Output = Result<String, InterpolateError>> + Send;
 }

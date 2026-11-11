@@ -225,7 +225,7 @@ where
         suppressed.dedup();
         let recipients = remaining;
         let resolved = self.resolver.resolve(body).await?;
-        let interpolated = self.interpolator.interpolate(resolved, &variables)?;
+        let interpolated = self.interpolator.interpolate(resolved, &variables).await?;
         let rendered = self.renderer.render(interpolated).await?;
         let resolved_attachments =
             resolve_attachments(&self.attachment_store, &attachments).await?;
@@ -403,7 +403,7 @@ mod tests {
     }
 
     impl TemplateInterpolator for FakeInterpolator {
-        fn interpolate(
+        async fn interpolate(
             &self,
             body: ResolvedBody,
             variables: &Map<String, Value>,
@@ -498,7 +498,7 @@ mod tests {
     struct FailingInterpolator;
 
     impl TemplateInterpolator for FailingInterpolator {
-        fn interpolate(
+        async fn interpolate(
             &self,
             _body: ResolvedBody,
             _variables: &Map<String, Value>,

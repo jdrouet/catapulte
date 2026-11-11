@@ -199,6 +199,7 @@ where
         let interpolated = self
             .validator
             .validate(&source, &validation_variables)
+            .await
             .map_err(|e| from_interpolate(&e))?;
         self.renderer
             .render(InterpolatedBody::Mjml(interpolated))
@@ -238,6 +239,7 @@ where
         let interpolated = self
             .interpolator
             .interpolate(resolved, &variables)
+            .await
             .map_err(|e| from_interpolate(&e))?;
         let rendered = self
             .renderer
@@ -262,7 +264,7 @@ mod tests {
     struct Validator;
 
     impl TemplateValidator for Validator {
-        fn validate(
+        async fn validate(
             &self,
             source: &str,
             _: &serde_json::Map<String, serde_json::Value>,
@@ -287,7 +289,7 @@ mod tests {
     struct Interpolator;
 
     impl TemplateInterpolator for Interpolator {
-        fn interpolate(
+        async fn interpolate(
             &self,
             body: ResolvedBody,
             _: &serde_json::Map<String, serde_json::Value>,

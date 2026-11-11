@@ -30,5 +30,5 @@ pub trait TemplateInterpolator: Send + Sync + 'static {
         &self,
         body: ResolvedBody,
         variables: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<InterpolatedBody, InterpolateError>;
+    ) -> impl std::future::Future<Output = Result<InterpolatedBody, InterpolateError>> + Send;
 }

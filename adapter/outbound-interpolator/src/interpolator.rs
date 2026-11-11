@@ -267,9 +267,13 @@ fn interpolate_plain(
     Ok(InterpolatedBody::Plain(plain))
 }
 
-impl TemplateValidator for MiniJinjaInterpolator {
+impl MiniJinjaInterpolator {
     /// Same escaping as a send, but missing variables and attributes render as empty.
-    fn validate(
+    ///
+    /// # Errors
+    ///
+    /// Returns an `InterpolateError` when the source does not parse or cannot render.
+    pub fn validate(
         &self,
         source: &str,
         variables: &serde_json::Map<String, serde_json::Value>,
@@ -280,10 +284,11 @@ impl TemplateValidator for MiniJinjaInterpolator {
             variables,
         )
     }
-}
 
-impl TemplateInterpolator for MiniJinjaInterpolator {
-    fn interpolate(
+    /// # Errors
+    ///
+    /// Returns an `InterpolateError` when the templating engine fails to process the body.
+    pub fn interpolate(
         &self,
         body: ResolvedBody,
         variables: &serde_json::Map<String, serde_json::Value>,
@@ -297,12 +302,32 @@ impl TemplateInterpolator for MiniJinjaInterpolator {
     }
 }
 
+impl TemplateValidator for MiniJinjaInterpolator {
+    async fn validate(
+        &self,
+        source: &str,
+        variables: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<String, InterpolateError> {
+        Self::validate(self, source, variables)
+    }
+}
+
+impl TemplateInterpolator for MiniJinjaInterpolator {
+    async fn interpolate(
+        &self,
+        body: ResolvedBody,
+        variables: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<InterpolatedBody, InterpolateError> {
+        Self::interpolate(self, body, variables)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Map, Value};
 
     use catapulte_domain::entity::body::{InterpolatedBody, Plain, ResolvedBody};
-    use catapulte_domain::port::template_interpolator::{InterpolateError, TemplateInterpolator};
+    use catapulte_domain::port::template_interpolator::InterpolateError;
 
     use super::MiniJinjaInterpolator;
 
@@ -533,8 +558,6 @@ mod tests {
 
     #[test]
     fn validation_accepts_missing_nested_attributes_but_sending_still_fails() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let source = "<mj-text>{{ customer.name }}</mj-text>";
         let none = Map::new();
 
@@ -550,8 +573,6 @@ mod tests {
 
     #[test]
     fn validation_needs_representative_data_for_value_requiring_expressions() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let source = "<mj-text>{{ total + 1 }}</mj-text>";
         let interpolator = MiniJinjaInterpolator::new();
 
@@ -566,8 +587,6 @@ mod tests {
 
     #[test]
     fn validation_reports_syntax_errors_and_escapes_like_a_send() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let interpolator = MiniJinjaInterpolator::new();
         assert!(interpolator.validate("{% if %}", &Map::new()).is_err());
 
@@ -586,8 +605,6 @@ mod tests {
 
     #[test]
     fn a_runaway_loop_exhausts_the_budget_quickly_when_sending_and_validating() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let interpolator = MiniJinjaInterpolator::new();
         let started = std::time::Instant::now();
 
@@ -603,8 +620,6 @@ mod tests {
 
     #[test]
     fn a_repeated_literal_is_bounded_by_the_total_output_cap() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let source = format!(
             "{{% for i in range(3000) %}}{}{{% endfor %}}",
             "x".repeat(1000)
@@ -651,8 +666,6 @@ mod tests {
 
     #[test]
     fn exponentially_expanding_values_are_cut_off_by_every_stringifier() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let interpolator = MiniJinjaInterpolator::new();
         for output in [
             "{{ a }}",

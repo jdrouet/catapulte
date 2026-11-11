@@ -347,7 +347,6 @@ mod tests {
     #[tokio::test]
     async fn interpolated_url_survives_attribute_escaping() {
         use catapulte_domain::entity::body::ResolvedBody;
-        use catapulte_domain::port::template_interpolator::TemplateInterpolator;
         use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 
         let url = r#"https://x.test/a?b=1&c="q"'r"#;
@@ -392,7 +391,6 @@ mod tests {
         pairs: &[(&str, &str)],
     ) -> catapulte_domain::entity::body::Plain {
         use catapulte_domain::entity::body::ResolvedBody;
-        use catapulte_domain::port::template_interpolator::TemplateInterpolator;
         use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 
         let mut variables = serde_json::Map::new();
