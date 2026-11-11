@@ -1,4 +1,4 @@
-use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
 use catapulte_domain::port::attachment_store::AttachmentStore;
 use catapulte_domain::port::email_queue::{AckToken, EmailQueue};
 use catapulte_domain::port::email_repository::EmailRepository;
@@ -158,7 +158,7 @@ async fn process_one<S: WorkerState>(
             .publish(&LifecycleEvent::Sending {
                 id,
                 attempt,
-                correlation_id: correlation_id.clone(),
+                context: EventContext::with_correlation(correlation_id.clone()),
             })
             .await
         {
@@ -194,7 +194,7 @@ async fn process_one<S: WorkerState>(
                     .publish(&LifecycleEvent::Sent {
                         id,
                         sender_name: processed.sender_name,
-                        correlation_id: correlation_id.clone(),
+                        context: EventContext::with_correlation(correlation_id.clone()),
                         smtp_response: processed.smtp_response,
                         message_id: processed.message_id,
                     })
@@ -208,7 +208,7 @@ async fn process_one<S: WorkerState>(
                         .publish(&LifecycleEvent::Suppressed {
                             id,
                             addresses: processed.suppressed,
-                            correlation_id: correlation_id.clone(),
+                            context: EventContext::with_correlation(correlation_id.clone()),
                         })
                         .await
                 {
@@ -237,7 +237,7 @@ async fn process_one<S: WorkerState>(
                         reason,
                         error_class,
                         sender_name,
-                        correlation_id: correlation_id.clone(),
+                        context: EventContext::with_correlation(correlation_id.clone()),
                     }
                 } else {
                     let delay = backoff(attempt);
@@ -254,7 +254,7 @@ async fn process_one<S: WorkerState>(
                         reason,
                         error_class,
                         sender_name,
-                        correlation_id: correlation_id.clone(),
+                        context: EventContext::with_correlation(correlation_id.clone()),
                     }
                 };
                 if let Err(pub_err) = state.event_publisher().publish(&event).await {

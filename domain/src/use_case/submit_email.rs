@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::entity::attachment::AttachmentRef;
 use crate::entity::email::{EmailId, bare_address};
 use crate::entity::envelope::Envelope;
-use crate::entity::lifecycle_event::LifecycleEvent;
+use crate::entity::lifecycle_event::{EventContext, LifecycleEvent};
 use crate::entity::suppression::suppression_key;
 use crate::port::attachment_fetcher::AttachmentFetcher;
 use crate::port::attachment_store::{AttachmentReader, AttachmentStore};
@@ -370,7 +370,7 @@ where
             .event_publisher
             .publish(&LifecycleEvent::Queued {
                 id,
-                correlation_id: envelope.correlation_id.clone(),
+                context: EventContext::with_correlation(envelope.correlation_id.clone()),
             })
             .await
         {
@@ -387,7 +387,7 @@ where
             .publish(&LifecycleEvent::Suppressed {
                 id,
                 addresses,
-                correlation_id: envelope.correlation_id.clone(),
+                context: EventContext::with_correlation(envelope.correlation_id.clone()),
             })
             .await
         {
@@ -645,7 +645,7 @@ mod tests {
     use crate::entity::body::Plain;
     use crate::entity::email::{EmailId, RecipientKind};
     use crate::entity::envelope::Envelope;
-    use crate::entity::lifecycle_event::LifecycleEvent;
+    use crate::entity::lifecycle_event::{EventContext, LifecycleEvent};
     use crate::port::attachment_fetcher::{AttachmentFetchError, AttachmentFetcher};
     use crate::port::attachment_store::{
         AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
@@ -2235,7 +2235,7 @@ mod tests {
             events[0],
             LifecycleEvent::Queued {
                 id,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             }
         );
     }

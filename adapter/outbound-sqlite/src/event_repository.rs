@@ -97,7 +97,7 @@ mod tests {
     use catapulte_domain::entity::body::{BodySource, Plain};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+    use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
     use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::EmailRepository;
     use catapulte_domain::port::event_publisher::EventPublisher;
@@ -156,14 +156,14 @@ mod tests {
         adapter
             .publish(&LifecycleEvent::Queued {
                 id: id1,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
         adapter
             .publish(&LifecycleEvent::Queued {
                 id: id2,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -186,7 +186,7 @@ mod tests {
         adapter
             .publish(&LifecycleEvent::Queued {
                 id,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -194,7 +194,7 @@ mod tests {
             .publish(&LifecycleEvent::Sent {
                 id,
                 sender_name: SenderName::new("test"),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
                 smtp_response: None,
                 message_id: "<test@example.com>".to_owned(),
             })
@@ -220,7 +220,7 @@ mod tests {
             adapter
                 .publish(&LifecycleEvent::Queued {
                     id,
-                    correlation_id: None,
+                    context: EventContext::with_correlation(None),
                 })
                 .await
                 .unwrap();
@@ -258,7 +258,7 @@ mod tests {
         adapter
             .publish(&LifecycleEvent::Queued {
                 id,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -266,7 +266,7 @@ mod tests {
             .publish(&LifecycleEvent::Sent {
                 id,
                 sender_name: SenderName::new("test"),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
                 smtp_response: None,
                 message_id: "<test@example.com>".to_owned(),
             })
@@ -336,7 +336,7 @@ mod tests {
                 reason: "send error".to_owned(),
                 error_class: ErrorClass::Delivery,
                 sender_name: Some(SenderName::new("primary")),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -347,7 +347,7 @@ mod tests {
                 reason: "send error".to_owned(),
                 error_class: ErrorClass::Delivery,
                 sender_name: Some(SenderName::new("backup")),
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -383,7 +383,7 @@ mod tests {
                 reason: "delivery error".to_owned(),
                 error_class: ErrorClass::Delivery,
                 sender_name: None,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -394,7 +394,7 @@ mod tests {
                 reason: "routing error".to_owned(),
                 error_class: ErrorClass::Routing,
                 sender_name: None,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();
@@ -424,7 +424,7 @@ mod tests {
                 reason: "template error".to_owned(),
                 error_class: ErrorClass::TemplateResolve,
                 sender_name: None,
-                correlation_id: None,
+                context: EventContext::with_correlation(None),
             })
             .await
             .unwrap();

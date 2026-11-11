@@ -71,7 +71,7 @@ impl NatsEventConfig {
 mod tests {
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::error_class::ErrorClass;
-    use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
+    use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
     use catapulte_domain::entity::sender::SenderName;
 
     use super::event_to_json;
@@ -93,7 +93,7 @@ mod tests {
         let event = LifecycleEvent::Sent {
             id,
             sender_name: SenderName::new("primary"),
-            correlation_id: Some("corr-sent".to_owned()),
+            context: EventContext::with_correlation(Some("corr-sent".to_owned())),
             smtp_response: Some("250 2.0.0 Ok: queued as 4ABC".to_owned()),
             message_id: "<test@example.com>".to_owned(),
         };
@@ -122,7 +122,7 @@ mod tests {
             reason: "smtp error".to_owned(),
             error_class: ErrorClass::Delivery,
             sender_name: Some(SenderName::new("primary")),
-            correlation_id: Some("corr-fail".to_owned()),
+            context: EventContext::with_correlation(Some("corr-fail".to_owned())),
         };
         let expected = serde_json::json!({
             "event_type": "delivery.failed",
