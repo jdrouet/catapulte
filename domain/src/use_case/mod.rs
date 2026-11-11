@@ -1,3 +1,4 @@
+pub mod cancel_email;
 pub mod check_readiness;
 pub mod ingest_feedback;
 pub mod list_emails;

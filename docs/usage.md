@@ -265,6 +265,28 @@ before `send_at_ms` on the clock of the node that claims it. Delivery can be lat
 - All instances must run this version before clients use `send_at_ms`. Timestamps rely
   on synchronised clocks (NTP) across instances.
 
+#### Cancelling a scheduled email
+
+`POST /emails/{id}/cancel` withdraws a scheduled email. After a `204`, no worker has
+claimed the email and none will: nothing is sent. Only emails submitted with `send_at_ms`
+can be cancelled, and only until a worker claims them (including once the time has come
+and a worker picks it up). The call is scoped like the list routes: you can cancel your own
+emails, and an admin key can cancel any email.
+
+| Status | When |
+|--------|------|
+| `204` | the email is cancelled, or was already cancelled (no second event) |
+| `404` | no such email, or it belongs to another key |
+| `409` | `email can no longer be cancelled`: a worker already handled it, or it has no `send_at_ms` |
+| `400` | the id is not a UUID |
+
+A cancel publishes a `cancelled` event, best effort like the other lifecycle events, and the
+email's status becomes `cancelled` (`GET /emails?status=cancelled`). Resubmitting with the idempotency key of a cancelled email
+returns the original id with status `cancelled`; use a new key to send again. The attachments of a
+cancelled email are deleted by the garbage collector on the first sweep after their age
+exceeds the grace period (`CATAPULTE_GC_GRACE_PERIOD_SECS`), not on the next sweep
+unconditionally.
+
 ## Submitting a batch
 
 `POST /emails/batch` accepts up to **100** emails and reports per-email outcomes
@@ -313,8 +335,8 @@ with `500`. Batch items use the inline/remote attachment form (no multipart).
 curl "http://localhost:3000/emails?status=failed&limit=50"
 ```
 
-An email's status is `sent` or `failed` once its latest delivery event says so. Otherwise it
-is `scheduled` while its `send_at_ms` is in the future and `queued` after that (and for
+An email's status is `cancelled` once it is cancelled, otherwise `sent` or `failed` once its
+latest delivery event says so. Otherwise it is `scheduled` while its `send_at_ms` is in the future and `queued` after that (and for
 emails without `send_at_ms`). `status=queued` therefore does not match scheduled emails.
 Emails submitted with `send_at_ms` also return it in the record.
 
@@ -400,6 +422,7 @@ each event as JSON:
 |--------------|---------|------------------|
 | `queued` | accepted and enqueued | `correlation_id` |
 | `scheduled` | accepted and held until `send_at_ms`; sent instead of `queued`; informational | `send_at_ms`, `correlation_id` |
+| `cancelled` | a scheduled email was cancelled before any worker touched it; informational | `correlation_id` |
 | `sending` | a delivery attempt is starting | `attempt`, `correlation_id` |
 | `delivery.succeeded` | accepted by the upstream SMTP server | `sender_name`, `correlation_id`, `smtp_response`, `message_id` |
 | `retrying` | attempt failed, will retry | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |

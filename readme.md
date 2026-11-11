@@ -497,10 +497,6 @@ Emitted gauges:
 | `catapulte.sender.sent_in_range` | `sender` | Emails sent by this sender within its quota window |
 | `catapulte.sender.quota_limit` | `sender` | Configured quota count for the sender (omitted when no quota is set) |
 
-## Out of scope (for now)
-
-Scheduled sends. Listed so they aren't mistaken for missing stories.
-
 ## License
 
 Catapulte is licensed under the GNU Affero General Public License v3.0. See [LICENSE](./LICENSE).

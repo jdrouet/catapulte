@@ -63,8 +63,6 @@ The following are **out of scope**:
 - **Volumetric denial of service / abuse.** catapulte has no built-in rate
   limiting or abuse protection by design; operators are expected to run it
   behind a gateway or reverse proxy that enforces limits.
-- Features explicitly listed as out of scope in the [readme](./readme.md)
-  (scheduled sends).
 - Vulnerabilities already tracked by the repository's dependency scanning, or
   in dependencies that are not reachable from the shipped binary (for example,
   test-only tooling).

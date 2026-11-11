@@ -13,6 +13,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::get;
 use axum::routing::post;
+use catapulte_domain::use_case::cancel_email::CancelEmailUseCase;
 use catapulte_domain::use_case::ingest_feedback::IngestFeedbackUseCase;
 use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
 use catapulte_domain::use_case::list_events::ListEventsUseCase;
@@ -39,6 +40,7 @@ pub trait ReadinessState: Clone + Send + Sync + 'static {
 /// Implemented by the application state type in the composition root.
 pub trait HttpServerState: ReadinessState {
     fn submit_email(&self) -> &impl SubmitEmailUseCase;
+    fn cancel_email(&self) -> &impl CancelEmailUseCase;
     fn list_emails(&self) -> &impl ListEmailsUseCase;
     fn list_events(&self) -> &impl ListEventsUseCase;
     fn list_senders(&self) -> &impl ListSendersUseCase;
@@ -103,6 +105,10 @@ pub fn router_with_feedback<S: HttpServerState>(
 
     let read_routes = Router::new()
         .route("/emails", get(crate::routes::emails::list_emails::<S>))
+        .route(
+            "/emails/{id}/cancel",
+            post(crate::routes::emails::cancel_email::<S>),
+        )
         .route(
             "/emails/{id}/events",
             get(crate::routes::events::list_events_for_email::<S>),

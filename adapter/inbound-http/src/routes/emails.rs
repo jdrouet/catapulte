@@ -2,9 +2,10 @@ use axum::Extension;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Multipart, Query, Request, State};
+use axum::extract::{FromRequest, Multipart, Path, Query, Request, State};
 use catapulte_domain::entity::email::EmailId;
-use catapulte_domain::port::email_repository::ListEmailsParams;
+use catapulte_domain::port::email_repository::{CancelOutcome, ListEmailsParams};
+use catapulte_domain::use_case::cancel_email::CancelEmailUseCase;
 use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
 use catapulte_domain::use_case::submit_email::{
     AttachmentInput, SubmitEmailError, SubmitEmailUseCase,
@@ -266,6 +267,47 @@ pub async fn list_emails<S: HttpServerState>(
     }))
 }
 
+/// Cancels a scheduled email that no worker has touched. Repeating the call also answers 204.
+///
+/// # Errors
+///
+/// Returns `AppError::InvalidEmailId` for a malformed id, `AppError::NotFound` when no email of
+/// the caller has this id, and `AppError::NotCancellable` once a worker has handled the email.
+#[tracing::instrument(skip_all)]
+pub async fn cancel_email<S: HttpServerState>(
+    State(state): State<S>,
+    Extension(identity): Extension<ApiKeyIdentity>,
+    Path(raw_id): Path<String>,
+) -> Result<axum::http::StatusCode, AppError> {
+    let id = EmailId::from(uuid::Uuid::parse_str(&raw_id).map_err(|_| AppError::InvalidEmailId)?);
+    match state
+        .cancel_email()
+        .execute(id, identity.read_scope())
+        .await?
+    {
+        CancelOutcome::Cancelled { .. } | CancelOutcome::AlreadyCancelled => {
+            Ok(axum::http::StatusCode::NO_CONTENT)
+        }
+        CancelOutcome::NotFound => Err(AppError::NotFound),
+        CancelOutcome::NotCancellable => Err(AppError::NotCancellable),
+    }
+}
+
+/// Test double for states that never cancel: any email is unknown.
+#[cfg(test)]
+pub(crate) struct NoopCancelEmail;
+
+#[cfg(test)]
+impl CancelEmailUseCase for NoopCancelEmail {
+    async fn execute(
+        &self,
+        _id: EmailId,
+        _owner: Option<String>,
+    ) -> Result<CancelOutcome, catapulte_domain::use_case::cancel_email::CancelEmailError> {
+        Ok(CancelOutcome::NotFound)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -273,10 +315,12 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use catapulte_domain::entity::email::EmailId;
+    use catapulte_domain::port::email_repository::CancelOutcome;
     use catapulte_domain::port::email_repository::{
         EmailRecord, EmailRepositoryError, EmailStatus, ListEmailsParams,
     };
     use catapulte_domain::port::event_repository::{EventRecord, ListEventsParams};
+    use catapulte_domain::use_case::cancel_email::CancelEmailUseCase;
     use catapulte_domain::use_case::list_emails::{ListEmailsError, ListEmailsUseCase};
     use catapulte_domain::use_case::list_events::{ListEventsError, ListEventsUseCase};
     use catapulte_domain::use_case::submit_email::{
@@ -439,6 +483,12 @@ mod tests {
     }
 
     impl HttpServerState for TestState {
+        fn cancel_email(
+            &self,
+        ) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+            &crate::routes::emails::NoopCancelEmail
+        }
+
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
@@ -490,6 +540,12 @@ mod tests {
     }
 
     impl HttpServerState for FailingTestState {
+        fn cancel_email(
+            &self,
+        ) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+            &crate::routes::emails::NoopCancelEmail
+        }
+
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
@@ -540,6 +596,12 @@ mod tests {
     }
 
     impl HttpServerState for FailingEmailRepoState {
+        fn cancel_email(
+            &self,
+        ) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+            &crate::routes::emails::NoopCancelEmail
+        }
+
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
@@ -1400,6 +1462,40 @@ mod tests {
     struct CapturingTestState {
         submit: Arc<CapturingSubmit>,
         list_emails: Arc<FakeListEmails>,
+        cancel: Arc<ScriptedCancel>,
+    }
+
+    /// Answers by id (1 cancelled, 2 already cancelled, 3 not cancellable, 4 failure,
+    /// otherwise unknown) and records the owner scope it was called with.
+    #[derive(Default)]
+    struct ScriptedCancel {
+        owners: Mutex<Vec<Option<String>>>,
+    }
+
+    impl CancelEmailUseCase for ScriptedCancel {
+        async fn execute(
+            &self,
+            id: EmailId,
+            owner: Option<String>,
+        ) -> Result<CancelOutcome, catapulte_domain::use_case::cancel_email::CancelEmailError>
+        {
+            self.owners.lock().unwrap().push(owner);
+            match id.as_uuid().as_u128() {
+                1 => Ok(CancelOutcome::Cancelled {
+                    context: catapulte_domain::entity::lifecycle_event::EventContext::default(),
+                }),
+                2 => Ok(CancelOutcome::AlreadyCancelled),
+                3 => Ok(CancelOutcome::NotCancellable),
+                4 => Err(
+                    catapulte_domain::use_case::cancel_email::CancelEmailError::Repository(
+                        EmailRepositoryError::Storage {
+                            source: anyhow::anyhow!("db down"),
+                        },
+                    ),
+                ),
+                _ => Ok(CancelOutcome::NotFound),
+            }
+        }
     }
 
     impl crate::ReadinessState for CapturingTestState {
@@ -1411,6 +1507,12 @@ mod tests {
     }
 
     impl HttpServerState for CapturingTestState {
+        fn cancel_email(
+            &self,
+        ) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+            self.cancel.as_ref()
+        }
+
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
@@ -1471,6 +1573,7 @@ mod tests {
             CapturingTestState {
                 submit,
                 list_emails: Arc::new(FakeListEmails::new()),
+                cancel: Arc::new(ScriptedCancel::default()),
             },
             None,
             std::time::Duration::from_secs(30),
@@ -1922,6 +2025,7 @@ mod tests {
             CapturingTestState {
                 submit,
                 list_emails: Arc::new(FakeListEmails::new()),
+                cancel: Arc::new(ScriptedCancel::default()),
             },
             None,
             std::time::Duration::from_secs(30),
@@ -2108,5 +2212,129 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["emails"][0]["status"], "cancelled");
+    }
+
+    fn cancel_router(
+        auth: Option<Arc<crate::auth::AuthConfig>>,
+    ) -> (axum::Router, Arc<ScriptedCancel>) {
+        let cancel = Arc::new(ScriptedCancel::default());
+        let app = router(
+            CapturingTestState {
+                submit: Arc::new(CapturingSubmit::new()),
+                list_emails: Arc::new(FakeListEmails::new()),
+                cancel: cancel.clone(),
+            },
+            auth,
+            std::time::Duration::from_secs(30),
+        );
+        (app, cancel)
+    }
+
+    fn post_cancel(id: &str, token: Option<&str>) -> Request<Body> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/emails/{id}/cancel"));
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        request.body(Body::empty()).unwrap()
+    }
+
+    fn uuid_n(n: u128) -> String {
+        uuid::Uuid::from_u128(n).to_string()
+    }
+
+    #[tokio::test]
+    async fn cancel_maps_each_outcome_to_its_status() {
+        for (n, status) in [
+            (1, StatusCode::NO_CONTENT),
+            (2, StatusCode::NO_CONTENT),
+            (3, StatusCode::CONFLICT),
+            (4, StatusCode::INTERNAL_SERVER_ERROR),
+            (5, StatusCode::NOT_FOUND),
+        ] {
+            let (app, _) = cancel_router(None);
+            let response = app.oneshot(post_cancel(&uuid_n(n), None)).await.unwrap();
+            assert_eq!(response.status(), status, "id {n}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_conflict_body_names_the_reason() {
+        let (app, _) = cancel_router(None);
+
+        let response = app.oneshot(post_cancel(&uuid_n(3), None)).await.unwrap();
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"], "email can no longer be cancelled");
+    }
+
+    #[tokio::test]
+    async fn cancel_with_a_malformed_id_is_400() {
+        let (app, owners) = cancel_router(None);
+
+        let response = app.oneshot(post_cancel("not-a-uuid", None)).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(owners.owners.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_scopes_a_named_key_to_its_owner_and_an_admin_to_none() {
+        let auth = |admin: bool| {
+            crate::auth::AuthConfig::new(
+                None,
+                vec![crate::auth::NamedApiKey {
+                    name: "team".to_owned(),
+                    secret: "s3cret".to_owned(),
+                    admin,
+                    sender_domains: None,
+                }],
+            )
+            .unwrap()
+            .map(Arc::new)
+        };
+
+        let (app, cancel) = cancel_router(auth(false));
+        app.oneshot(post_cancel(&uuid_n(1), Some("s3cret")))
+            .await
+            .unwrap();
+        assert_eq!(
+            *cancel.owners.lock().unwrap(),
+            vec![Some("team".to_owned())]
+        );
+
+        let (app, cancel) = cancel_router(auth(true));
+        app.oneshot(post_cancel(&uuid_n(1), Some("s3cret")))
+            .await
+            .unwrap();
+        assert_eq!(*cancel.owners.lock().unwrap(), vec![None]);
+
+        let (app, cancel) = cancel_router(None);
+        app.oneshot(post_cancel(&uuid_n(1), None)).await.unwrap();
+        assert_eq!(*cancel.owners.lock().unwrap(), vec![None]);
+    }
+
+    #[tokio::test]
+    async fn cancel_requires_a_key_when_auth_is_on() {
+        let auth = crate::auth::AuthConfig::new(Some("s3cret".to_owned()), vec![])
+            .unwrap()
+            .map(Arc::new);
+        let (app, cancel) = cancel_router(auth);
+
+        let without = app
+            .clone()
+            .oneshot(post_cancel(&uuid_n(1), None))
+            .await
+            .unwrap();
+        let wrong = app
+            .oneshot(post_cancel(&uuid_n(1), Some("nope")))
+            .await
+            .unwrap();
+
+        assert_eq!(without.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+        assert!(cancel.owners.lock().unwrap().is_empty());
     }
 }

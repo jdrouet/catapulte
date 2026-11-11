@@ -264,6 +264,12 @@ impl AppConfig {
                 catapulte_domain::port::clock::SystemClock,
             ),
         );
+        let cancel_email = Arc::new(
+            catapulte_domain::use_case::cancel_email::CancelEmailService::new(
+                storage.clone(),
+                publisher.clone(),
+            ),
+        );
         let list_emails = Arc::new(
             catapulte_domain::use_case::list_emails::ListEmailsService::new(storage.clone()),
         );
@@ -373,6 +379,7 @@ impl AppConfig {
 
         let state = AppState {
             submit_email,
+            cancel_email,
             process_queued_email,
             list_senders,
             list_emails,

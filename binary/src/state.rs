@@ -52,6 +52,8 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
     StorageAdapter,
 >;
 
+pub(crate) type CancelEmailServiceImpl =
+    catapulte_domain::use_case::cancel_email::CancelEmailService<StorageAdapter, PublisherAdapter>;
 pub(crate) type ListSendersServiceImpl = ListSendersService<StorageAdapter, SystemClock>;
 pub(crate) type ListEmailsServiceImpl = ListEmailsService<StorageAdapter>;
 pub(crate) type ListEventsServiceImpl = ListEventsService<StorageAdapter>;
@@ -72,6 +74,7 @@ pub(crate) struct AppState {
             StorageAdapter,
         >,
     >,
+    pub(crate) cancel_email: Arc<CancelEmailServiceImpl>,
     pub(crate) process_queued_email: Arc<ProcessService>,
     pub(crate) list_senders: Arc<ListSendersServiceImpl>,
     pub(crate) list_emails: Arc<ListEmailsServiceImpl>,
@@ -104,6 +107,10 @@ impl catapulte_inbound_http::ReadinessState for AppState {
 impl HttpServerState for AppState {
     fn submit_email(&self) -> &impl SubmitEmailUseCase {
         self.submit_email.as_ref()
+    }
+
+    fn cancel_email(&self) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+        self.cancel_email.as_ref()
     }
 
     fn list_emails(&self) -> &impl ListEmailsUseCase {

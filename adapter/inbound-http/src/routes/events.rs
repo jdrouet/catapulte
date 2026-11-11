@@ -243,6 +243,12 @@ mod tests {
     }
 
     impl HttpServerState for TestState {
+        fn cancel_email(
+            &self,
+        ) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+            &crate::routes::emails::NoopCancelEmail
+        }
+
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
@@ -293,6 +299,12 @@ mod tests {
     }
 
     impl HttpServerState for FailingRepoState {
+        fn cancel_email(
+            &self,
+        ) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+            &crate::routes::emails::NoopCancelEmail
+        }
+
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }

@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+use catapulte_domain::use_case::cancel_email::CancelEmailError;
 use catapulte_domain::use_case::ingest_feedback::IngestFeedbackError;
 use catapulte_domain::use_case::list_emails::ListEmailsError;
 use catapulte_domain::use_case::list_events::ListEventsError;
@@ -24,6 +25,8 @@ pub enum AppError {
     JsonBody(#[from] axum::extract::rejection::JsonRejection),
     #[error(transparent)]
     Submit(#[from] SubmitEmailError),
+    #[error(transparent)]
+    CancelEmail(#[from] CancelEmailError),
     #[error(transparent)]
     ListEmails(#[from] ListEmailsError),
     #[error(transparent)]
@@ -48,6 +51,8 @@ pub enum AppError {
     InvalidEmailId,
     #[error("invalid error_class value")]
     InvalidErrorClass,
+    #[error("email can no longer be cancelled")]
+    NotCancellable,
 }
 
 #[derive(Serialize)]
@@ -97,6 +102,7 @@ impl IntoResponse for AppError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "template rendering is unavailable",
             ),
+            Self::NotCancellable => (StatusCode::CONFLICT, "email can no longer be cancelled"),
             Self::Rejected => (StatusCode::UNPROCESSABLE_ENTITY, "report not accepted"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "admin key required"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
@@ -114,6 +120,7 @@ impl IntoResponse for AppError {
                 | SubmitEmailError::AttachmentStore { .. }
                 | SubmitEmailError::Suppression(_),
             )
+            | Self::CancelEmail(_)
             | Self::ListEmails(_)
             | Self::ListEvents(_)
             | Self::ListSenders(_)
