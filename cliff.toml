@@ -50,7 +50,7 @@ commit_parsers = [
   { body = ".*security", group = "Security" },
 ]
 protect_breaking_commits = true
-tag_pattern = "v[0-9]*"
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
 filter_commits = false
 topo_order = false
 sort_commits = "oldest"
