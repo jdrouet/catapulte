@@ -243,6 +243,9 @@ mod tests {
             source: &str,
             _: &serde_json::Map<String, serde_json::Value>,
         ) -> Result<String, InterpolateError> {
+            if source.contains("{% for") {
+                return Err(InterpolateError::BudgetExceeded);
+            }
             if source.contains("{{ boom") {
                 return Err(InterpolateError::Engine {
                     source: anyhow::anyhow!("syntax error"),
@@ -379,6 +382,23 @@ mod tests {
         );
         assert!(
             matches!(&mjml, ManageTemplatesError::Invalid { message } if message.contains("bad mjml"))
+        );
+        assert!(repo.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_template_that_exhausts_the_render_budget_is_rejected_with_that_message() {
+        let repo = FakeRepo::default();
+        let svc = service(&repo, &[]);
+
+        let err = svc
+            .put("loop".into(), "{% for".into(), vars())
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&err, ManageTemplatesError::Invalid { message } if message.contains("budget")),
+            "{err}"
         );
         assert!(repo.0.lock().unwrap().is_empty());
     }

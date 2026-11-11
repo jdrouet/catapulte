@@ -492,6 +492,19 @@ Pass representative `validation_variables` for those. A passing validation prove
 structure, not that the template renders for every input; sends are strict, and a missing nested
 attribute fails at send time.
 
+Every render (send, validation and preview) has a fixed budget of work. A template that exceeds it, for
+example a runaway nested loop, fails permanently at send time (`delivery.failed` with `error_class`
+`template_interpolate`, no retry) and is rejected with `400` on upload or preview. A table of 500 rows uses
+about 3% of the budget.
+
+Rendering also writes at most 1 MiB of output per part, and a filter that turns a list or map into text
+fails once the text would pass 1 MiB. To keep that bound, the `format`, `pprint` and `indent` filters are
+not available, and `replace` takes no `count`.
+
+These limits do not yet cover every template operation: string concatenation with `~` and comparisons of
+large nested lists can still use excessive CPU and memory. Until rendering moves into a resource-limited
+process (tracked in #815), only give API keys to callers you trust not to submit hostile templates.
+
 ## Suppression list
 
 Addresses on the suppression list never receive mail. Every `/suppressions` route needs an

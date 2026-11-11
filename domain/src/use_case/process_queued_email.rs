@@ -94,7 +94,9 @@ impl ProcessQueuedEmailError {
     pub fn is_permanent(&self) -> bool {
         match self {
             Self::Send(e) => !e.is_transient(),
-            Self::AllRecipientsSuppressed => true,
+            Self::AllRecipientsSuppressed | Self::Interpolate(InterpolateError::BudgetExceeded) => {
+                true
+            }
             _ => false,
         }
     }
@@ -799,6 +801,21 @@ mod tests {
             ProcessQueuedEmailError::AllRecipientsSuppressed
         ));
         assert!(spy.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn an_exhausted_render_budget_is_permanent_but_other_interpolation_errors_are_not() {
+        let budget = ProcessQueuedEmailError::Interpolate(InterpolateError::BudgetExceeded);
+        let other = ProcessQueuedEmailError::Interpolate(InterpolateError::Engine {
+            source: anyhow::anyhow!("boom"),
+        });
+
+        assert!(budget.is_permanent());
+        assert!(!other.is_permanent());
+        assert_eq!(
+            budget.error_class(),
+            crate::entity::error_class::ErrorClass::TemplateInterpolate
+        );
     }
 
     #[tokio::test]

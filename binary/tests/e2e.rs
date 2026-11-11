@@ -2446,3 +2446,40 @@ async fn templates_are_validated_previewed_and_used_by_sends() {
     .await;
     assert_eq!(removed.status(), 204);
 }
+
+#[tokio::test]
+async fn runaway_templates_are_rejected_on_upload_and_fail_a_send_without_a_retry() {
+    let hostile = "<mjml><mj-body><mj-section><mj-column><mj-text>{% for a in range(100000) %}{% for b in range(100000) %}x{% endfor %}{% endfor %}</mj-text></mj-column></mj-section></mj-body></mjml>";
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_sink_app(suppression_auth(), &db_dir).await;
+
+    let upload = put_template(&base, "secret-ops", "loop", hostile, serde_json::json!({})).await;
+    assert_eq!(upload.status(), 400);
+    let message: serde_json::Value = upload.json().await.unwrap();
+    assert!(
+        message["error"].as_str().unwrap().contains("budget"),
+        "{message}"
+    );
+
+    let id = id_of(
+        submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            None,
+            serde_json::json!({ "body": { "kind": "mjml_inline", "source": hostile } }),
+        )
+        .await,
+    )
+    .await;
+    let mut types = Vec::new();
+    for _ in 0..100 {
+        types = event_types(&base, &id).await;
+        if types.contains(&"delivery.failed".to_owned()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(types.contains(&"delivery.failed".to_owned()), "{types:?}");
+    assert!(!types.contains(&"retrying".to_owned()), "{types:?}");
+}

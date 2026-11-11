@@ -1048,6 +1048,7 @@ mod tests {
     #[derive(Clone)]
     struct ScriptedProcessor {
         all_suppressed: bool,
+        over_budget: bool,
     }
 
     impl ProcessQueuedEmailUseCase for ScriptedProcessor {
@@ -1058,6 +1059,11 @@ mod tests {
         ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
             if self.all_suppressed {
                 return Err(ProcessQueuedEmailError::AllRecipientsSuppressed);
+            }
+            if self.over_budget {
+                return Err(ProcessQueuedEmailError::Interpolate(
+                    catapulte_domain::port::template_interpolator::InterpolateError::BudgetExceeded,
+                ));
             }
             Ok(ProcessedEmail {
                 suppressed: vec!["b@x.com".to_owned()],
@@ -1097,7 +1103,10 @@ mod tests {
 
     async fn run_scripted(all_suppressed: bool) -> (TrackingQueue, Vec<LifecycleEvent>) {
         let state = ScriptedState {
-            processor: ScriptedProcessor { all_suppressed },
+            processor: ScriptedProcessor {
+                all_suppressed,
+                over_budget: false,
+            },
             queue: TrackingQueue::default(),
             publisher: CapturingEventPublisher::default(),
         };
@@ -1119,6 +1128,7 @@ mod tests {
         let state = ScriptedState {
             processor: ScriptedProcessor {
                 all_suppressed: false,
+                over_budget: false,
             },
             queue: TrackingQueue::default(),
             publisher: CapturingEventPublisher::default(),
@@ -1164,6 +1174,38 @@ mod tests {
             e,
             LifecycleEvent::Failed { error_class, .. } if *error_class == ErrorClass::Suppressed
         )));
+    }
+
+    #[tokio::test]
+    async fn an_exhausted_render_budget_fails_the_email_without_a_retry() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+
+        let state = ScriptedState {
+            processor: ScriptedProcessor {
+                all_suppressed: false,
+                over_budget: true,
+            },
+            queue: TrackingQueue::default(),
+            publisher: CapturingEventPublisher::default(),
+        };
+        process_one(
+            &state,
+            EmailId::default(),
+            sample_envelope(),
+            1,
+            AckToken::new(vec![0u8; 8]),
+            TraceCarrier::default(),
+        )
+        .await;
+
+        assert_eq!(*state.queue.acked.lock().unwrap(), 1);
+        assert_eq!(*state.queue.nacked.lock().unwrap(), 0);
+        let events = state.publisher.events.lock().unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LifecycleEvent::Failed { error_class, .. } if *error_class == ErrorClass::TemplateInterpolate
+        )));
+        assert!(!events.iter().any(|e| e.event_type() == "retrying"));
     }
 
     #[tokio::test]
