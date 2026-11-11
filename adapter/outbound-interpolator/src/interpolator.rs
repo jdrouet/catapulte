@@ -33,6 +33,28 @@ impl<W: std::fmt::Write> std::fmt::Write for Bounded<'_, W> {
     }
 }
 
+/// An `io::Write` into memory that fails once the rendered output, literal text included,
+/// passes `MAX_RENDER_BYTES`. The formatter bound only counts interpolated values.
+struct CappedBuffer {
+    buf: Vec<u8>,
+    exceeded: bool,
+}
+
+impl std::io::Write for CappedBuffer {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.buf.len() + data.len() > MAX_RENDER_BYTES {
+            self.exceeded = true;
+            return Err(std::io::Error::other("rendered output exceeds its cap"));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 struct OutputWriter<'a, 'b>(&'a mut Output<'b>);
 
 impl std::fmt::Write for OutputWriter<'_, '_> {
@@ -184,16 +206,25 @@ fn render_with<'a>(
         .get_template("t")
         .context("getting template")
         .map_err(|source| InterpolateError::Engine { source })?;
-    tmpl.render(minijinja::value::Serde(variables))
-        .map_err(|e| {
-            if e.kind() == minijinja::ErrorKind::OutOfFuel {
+    let mut out = CappedBuffer {
+        buf: Vec::new(),
+        exceeded: false,
+    };
+    let rendered = tmpl.render_captured_to(minijinja::value::Serde(variables), &mut out);
+    if let Err(e) = rendered {
+        return Err(
+            if out.exceeded || e.kind() == minijinja::ErrorKind::OutOfFuel {
                 InterpolateError::BudgetExceeded
             } else {
                 InterpolateError::Engine {
                     source: anyhow::Error::new(e).context("rendering template"),
                 }
-            }
-        })
+            },
+        );
+    }
+    String::from_utf8(out.buf)
+        .context("decoding rendered template")
+        .map_err(|source| InterpolateError::Engine { source })
 }
 
 fn render_str(
@@ -568,6 +599,29 @@ mod tests {
         assert!(matches!(sent, Err(InterpolateError::BudgetExceeded)));
         assert!(matches!(validated, Err(InterpolateError::BudgetExceeded)));
         assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
+    }
+
+    #[test]
+    fn a_repeated_literal_is_bounded_by_the_total_output_cap() {
+        use catapulte_domain::port::template_validator::TemplateValidator;
+
+        let source = format!(
+            "{{% for i in range(3000) %}}{}{{% endfor %}}",
+            "x".repeat(1000)
+        );
+        let interpolator = MiniJinjaInterpolator::new();
+
+        let sent = interpolator.interpolate(ResolvedBody::Mjml(source.clone()), &Map::new());
+        let validated = interpolator.validate(&source, &Map::new());
+
+        assert!(
+            matches!(sent, Err(InterpolateError::BudgetExceeded)),
+            "{sent:?}"
+        );
+        assert!(
+            matches!(validated, Err(InterpolateError::BudgetExceeded)),
+            "{validated:?}"
+        );
     }
 
     #[test]
