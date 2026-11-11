@@ -34,10 +34,20 @@ use crate::storage::StorageAdapter;
 
 pub(crate) type StoredResolver = StoredTemplateResolver<StorageAdapter, TemplateResolverAdapter>;
 
+pub(crate) type ManageTemplates =
+    catapulte_domain::use_case::manage_templates::ManageTemplatesService<
+        StorageAdapter,
+        TemplateResolverAdapter,
+        MiniJinjaInterpolator,
+        MiniJinjaInterpolator,
+        Arc<MjmlRenderer>,
+        SystemClock,
+    >;
+
 pub(crate) type ProcessService = ProcessQueuedEmailService<
     Arc<StoredResolver>,
     MiniJinjaInterpolator,
-    MjmlRenderer,
+    Arc<MjmlRenderer>,
     RoutedEmailSender<SenderTransport, StorageAdapter>,
     AttachmentStoreAdapter,
     StorageAdapter,
@@ -75,6 +85,7 @@ pub(crate) struct AppState {
             catapulte_domain::port::clock::SystemClock,
         >,
     >,
+    pub(crate) manage_templates: Arc<ManageTemplates>,
     pub(crate) manage_suppressions: Arc<ManageSuppressionsService<StorageAdapter>>,
     pub(crate) check_readiness: Arc<CheckReadinessServiceImpl>,
     pub(crate) queue: QueueAdapter,
@@ -110,6 +121,12 @@ impl HttpServerState for AppState {
 
     fn manage_suppressions(&self) -> &impl ManageSuppressionsUseCase {
         self.manage_suppressions.as_ref()
+    }
+
+    fn manage_templates(
+        &self,
+    ) -> &impl catapulte_domain::use_case::manage_templates::ManageTemplatesUseCase {
+        self.manage_templates.as_ref()
     }
 
     fn ingest_feedback(

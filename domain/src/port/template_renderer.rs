@@ -20,3 +20,12 @@ pub trait TemplateRenderer: Send + Sync + 'static {
         body: InterpolatedBody,
     ) -> impl std::future::Future<Output = Result<RenderedBody, RenderError>> + Send;
 }
+
+impl<T: TemplateRenderer> TemplateRenderer for std::sync::Arc<T> {
+    fn render(
+        &self,
+        body: InterpolatedBody,
+    ) -> impl std::future::Future<Output = Result<RenderedBody, RenderError>> + Send {
+        T::render(self, body)
+    }
+}

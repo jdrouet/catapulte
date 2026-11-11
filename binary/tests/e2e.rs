@@ -1239,6 +1239,16 @@ async fn start_app(
     bounce: Option<catapulte_domain::entity::return_path::BounceConfig>,
     db_dir: &tempfile::TempDir,
 ) -> String {
+    start_app_with_resolver(auth, feedback_secret, bounce, base_resolver(), db_dir).await
+}
+
+async fn start_app_with_resolver(
+    auth: Option<AuthConfig>,
+    feedback_secret: Option<&str>,
+    bounce: Option<catapulte_domain::entity::return_path::BounceConfig>,
+    resolver: TemplateResolverConfig,
+    db_dir: &tempfile::TempDir,
+) -> String {
     let http_port = free_port();
     let config = AppConfig {
         storage: StorageBackendConfig::Sqlite(SqliteConfig {
@@ -1252,7 +1262,7 @@ async fn start_app(
         },
         inbound_nats: None,
         smtp: MultiSenderConfig::empty().with_sink_sender("ci", 100),
-        resolver: base_resolver(),
+        resolver,
         worker: WorkerConfig::default(),
         queue: QueueBackendConfig::Storage,
         publisher: PublisherAdapterConfig::storage_only(),
@@ -2228,4 +2238,211 @@ async fn the_feedback_route_is_disabled_without_a_secret_and_rejects_api_keys_an
     assert_eq!(huge.status(), 413);
     let not_a_report = post_feedback(&base, INGEST_SECRET, "x".to_owned()).await;
     assert_eq!(not_a_report.status(), 422);
+}
+
+const WELCOME: &str = "<mjml><mj-body><mj-section><mj-column><mj-text>Hi {{ customer.name }}</mj-text></mj-column></mj-section></mj-body></mjml>";
+
+async fn put_template(
+    base: &str,
+    token: &str,
+    name: &str,
+    source: &str,
+    validation_variables: serde_json::Value,
+) -> reqwest::Response {
+    send(
+        reqwest::Method::PUT,
+        base,
+        token,
+        &format!("/templates/{name}"),
+        Some(serde_json::json!({ "source": source, "validation_variables": validation_variables })),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn template_routes_are_admin_only() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_sink_app(suppression_auth(), &db_dir).await;
+    let body = serde_json::json!({ "source": WELCOME });
+    for (method, path, payload) in [
+        (reqwest::Method::GET, "/templates", None),
+        (reqwest::Method::GET, "/templates/welcome", None),
+        (reqwest::Method::PUT, "/templates/welcome", Some(body)),
+        (reqwest::Method::DELETE, "/templates/welcome", None),
+        (
+            reqwest::Method::POST,
+            "/templates/welcome/preview",
+            Some(serde_json::json!({})),
+        ),
+    ] {
+        let denied = send(method, &base, "secret-a", path, payload).await;
+        assert_eq!(denied.status(), 403, "{path}");
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn templates_are_validated_previewed_and_used_by_sends() {
+    let files = tempfile::tempdir().unwrap();
+    std::fs::write(files.path().join("filed.mjml"), WELCOME).unwrap();
+    let resolver = TemplateResolverConfig {
+        templates_dir: Some(files.path().to_path_buf()),
+        ..base_resolver()
+    };
+    let db_dir = tempfile::tempdir().unwrap();
+    let base = start_app_with_resolver(suppression_auth(), None, None, resolver, &db_dir).await;
+
+    // A missing nested attribute passes validation, but arithmetic needs data.
+    let ok = put_template(
+        &base,
+        "secret-ops",
+        "welcome",
+        WELCOME,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(ok.status(), 200);
+    let doubled = WELCOME.replace("Hi {{ customer.name }}", "{{ total + 1 }}");
+    let rejected = put_template(&base, "secret-ops", "math", &doubled, serde_json::json!({})).await;
+    assert_eq!(rejected.status(), 400);
+    let message: serde_json::Value = rejected.json().await.unwrap();
+    assert!(
+        message["error"].as_str().unwrap().contains("+ operator"),
+        "{message}"
+    );
+    let with_data = put_template(
+        &base,
+        "secret-ops",
+        "math",
+        &doubled,
+        serde_json::json!({ "total": 1 }),
+    )
+    .await;
+    assert_eq!(with_data.status(), 200);
+    let preview = send(
+        reqwest::Method::POST,
+        &base,
+        "secret-ops",
+        "/templates/math/preview",
+        Some(serde_json::json!({ "variables": { "total": 1 } })),
+    )
+    .await;
+    let preview: serde_json::Value = preview.json().await.unwrap();
+    assert!(
+        preview["html"].as_str().unwrap().contains(">2<"),
+        "{preview}"
+    );
+
+    // Broken MJML is a 400 and nothing is stored.
+    let broken = put_template(
+        &base,
+        "secret-ops",
+        "broken",
+        "<mjml><mj-body>",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(broken.status(), 400);
+    let missing = get_json(&base, "secret-ops", "/templates/broken").await;
+    assert_eq!(missing["error"], "not found");
+
+    // The filesystem is authoritative.
+    let on_disk = put_template(&base, "secret-ops", "filed", WELCOME, serde_json::json!({})).await;
+    assert_eq!(on_disk.status(), 409);
+    let delete = send(
+        reqwest::Method::DELETE,
+        &base,
+        "secret-ops",
+        "/templates/filed",
+        None,
+    )
+    .await;
+    assert_eq!(delete.status(), 409);
+
+    // Previews escape variables like a send.
+    let escaped = send(
+        reqwest::Method::POST,
+        &base,
+        "secret-ops",
+        "/templates/welcome/preview",
+        Some(serde_json::json!({ "variables": { "customer": { "name": "<script>x</script>" } } })),
+    )
+    .await;
+    let escaped: serde_json::Value = escaped.json().await.unwrap();
+    let html = escaped["html"].as_str().unwrap();
+    assert!(
+        !html.contains("<script>") && html.contains("&lt;script&gt;"),
+        "{html}"
+    );
+
+    // New versions replace the old one, and the list shows the latest.
+    let again = put_template(
+        &base,
+        "secret-ops",
+        "welcome",
+        WELCOME,
+        serde_json::json!({}),
+    )
+    .await;
+    let again: serde_json::Value = again.json().await.unwrap();
+    assert_eq!(again["version"], 2);
+    let listed = get_json(&base, "secret-ops", "/templates").await;
+    assert_eq!(ids(&listed, "templates", "name"), vec!["math", "welcome"]);
+
+    // A send using the stored template is delivered; a missing nested attribute still fails
+    // at send time.
+    let named = |variables: serde_json::Value| {
+        serde_json::json!({
+            "body": { "kind": "mjml_named", "name": "welcome" },
+            "variables": variables
+        })
+    };
+    let delivered = id_of(
+        submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            None,
+            named(serde_json::json!({ "customer": { "name": "Ann" } })),
+        )
+        .await,
+    )
+    .await;
+    wait_for_delivery(&base, "secret-a", &delivered).await;
+    let strict = id_of(
+        submit_as(
+            &base,
+            "secret-a",
+            "s@example.com",
+            None,
+            named(serde_json::json!({})),
+        )
+        .await,
+    )
+    .await;
+    let mut failed = false;
+    for _ in 0..100 {
+        let events = get_json(&base, "secret-a", &format!("/emails/{strict}/events")).await;
+        if events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["error_class"] == "template_interpolate")
+        {
+            failed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(failed, "send-time rendering is not lenient");
+
+    let removed = send(
+        reqwest::Method::DELETE,
+        &base,
+        "secret-ops",
+        "/templates/math",
+        None,
+    )
+    .await;
+    assert_eq!(removed.status(), 204);
 }

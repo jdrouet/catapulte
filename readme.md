@@ -374,6 +374,10 @@ Apply the same rule to a `reserved` row: quiesce, delete only when the stream re
 | `CATAPULTE_RESOLVER_TOKEN_<NAME>_HEADERS` | Comma-separated list of header names to attach to requests to the matching host (e.g. `Accept,PRIVATE-TOKEN`) | - |
 | `CATAPULTE_RESOLVER_TOKEN_<NAME>_HEADER_<FRAGMENT>_VALUE` | Value for the named header; FRAGMENT is the header name uppercased with `-` replaced by `_` (e.g. `ACCEPT`, `PRIVATE_TOKEN`); treated as secret, never logged | - |
 
+Besides the files in `CATAPULTE_RESOLVER_TEMPLATES_DIR`, an admin can upload named templates over the API
+(see [Templates](docs/usage.md#templates)). The files are authoritative: a name that exists on disk
+is always rendered from disk and cannot be changed through the API.
+
 Each auth entry must configure at least a bearer token or one header. Defining a host with neither is a configuration error.
 
 **Examples**

@@ -461,6 +461,37 @@ the current quota window:
 `quota` is null when none is configured; `range` is `hourly` | `daily` | `weekly`
 | `monthly`.
 
+## Templates
+
+Admin keys manage named MJML templates that emails reference with `{"kind": "mjml_named", "name": "..."}`.
+Every route needs an admin key and returns `403` for any other key.
+
+- `GET /templates` lists the latest version of each stored template (`name`, `version`, `created_at_ms`).
+- `GET /templates/{name}` returns the latest version with its `source`, or `404`.
+- `PUT /templates/{name}` with `{"source": "<mjml>...", "validation_variables": {...}}` validates the
+  source and stores it as the next version (`validation_variables` is optional). Sends use the latest
+  version.
+- `DELETE /templates/{name}` removes every version and returns `204`, or `404`.
+- `POST /templates/{name}/preview` with `{"variables": {...}}` returns `{"html", "text"}` rendered
+  exactly as a send would render it, without sending anything.
+
+Names are 1-128 characters from `a-z`, `0-9`, `_`, `.` and `-`, and cannot start with a dot. The
+source is limited to 512 KiB, and neither the source nor the variables may contain NUL.
+
+**Precedence.** The files in `CATAPULTE_RESOLVER_TEMPLATES_DIR` are authoritative. A name that exists on
+disk is always rendered from disk, and `PUT` and `DELETE` for it return `409`. Stored templates only
+serve names the files do not have.
+
+**Validation.** `PUT` renders the source with `validation_variables` (default empty) using the send
+engine's HTML escaping, then compiles the result as MJML. A failure returns `400` with the message.
+Validation is lenient about missing data: a missing variable or a missing nested attribute such as
+`{{ customer.name }}` prints as empty and iterates as empty, so the MJML structure still validates.
+Operations that need a real value still fail without data: arithmetic (`{{ total + 1 }}`),
+comparisons used as a value, and filters that need a type (`|round`, `|int`, `|join` on a non-sequence).
+Pass representative `validation_variables` for those. A passing validation proves syntax and MJML
+structure, not that the template renders for every input; sends are strict, and a missing nested
+attribute fails at send time.
+
 ## Suppression list
 
 Addresses on the suppression list never receive mail. Every `/suppressions` route needs an
