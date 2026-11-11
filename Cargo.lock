@@ -638,6 +638,7 @@ dependencies = [
  "catapulte-outbound-interpolator",
  "mrml",
  "reqwest 0.13.5",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

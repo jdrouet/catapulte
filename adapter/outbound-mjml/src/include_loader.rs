@@ -126,6 +126,7 @@ where
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IncludeLoaderConfig {
     pub fs_root: Option<PathBuf>,
     http_allow: Option<HashSet<String>>,
@@ -212,6 +213,13 @@ impl IncludeLoaderConfig {
         })
     }
 
+    /// Lowers the per-fetch HTTP timeout to `max` when it is longer; never raises it.
+    #[must_use]
+    pub fn with_max_http_timeout(mut self, max: Duration) -> Self {
+        self.http_timeout = self.http_timeout.min(max);
+        self
+    }
+
     /// # Errors
     ///
     /// Returns an error if the HTTP client cannot be built.
@@ -289,6 +297,44 @@ mod tests {
                 .map(ToString::to_string)
                 .ok_or(VarError::NotPresent)
         }
+    }
+
+    #[test]
+    fn a_config_survives_a_serde_round_trip_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = IncludeLoaderConfig {
+            fs_root: Some(root.clone()),
+            http_allow: Some(HashSet::from(["https://cdn.example.com".to_owned()])),
+            http_timeout: Duration::from_millis(1500),
+            http_max_bytes: 4096,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let back: IncludeLoaderConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.fs_root, Some(root));
+        assert_eq!(back.http_allow, config.http_allow);
+        assert_eq!(back.http_timeout, Duration::from_millis(1500));
+        assert_eq!(back.http_max_bytes, 4096);
+        let default: IncludeLoaderConfig =
+            serde_json::from_str(&serde_json::to_string(&IncludeLoaderConfig::default()).unwrap())
+                .unwrap();
+        assert!(default.fs_root.is_none() && default.http_allow.is_none());
+    }
+
+    #[test]
+    fn the_http_timeout_is_only_ever_lowered() {
+        let config = IncludeLoaderConfig {
+            http_timeout: Duration::from_secs(30),
+            ..IncludeLoaderConfig::default()
+        };
+
+        let clamped = config.clone().with_max_http_timeout(Duration::from_secs(3));
+        let untouched = config.with_max_http_timeout(Duration::from_mins(1));
+
+        assert_eq!(clamped.http_timeout, Duration::from_secs(3));
+        assert_eq!(untouched.http_timeout, Duration::from_secs(30));
     }
 
     #[test]
