@@ -398,12 +398,36 @@ fn message_error(e: anyhow::Error) -> TransportError {
     }
 }
 
-/// Builds the message and its wire bytes with DKIM applied; the size limit is the caller's.
+/// The SMTP envelope, built from the final recipient list (Bcc included) and never from the
+/// formatted headers. `MAIL FROM` is the return path when set, else the sender address.
+fn smtp_envelope(
+    email: &OutboundEmail,
+    from: &lettre::message::Mailbox,
+) -> Result<lettre::address::Envelope, TransportError> {
+    let reverse_path = match &email.envelope_from {
+        Some(path) => path
+            .parse::<lettre::Address>()
+            .map_err(|e| message_error(anyhow::Error::new(e).context("invalid return path")))?,
+        None => from.email.clone(),
+    };
+    let recipients = email
+        .recipients
+        .iter()
+        .map(|(_, address)| parse_mailbox(address).map(|m| m.email))
+        .collect::<anyhow::Result<Vec<_>>>()
+        .map_err(message_error)?;
+    lettre::address::Envelope::new(Some(reverse_path), recipients)
+        .map_err(|e| message_error(anyhow::Error::new(e).context("building SMTP envelope")))
+}
+
+/// Builds the SMTP envelope and the wire bytes with DKIM applied; the size limit is the
+/// caller's.
 fn build_message(
     email: &OutboundEmail,
     dkim: &DkimSigners,
-) -> Result<(Message, Vec<u8>), TransportError> {
+) -> Result<(lettre::address::Envelope, Vec<u8>), TransportError> {
     let from = parse_mailbox(&email.sender).map_err(message_error)?;
+    let envelope = smtp_envelope(email, &from)?;
     let sender_domain = normalize_domain(from.email.domain());
     let builder = Message::builder()
         .from(from)
@@ -436,7 +460,7 @@ fn build_message(
     }
     let raw = message.formatted();
     check_header_line_lengths(&raw).map_err(message_error)?;
-    Ok((message, raw))
+    Ok((envelope, raw))
 }
 
 impl SmtpTransport {
@@ -455,8 +479,11 @@ impl SmtpTransport {
     }
 
     /// Builds the message and its wire bytes, enforcing the size limit on the final bytes.
-    fn prepare(&self, email: &OutboundEmail) -> Result<(Message, Vec<u8>), TransportError> {
-        let (message, raw) = build_message(email, &self.dkim)?;
+    fn prepare(
+        &self,
+        email: &OutboundEmail,
+    ) -> Result<(lettre::address::Envelope, Vec<u8>), TransportError> {
+        let (envelope, raw) = build_message(email, &self.dkim)?;
         if self
             .max_message_bytes
             .is_some_and(|max| raw.len() as u64 > max)
@@ -465,17 +492,17 @@ impl SmtpTransport {
                 "rendered message exceeds CATAPULTE_MAX_MESSAGE_BYTES"
             )));
         }
-        Ok((message, raw))
+        Ok((envelope, raw))
     }
 
     pub(crate) async fn send_inner(
         &self,
         email: &OutboundEmail,
     ) -> Result<DeliveryReceipt, TransportError> {
-        let (message, raw) = self.prepare(email)?;
+        let (envelope, raw) = self.prepare(email)?;
         let response = self
             .transport
-            .send_raw(message.envelope(), &raw)
+            .send_raw(&envelope, &raw)
             .await
             .map_err(|e| smtp_text_error(e.is_permanent(), &e.to_string()))?;
         Ok(DeliveryReceipt {
@@ -980,6 +1007,7 @@ mod tests {
             headers: vec![],
             unsubscribe: None,
             message_id: "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>".into(),
+            envelope_from: None,
         }
     }
 
@@ -1008,22 +1036,64 @@ mod tests {
 
     #[tokio::test]
     async fn bcc_recipient_stays_in_envelope_but_not_in_wire_bytes() {
-        // send_raw(message.envelope(), &raw) is what `send` does internally.
         let transport = local_transport(None);
 
-        let (message, raw) = transport
+        let (envelope, raw) = transport
             .prepare(&email_with_attachment(10, RecipientKind::Bcc))
             .unwrap();
 
-        let to: Vec<String> = message
-            .envelope()
-            .to()
-            .iter()
-            .map(ToString::to_string)
-            .collect();
+        let to: Vec<String> = envelope.to().iter().map(ToString::to_string).collect();
         assert_eq!(to, vec!["to@example.com".to_owned()]);
         let raw = String::from_utf8_lossy(&raw);
         assert!(!raw.contains("Bcc:"), "Bcc header must not be on the wire");
+    }
+
+    #[tokio::test]
+    async fn envelope_lists_every_final_recipient_and_defaults_mail_from_to_the_sender() {
+        let mut email = plain_email();
+        email.recipients = vec![
+            (RecipientKind::To, "to@example.com".into()),
+            (RecipientKind::Cc, "Cc <cc@example.com>".into()),
+            (RecipientKind::Bcc, "bcc@example.com".into()),
+        ];
+
+        let (envelope, raw) = local_transport(None).prepare(&email).unwrap();
+
+        let to: Vec<String> = envelope.to().iter().map(ToString::to_string).collect();
+        assert_eq!(to, ["to@example.com", "cc@example.com", "bcc@example.com"]);
+        assert_eq!(envelope.from().unwrap().to_string(), "from@example.com");
+        assert!(!String::from_utf8_lossy(&raw).contains("bcc@example.com"));
+    }
+
+    #[tokio::test]
+    async fn return_path_is_mail_from_and_dkim_still_signs_the_from_domain() {
+        let mut email = plain_email();
+        email.envelope_from = Some("bounces+abc-def@bounces.example.net".into());
+
+        let (envelope, raw) = dkim_transport(None).prepare(&email).unwrap();
+
+        assert_eq!(
+            envelope.from().unwrap().to_string(),
+            "bounces+abc-def@bounces.example.net"
+        );
+        let text = String::from_utf8_lossy(&raw);
+        let signature = text.split("\r\n\r\n").next().unwrap().replace("\r\n ", " ");
+        assert!(signature.contains("DKIM-Signature: "), "{signature}");
+        assert!(signature.contains("d=example.com"), "{signature}");
+        assert!(
+            !text.contains("bounces.example.net"),
+            "the return path stays off the wire"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_return_path_is_a_message_level_failure() {
+        let mut email = plain_email();
+        email.envelope_from = Some("not an address".into());
+
+        let err = local_transport(None).prepare(&email).unwrap_err();
+
+        assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
     }
 
     #[tokio::test]
@@ -1051,6 +1121,7 @@ mod tests {
             headers: vec![],
             unsubscribe: None,
             message_id: "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>".into(),
+            envelope_from: None,
         }
     }
 

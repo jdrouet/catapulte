@@ -102,6 +102,8 @@ All configuration is done via environment variables.
 |----------|-------------|---------|
 | `CATAPULTE_GC_SWEEP_INTERVAL_SECS` | Interval in seconds between garbage collection sweeps | `3600` |
 | `CATAPULTE_GC_GRACE_PERIOD_SECS` | Minimum age for data to be eligible for garbage collection | `3600` |
+| `CATAPULTE_BOUNCE_DOMAIN` | Domain of the signed return path (`bounces+{id}-{tag}@domain`) used as the SMTP `MAIL FROM`, so bounces can be tied to an email. Set together with `CATAPULTE_BOUNCE_SECRET`; setting only one stops startup. See [Bounce return path](#bounce-return-path) | unset (the sender address is used) |
+| `CATAPULTE_BOUNCE_SECRET` | Key that signs the return paths, at least 32 bytes; generate one with `openssl rand -base64 48`. Keep it stable: rotating it makes bounces for mail already sent unverifiable | unset |
 | `CATAPULTE_ALLOWED_SENDER_DOMAINS` | Comma-separated sender domains the API accepts. Matching is exact (no subdomains), case-insensitive, and IDN domains are compared in punycode. Unset accepts any domain; set but empty denies every sender. An entry that is not a valid domain stops startup | unset |
 
 ### Storage Backend
@@ -184,6 +186,23 @@ other sender, and startup logs a warning for each sink. Do not mix a sink into p
 routes: when an SMTP sender fails or is over quota, an eligible sink accepts the message,
 discards it and reports `delivery.succeeded`. Submission still checks the estimated size against
 `CATAPULTE_MAX_MESSAGE_BYTES`; only the final wire-size check is skipped for a sink.
+
+#### Bounce return path
+
+With `CATAPULTE_BOUNCE_DOMAIN` and `CATAPULTE_BOUNCE_SECRET` set, each message is sent with
+`MAIL FROM:<bounces+{email id}-{tag}@{bounce domain}>`, where the tag is a keyed hash of the
+email id. The `From` header and the recipients' view of the message do not change. The SMTP
+recipient list is built from the final To, Cc and Bcc recipients (minus suppressed ones), never
+from the message headers, so a Bcc recipient still receives the message without a `Bcc` header.
+
+DNS needs two things:
+
+- **SPF** for the bounce domain must authorise the relay you send through, because the
+  receiving server checks SPF against the `MAIL FROM` domain.
+- **DMARC** alignment does not come from the bounce domain. It comes from DKIM signed for the
+  `From` domain (see below), so keep DKIM configured for every sender domain.
+
+The bounce domain also needs an MX that receives the bounces.
 
 #### DKIM signing
 

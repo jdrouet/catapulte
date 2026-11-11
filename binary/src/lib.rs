@@ -48,6 +48,30 @@ pub struct AppConfig {
     pub max_message_bytes: u64,
     /// `None` accepts any sender domain; `Some` of an empty set denies every sender.
     pub allowed_sender_domains: Option<std::collections::HashSet<String>>,
+    /// Signed return paths for bounces; `None` keeps the sender address as `MAIL FROM`.
+    pub bounce: Option<catapulte_domain::entity::return_path::BounceConfig>,
+}
+
+fn parse_bounce_config(
+    lookup: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> anyhow::Result<Option<catapulte_domain::entity::return_path::BounceConfig>> {
+    const DOMAIN: &str = "CATAPULTE_BOUNCE_DOMAIN";
+    const SECRET: &str = "CATAPULTE_BOUNCE_SECRET";
+    let read = |key: &str| match lookup(key) {
+        Ok(v) if v.trim().is_empty() => Ok(None),
+        Ok(v) => Ok(Some(v.trim().to_owned())),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!("{key} is not valid unicode"),
+    };
+    match (read(DOMAIN)?, read(SECRET)?) {
+        (None, None) => Ok(None),
+        (Some(domain), Some(secret)) => {
+            catapulte_domain::entity::return_path::BounceConfig::new(&domain, &secret)
+                .map(Some)
+                .with_context(|| format!("invalid {DOMAIN} or {SECRET}"))
+        }
+        _ => anyhow::bail!("{DOMAIN} and {SECRET} must be set together"),
+    }
 }
 
 const DEFAULT_MAX_MESSAGE_BYTES: u64 = 25 * 1024 * 1024;
@@ -126,6 +150,7 @@ impl AppConfig {
         let gc_grace_period = Duration::from_secs(gc_grace_secs);
         let max_message_bytes = parse_max_message_bytes(|k| std::env::var(k))?;
         let allowed_sender_domains = parse_allowed_sender_domains(|k| std::env::var(k))?;
+        let bounce = parse_bounce_config(|k| std::env::var(k))?;
         Ok(Self {
             storage,
             http,
@@ -142,6 +167,7 @@ impl AppConfig {
             gc_grace_period,
             max_message_bytes,
             allowed_sender_domains,
+            bounce,
         })
     }
 
@@ -252,16 +278,18 @@ impl AppConfig {
             }),
         );
         let mjml_renderer = MjmlRenderer::new(self.include_loader.build());
-        let process_queued_email = Arc::new(
-            ProcessQueuedEmailService::new(
-                resolver,
-                MiniJinjaInterpolator::new(),
-                mjml_renderer,
-                smtp,
-                attachment_store.clone(),
-            )
-            .with_suppression_list(storage.clone()),
-        );
+        let mut process_queued_email = ProcessQueuedEmailService::new(
+            resolver,
+            MiniJinjaInterpolator::new(),
+            mjml_renderer,
+            smtp,
+            attachment_store.clone(),
+        )
+        .with_suppression_list(storage.clone());
+        if let Some(bounce) = self.bounce.clone() {
+            process_queued_email = process_queued_email.with_bounce(bounce);
+        }
+        let process_queued_email = Arc::new(process_queued_email);
 
         let check_readiness = Arc::new(
             catapulte_domain::use_case::check_readiness::CheckReadinessService::new(
@@ -431,7 +459,7 @@ impl Application {
 mod tests {
     use std::env::VarError;
 
-    use super::{parse_allowed_sender_domains, parse_max_message_bytes};
+    use super::{parse_allowed_sender_domains, parse_bounce_config, parse_max_message_bytes};
 
     fn lookup(value: Option<&'static str>) -> impl Fn(&str) -> Result<String, VarError> {
         move |_| value.map(str::to_owned).ok_or(VarError::NotPresent)
@@ -460,6 +488,40 @@ mod tests {
         }
         let non_unicode = |_: &str| Err(VarError::NotUnicode(std::ffi::OsString::from("x")));
         assert!(parse_max_message_bytes(non_unicode).is_err());
+    }
+
+    #[test]
+    fn bounce_config_needs_both_variables_or_neither() {
+        let vars = |domain: Option<&'static str>, secret: Option<&'static str>| {
+            move |key: &str| {
+                let value = match key {
+                    "CATAPULTE_BOUNCE_DOMAIN" => domain,
+                    "CATAPULTE_BOUNCE_SECRET" => secret,
+                    _ => None,
+                };
+                value.map(str::to_owned).ok_or(VarError::NotPresent)
+            }
+        };
+        assert!(parse_bounce_config(vars(None, None)).unwrap().is_none());
+        assert!(
+            parse_bounce_config(vars(
+                Some("bounces.example.com"),
+                Some("0123456789abcdef0123456789abcdef")
+            ))
+            .unwrap()
+            .is_some()
+        );
+        assert!(parse_bounce_config(vars(Some("bounces.example.com"), None)).is_err());
+        assert!(parse_bounce_config(vars(None, Some("s"))).is_err());
+        assert!(
+            parse_bounce_config(vars(
+                Some("bad domain"),
+                Some("0123456789abcdef0123456789abcdef")
+            ))
+            .is_err()
+        );
+        let non_unicode = |_: &str| Err(VarError::NotUnicode(std::ffi::OsString::from("x")));
+        assert!(parse_bounce_config(non_unicode).is_err());
     }
 
     #[test]

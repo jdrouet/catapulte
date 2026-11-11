@@ -47,6 +47,8 @@ pub struct OutboundEmail {
     pub reply_to: Vec<String>,
     pub headers: Vec<(String, String)>,
     pub unsubscribe: Option<crate::entity::envelope::Unsubscribe>,
+    /// SMTP `MAIL FROM` for bounces; `None` uses the bare sender address.
+    pub envelope_from: Option<String>,
 }
 
 #[derive(Debug)]

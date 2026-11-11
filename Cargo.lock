@@ -496,8 +496,11 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "data-encoding",
+ "hmac 0.12.1",
  "idna",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "tokio",
  "tracing",
