@@ -119,14 +119,12 @@ mod tests {
 
     fn sample_envelope(attachments: Vec<AttachmentRef>) -> Envelope {
         Envelope {
-            idempotency_key: None,
-            correlation_id: None,
-            subject: None,
-            sender: "sender@example.com".to_owned(),
-            recipients: vec![(RecipientKind::To, "to@example.com".to_owned())],
-            body: BodySource::Plain(Plain::try_new(Some("hi".to_owned()), None).unwrap()),
-            variables: serde_json::Map::new(),
             attachments,
+            ..Envelope::new(
+                "sender@example.com",
+                vec![(RecipientKind::To, "to@example.com".to_owned())],
+                BodySource::Plain(Plain::try_new(Some("hi".to_owned()), None).unwrap()),
+            )
         }
     }
 
@@ -164,12 +162,14 @@ mod tests {
                 id,
                 &[
                     AttachmentRef {
+                        content_id: None,
                         filename: "a.txt".into(),
                         content_type: "text/plain".into(),
                         size_bytes: 8,
                         blob: blob1.blob.clone(),
                     },
                     AttachmentRef {
+                        content_id: None,
                         filename: "b.txt".into(),
                         content_type: "text/plain".into(),
                         size_bytes: 8,

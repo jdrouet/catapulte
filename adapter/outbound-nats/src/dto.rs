@@ -2,7 +2,7 @@ use anyhow::Context;
 use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain};
 use catapulte_domain::entity::email::{EmailId, RecipientKind};
-use catapulte_domain::entity::envelope::Envelope;
+use catapulte_domain::entity::envelope::{Envelope, Unsubscribe};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -17,6 +17,8 @@ pub struct AttachmentRefDto {
     pub content_type: String,
     pub size_bytes: u64,
     pub blob: BlobRefDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
 }
 
 impl From<&AttachmentRef> for AttachmentRefDto {
@@ -29,6 +31,7 @@ impl From<&AttachmentRef> for AttachmentRefDto {
                 backend: a.blob.backend.clone(),
                 key: a.blob.key.clone(),
             },
+            content_id: a.content_id.clone(),
         }
     }
 }
@@ -43,6 +46,7 @@ impl From<AttachmentRefDto> for AttachmentRef {
                 backend: dto.blob.backend,
                 key: dto.blob.key,
             },
+            content_id: dto.content_id,
         }
     }
 }
@@ -65,6 +69,12 @@ pub struct EnvelopeDto {
     pub variables: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
     pub attachments: Vec<AttachmentRefDto>,
+    #[serde(default)]
+    pub reply_to: Vec<String>,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsubscribe: Option<UnsubscribeDto>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -177,6 +187,9 @@ impl From<(&EmailId, &Envelope)> for QueuedEmailPayload {
                     .iter()
                     .map(AttachmentRefDto::from)
                     .collect(),
+                reply_to: envelope.reply_to.clone(),
+                headers: envelope.headers.clone(),
+                unsubscribe: envelope.unsubscribe.as_ref().map(UnsubscribeDto::from),
             },
         }
     }
@@ -208,8 +221,47 @@ impl TryFrom<QueuedEmailPayload> for (EmailId, Envelope) {
             body,
             variables: payload.envelope.variables,
             attachments,
+            reply_to: payload.envelope.reply_to,
+            headers: payload.envelope.headers,
+            unsubscribe: payload
+                .envelope
+                .unsubscribe
+                .map(Unsubscribe::try_from)
+                .transpose()?,
         };
         Ok((EmailId::from(payload.id), envelope))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UnsubscribeDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailto: Option<String>,
+}
+
+impl From<&Unsubscribe> for UnsubscribeDto {
+    fn from(u: &Unsubscribe) -> Self {
+        Self {
+            url: u.url.as_ref().map(ToString::to_string),
+            mailto: u.mailto.clone(),
+        }
+    }
+}
+
+impl TryFrom<UnsubscribeDto> for Unsubscribe {
+    type Error = anyhow::Error;
+
+    fn try_from(dto: UnsubscribeDto) -> Result<Self, Self::Error> {
+        Ok(Self {
+            url: dto
+                .url
+                .map(|u| u.parse())
+                .transpose()
+                .context("parsing unsubscribe url")?,
+            mailto: dto.mailto,
+        })
     }
 }
 
@@ -226,6 +278,7 @@ mod tests {
     fn envelope_serialization_stays_under_256_kb_with_many_attachments() {
         let attachments: Vec<AttachmentRef> = (0..100)
             .map(|i| AttachmentRef {
+                content_id: None,
                 filename: format!("file-{i}.pdf"),
                 content_type: "application/pdf".into(),
                 size_bytes: 25 * 1024 * 1024,
@@ -238,14 +291,13 @@ mod tests {
 
         let id = EmailId::default();
         let envelope = Envelope {
-            idempotency_key: None,
-            correlation_id: None,
             subject: Some("Test subject".into()),
-            sender: "sender@example.com".into(),
-            recipients: vec![(RecipientKind::To, "to@example.com".into())],
-            body: BodySource::Plain(Plain::try_new(Some("Hello world".into()), None).unwrap()),
-            variables: serde_json::Map::new(),
             attachments,
+            ..Envelope::new(
+                "sender@example.com",
+                vec![(RecipientKind::To, "to@example.com".into())],
+                BodySource::Plain(Plain::try_new(Some("Hello world".into()), None).unwrap()),
+            )
         };
 
         let payload = QueuedEmailPayload::from((&id, &envelope));
@@ -255,5 +307,100 @@ mod tests {
             "envelope serialization exceeded 256 KB: {} bytes",
             bytes.len()
         );
+    }
+
+    #[test]
+    fn reply_to_and_headers_round_trip() {
+        let id = EmailId::default();
+        let envelope = Envelope {
+            reply_to: vec!["Support <help@example.com>".into()],
+            headers: vec![("X-Order-Id".into(), "42".into())],
+            ..Envelope::new(
+                "sender@example.com",
+                vec![(RecipientKind::To, "to@example.com".into())],
+                BodySource::Plain(Plain::try_new(Some("hi".into()), None).unwrap()),
+            )
+        };
+
+        let bytes = serde_json::to_vec(&QueuedEmailPayload::from((&id, &envelope))).unwrap();
+        let (_, back) = <(EmailId, Envelope)>::try_from(
+            serde_json::from_slice::<QueuedEmailPayload>(&bytes).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(back.reply_to, envelope.reply_to);
+        assert_eq!(back.headers, envelope.headers);
+    }
+
+    #[test]
+    fn payload_without_extras_defaults_to_empty() {
+        let json = serde_json::json!({
+            "id": uuid::Uuid::nil(),
+            "envelope": {
+                "idempotency_key": null, "subject": null, "sender": "a@b.c",
+                "recipients": [], "body": {"kind": "plain", "text": "x", "html": null},
+                "variables": {}
+            }
+        });
+        let payload: QueuedEmailPayload = serde_json::from_value(json).unwrap();
+        let (_, env) = <(EmailId, Envelope)>::try_from(payload).unwrap();
+        assert!(env.reply_to.is_empty() && env.headers.is_empty());
+    }
+
+    #[test]
+    fn attachment_ref_dto_content_id_roundtrips_and_legacy_json_loads() {
+        use super::AttachmentRefDto;
+
+        let legacy = r#"{"filename":"a.png","content_type":"image/png","size_bytes":3,"blob":{"backend":"fs","key":"k"}}"#;
+        let dto: AttachmentRefDto = serde_json::from_str(legacy).unwrap();
+        assert_eq!(AttachmentRef::from(dto).content_id, None);
+
+        let mut dto: AttachmentRefDto = serde_json::from_str(legacy).unwrap();
+        assert!(!serde_json::to_string(&dto).unwrap().contains("content_id"));
+
+        dto.content_id = Some("logo".to_owned());
+        let json = serde_json::to_string(&dto).unwrap();
+        let back: AttachmentRefDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            AttachmentRef::from(back).content_id.as_deref(),
+            Some("logo")
+        );
+    }
+
+    #[test]
+    fn unsubscribe_round_trips_and_legacy_payload_loads() {
+        use catapulte_domain::entity::envelope::Unsubscribe;
+
+        let id = EmailId::default();
+        let unsubscribe = Unsubscribe {
+            url: Some("https://example.com/u/1".parse().unwrap()),
+            mailto: Some("u@example.com".to_owned()),
+        };
+        let envelope = Envelope {
+            unsubscribe: Some(unsubscribe.clone()),
+            ..Envelope::new(
+                "sender@example.com",
+                vec![(RecipientKind::To, "to@example.com".into())],
+                BodySource::Plain(Plain::try_new(Some("hi".into()), None).unwrap()),
+            )
+        };
+        let bytes = serde_json::to_vec(&QueuedEmailPayload::from((&id, &envelope))).unwrap();
+        let (_, back) = <(EmailId, Envelope)>::try_from(
+            serde_json::from_slice::<QueuedEmailPayload>(&bytes).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(back.unsubscribe, Some(unsubscribe));
+
+        let legacy = serde_json::json!({
+            "id": uuid::Uuid::nil(),
+            "envelope": {
+                "idempotency_key": null, "subject": null, "sender": "a@b.c",
+                "recipients": [], "body": {"kind": "plain", "text": "x", "html": null},
+                "variables": {}
+            }
+        });
+        let payload: QueuedEmailPayload = serde_json::from_value(legacy).unwrap();
+        let (_, env) = <(EmailId, Envelope)>::try_from(payload).unwrap();
+        assert!(env.unsubscribe.is_none());
     }
 }

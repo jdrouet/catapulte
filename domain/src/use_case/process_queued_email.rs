@@ -2,6 +2,7 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 
 use crate::entity::attachment::{AttachmentRef, ResolvedAttachment};
+use crate::entity::email::EmailId;
 use crate::entity::envelope::Envelope;
 use crate::entity::error_class::ErrorClass;
 use crate::entity::sender::SenderName;
@@ -11,11 +12,44 @@ use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator}
 use crate::port::template_renderer::{RenderError, TemplateRenderer};
 use crate::port::template_resolver::{ResolveError, TemplateResolver};
 
+/// What a successful delivery reports back for the `delivery.succeeded` event.
+#[derive(Debug)]
+pub struct ProcessedEmail {
+    pub sender_name: SenderName,
+    pub smtp_response: Option<String>,
+    pub message_id: String,
+}
+
+/// `<{email uuid}@{lowercased sender domain}>`. Derived only from the email id and sender,
+/// so every retry or redelivery of the same email reuses the same Message-ID.
+fn message_id(id: EmailId, sender: &str) -> String {
+    let domain = crate::entity::email::bare_address(sender)
+        .rsplit_once('@')
+        .map_or_else(
+            || "localhost".to_owned(),
+            |(_, domain)| ascii_domain(domain),
+        );
+    format!("<{}@{domain}>", id.as_uuid())
+}
+
+/// Lowercase ASCII (IDNA) form of the domain, so the header needs no RFC 2047 encoding and
+/// matches the event. A domain literal is kept as is; an unconvertible domain becomes `localhost`.
+fn ascii_domain(domain: &str) -> String {
+    if domain.starts_with('[') {
+        return domain.to_ascii_lowercase();
+    }
+    idna::domain_to_ascii(domain)
+        .ok()
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "localhost".to_owned())
+}
+
 pub trait ProcessQueuedEmailUseCase: Send + Sync + 'static {
     fn execute(
         &self,
+        id: EmailId,
         envelope: Envelope,
-    ) -> impl std::future::Future<Output = Result<SenderName, ProcessQueuedEmailError>> + Send;
+    ) -> impl std::future::Future<Output = Result<ProcessedEmail, ProcessQueuedEmailError>> + Send;
 }
 
 #[derive(Debug, Error)]
@@ -96,7 +130,11 @@ where
     ///
     /// Returns a `ProcessQueuedEmailError` if the body fails to resolve, interpolate, render, or send.
     #[tracing::instrument(skip_all, name = "process_queued_email", fields(correlation_id = tracing::field::Empty))]
-    pub async fn execute(&self, envelope: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+    pub async fn execute(
+        &self,
+        id: EmailId,
+        envelope: Envelope,
+    ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
         if let Some(ref cid) = envelope.correlation_id {
             tracing::Span::current().record("correlation_id", cid.as_str());
         }
@@ -107,6 +145,9 @@ where
             body,
             variables,
             attachments,
+            reply_to,
+            headers,
+            unsubscribe,
             ..
         } = envelope;
         let resolved = self.resolver.resolve(body).await?;
@@ -114,17 +155,26 @@ where
         let rendered = self.renderer.render(interpolated).await?;
         let resolved_attachments =
             resolve_attachments(&self.attachment_store, &attachments).await?;
-        let sender_name = self
+        let message_id = message_id(id, &sender);
+        let sent = self
             .sender
             .send(OutboundEmail {
+                message_id: message_id.clone(),
                 sender,
                 subject,
                 recipients,
                 body: rendered,
                 attachments: resolved_attachments,
+                reply_to,
+                headers,
+                unsubscribe,
             })
             .await?;
-        Ok(sender_name)
+        Ok(ProcessedEmail {
+            sender_name: sent.sender_name,
+            smtp_response: sent.smtp_response,
+            message_id,
+        })
     }
 }
 
@@ -151,6 +201,7 @@ async fn resolve_attachments<A: AttachmentStore>(
             filename: att.filename.clone(),
             content_type: att.content_type.clone(),
             bytes: bytes::Bytes::from(buf),
+            content_id: att.content_id.clone(),
         });
     }
     Ok(resolved)
@@ -166,9 +217,11 @@ where
 {
     fn execute(
         &self,
+        id: EmailId,
         envelope: Envelope,
-    ) -> impl std::future::Future<Output = Result<SenderName, ProcessQueuedEmailError>> + Send {
-        Self::execute(self, envelope)
+    ) -> impl std::future::Future<Output = Result<ProcessedEmail, ProcessQueuedEmailError>> + Send
+    {
+        Self::execute(self, id, envelope)
     }
 }
 
@@ -182,13 +235,14 @@ mod tests {
     use crate::entity::body::{
         BodySource, InterpolatedBody, MjmlSource, Plain, RenderedBody, ResolvedBody,
     };
+    use crate::entity::email::EmailId;
     use crate::entity::email::RecipientKind;
     use crate::entity::envelope::Envelope;
     use crate::entity::sender::SenderName;
     use crate::port::attachment_store::{
         AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
     };
-    use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
+    use crate::port::email_sender::{EmailSender, OutboundEmail, SendError, SentEmail};
     use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
     use crate::port::template_renderer::{RenderError, TemplateRenderer};
     use crate::port::template_resolver::{ResolveError, TemplateResolver};
@@ -312,11 +366,18 @@ mod tests {
         }
     }
 
+    fn sent(name: &str) -> SentEmail {
+        SentEmail {
+            sender_name: SenderName::new(name),
+            smtp_response: Some("250 2.0.0 Ok".to_owned()),
+        }
+    }
+
     struct FakeSender;
 
     impl EmailSender for FakeSender {
-        async fn send(&self, _email: OutboundEmail) -> Result<SenderName, SendError> {
-            Ok(SenderName::new("fake"))
+        async fn send(&self, _email: OutboundEmail) -> Result<SentEmail, SendError> {
+            Ok(sent("fake"))
         }
     }
 
@@ -338,16 +399,16 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailSender for CapturingSender {
-        async fn send(&self, email: OutboundEmail) -> Result<SenderName, SendError> {
+        async fn send(&self, email: OutboundEmail) -> Result<SentEmail, SendError> {
             *self.captured.lock().unwrap() = Some(email);
-            Ok(SenderName::new("capturing"))
+            Ok(sent("capturing"))
         }
     }
 
     struct FailingSender;
 
     impl EmailSender for FailingSender {
-        async fn send(&self, _email: OutboundEmail) -> Result<SenderName, SendError> {
+        async fn send(&self, _email: OutboundEmail) -> Result<SentEmail, SendError> {
             Err(SendError::Send {
                 sender_name: SenderName::new("failing"),
                 permanent: false,
@@ -381,28 +442,21 @@ mod tests {
     }
 
     fn default_envelope(body: BodySource) -> Envelope {
-        Envelope {
-            idempotency_key: None,
-            correlation_id: None,
-            subject: None,
-            sender: "sender@example.com".into(),
-            recipients: vec![(RecipientKind::To, "to@example.com".into())],
+        Envelope::new(
+            "sender@example.com",
+            vec![(RecipientKind::To, "to@example.com".into())],
             body,
-            variables: Map::new(),
-            attachments: vec![],
-        }
+        )
     }
 
     fn default_envelope_with_vars(body: BodySource, variables: Map<String, Value>) -> Envelope {
         Envelope {
-            idempotency_key: None,
-            correlation_id: None,
-            subject: None,
-            sender: "sender@example.com".into(),
-            recipients: vec![(RecipientKind::To, "to@example.com".into())],
-            body,
             variables,
-            attachments: vec![],
+            ..Envelope::new(
+                "sender@example.com",
+                vec![(RecipientKind::To, "to@example.com".into())],
+                body,
+            )
         }
     }
 
@@ -431,7 +485,7 @@ mod tests {
         vars.insert("name".into(), Value::String("Jeremie".into()));
         let body = BodySource::Plain(Plain::try_new(Some("hi {{ name }}".into()), None).unwrap());
         let envelope = default_envelope_with_vars(body, vars);
-        service.execute(envelope).await.unwrap();
+        service.execute(EmailId::default(), envelope).await.unwrap();
     }
 
     #[tokio::test]
@@ -447,7 +501,7 @@ mod tests {
             .unwrap(),
         );
         let envelope = default_envelope_with_vars(body, vars);
-        service.execute(envelope).await.unwrap();
+        service.execute(EmailId::default(), envelope).await.unwrap();
     }
 
     #[tokio::test]
@@ -456,7 +510,7 @@ mod tests {
         let service = default_service();
         let body = BodySource::Mjml(MjmlSource::Inline(mjml));
         let envelope = default_envelope(body);
-        service.execute(envelope).await.unwrap();
+        service.execute(EmailId::default(), envelope).await.unwrap();
     }
 
     #[tokio::test]
@@ -465,7 +519,7 @@ mod tests {
         let service = default_service();
         let body = BodySource::Mjml(MjmlSource::Inline(mjml));
         let envelope = default_envelope(body);
-        service.execute(envelope).await.unwrap();
+        service.execute(EmailId::default(), envelope).await.unwrap();
     }
 
     #[tokio::test]
@@ -481,7 +535,7 @@ mod tests {
         );
         let body = BodySource::Mjml(MjmlSource::Named("welcome".into()));
         let envelope = default_envelope(body);
-        service.execute(envelope).await.unwrap();
+        service.execute(EmailId::default(), envelope).await.unwrap();
     }
 
     #[tokio::test]
@@ -495,7 +549,10 @@ mod tests {
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
-        let err = service.execute(envelope).await.unwrap_err();
+        let err = service
+            .execute(EmailId::default(), envelope)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ProcessQueuedEmailError::Resolve(_)));
     }
 
@@ -512,7 +569,10 @@ mod tests {
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
-        let err = service.execute(envelope).await.unwrap_err();
+        let err = service
+            .execute(EmailId::default(), envelope)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ProcessQueuedEmailError::Send(_)));
     }
 
@@ -529,7 +589,10 @@ mod tests {
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
-        let err = service.execute(envelope).await.unwrap_err();
+        let err = service
+            .execute(EmailId::default(), envelope)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ProcessQueuedEmailError::Interpolate(_)));
     }
 
@@ -546,7 +609,10 @@ mod tests {
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
-        let err = service.execute(envelope).await.unwrap_err();
+        let err = service
+            .execute(EmailId::default(), envelope)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ProcessQueuedEmailError::Render(_)));
     }
 
@@ -565,11 +631,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn result_carries_sender_name_smtp_response_and_message_id() {
+        let (service, spy) = capturing_service();
+        let id = EmailId::default();
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let mut envelope = default_envelope(body);
+        envelope.sender = "Sender <Sender@EXAMPLE.com>".into();
+
+        let processed = service.execute(id, envelope).await.unwrap();
+
+        let expected = format!("<{}@example.com>", id.as_uuid());
+        assert_eq!(processed.message_id, expected);
+        assert_eq!(processed.sender_name.as_str(), "capturing");
+        assert_eq!(processed.smtp_response.as_deref(), Some("250 2.0.0 Ok"));
+        assert_eq!(spy.lock().unwrap().as_ref().unwrap().message_id, expected);
+    }
+
+    #[tokio::test]
+    async fn message_id_is_stable_across_retries_and_differs_per_email() {
+        let (service, _spy) = capturing_service();
+        let id = EmailId::default();
+        let body = || BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+
+        let first = service.execute(id, default_envelope(body())).await.unwrap();
+        let retry = service.execute(id, default_envelope(body())).await.unwrap();
+        let other = service
+            .execute(EmailId::default(), default_envelope(body()))
+            .await
+            .unwrap();
+
+        assert_eq!(first.message_id, retry.message_id);
+        assert_ne!(first.message_id, other.message_id);
+    }
+
+    #[tokio::test]
+    async fn idn_sender_gets_a_punycode_message_id_on_the_email_and_the_result() {
+        let (service, spy) = capturing_service();
+        let id = EmailId::default();
+        let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
+        let mut envelope = default_envelope(body);
+        envelope.sender = "Büro <a@Bücher.DE>".into();
+
+        let processed = service.execute(id, envelope).await.unwrap();
+
+        let expected = format!("<{}@xn--bcher-kva.de>", id.as_uuid());
+        assert_eq!(processed.message_id, expected);
+        assert_eq!(spy.lock().unwrap().as_ref().unwrap().message_id, expected);
+    }
+
+    #[test]
+    fn message_id_handles_ip_literal_and_missing_domains() {
+        let id = EmailId::default();
+        assert!(super::message_id(id, "a@[192.0.2.1]").ends_with("@[192.0.2.1]>"));
+        assert!(super::message_id(id, "no-at-sign").ends_with("@localhost>"));
+    }
+
+    #[tokio::test]
     async fn plain_text_only_outbound_email_has_correct_sender() {
         let (service, spy) = capturing_service();
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
-        service.execute(envelope).await.unwrap();
+        service.execute(EmailId::default(), envelope).await.unwrap();
         let captured = spy.lock().unwrap();
         let email = captured.as_ref().unwrap();
         assert_eq!(email.sender, "sender@example.com");
@@ -582,7 +704,7 @@ mod tests {
         vars.insert("name".into(), Value::String("World".into()));
         let body = BodySource::Plain(Plain::try_new(Some("hi {{ name }}".into()), None).unwrap());
         let envelope = default_envelope_with_vars(body, vars);
-        service.execute(envelope).await.unwrap();
+        service.execute(EmailId::default(), envelope).await.unwrap();
         let captured = spy.lock().unwrap();
         let email = captured.as_ref().unwrap();
         let plain = email.body.text();
@@ -599,7 +721,7 @@ mod tests {
             Plain::try_new(Some("text".into()), Some("<p>{{ greeting }}</p>".into())).unwrap(),
         );
         let envelope = default_envelope_with_vars(body, vars);
-        service.execute(envelope).await.unwrap();
+        service.execute(EmailId::default(), envelope).await.unwrap();
         let captured = spy.lock().unwrap();
         let email = captured.as_ref().unwrap();
         assert_eq!(email.body.html(), Some("<p>hello</p>"));
@@ -611,6 +733,7 @@ mod tests {
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let mut envelope = default_envelope(body);
         envelope.attachments.push(AttachmentRef {
+            content_id: None,
             filename: "doc.txt".into(),
             content_type: "text/plain".into(),
             size_bytes: 12,
@@ -619,7 +742,7 @@ mod tests {
                 key: "fake-key".into(),
             },
         });
-        service.execute(envelope).await.unwrap();
+        service.execute(EmailId::default(), envelope).await.unwrap();
         let captured = spy.lock().unwrap();
         let email = captured.as_ref().unwrap();
         assert_eq!(email.attachments.len(), 1);
@@ -640,7 +763,10 @@ mod tests {
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
-        let err = service.execute(envelope).await.unwrap_err();
+        let err = service
+            .execute(EmailId::default(), envelope)
+            .await
+            .unwrap_err();
         assert_eq!(err.error_class(), ErrorClass::TemplateResolve);
     }
 
@@ -659,7 +785,10 @@ mod tests {
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
-        let err = service.execute(envelope).await.unwrap_err();
+        let err = service
+            .execute(EmailId::default(), envelope)
+            .await
+            .unwrap_err();
         assert_eq!(err.error_class(), ErrorClass::TemplateInterpolate);
     }
 
@@ -678,7 +807,10 @@ mod tests {
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
-        let err = service.execute(envelope).await.unwrap_err();
+        let err = service
+            .execute(EmailId::default(), envelope)
+            .await
+            .unwrap_err();
         assert_eq!(err.error_class(), ErrorClass::TemplateRender);
     }
 
@@ -697,14 +829,17 @@ mod tests {
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
-        let err = service.execute(envelope).await.unwrap_err();
+        let err = service
+            .execute(EmailId::default(), envelope)
+            .await
+            .unwrap_err();
         assert_eq!(err.error_class(), ErrorClass::Delivery);
     }
 
     struct PermanentSender;
 
     impl EmailSender for PermanentSender {
-        async fn send(&self, _email: OutboundEmail) -> Result<SenderName, SendError> {
+        async fn send(&self, _email: OutboundEmail) -> Result<SentEmail, SendError> {
             Err(SendError::Send {
                 sender_name: SenderName::new("failing"),
                 permanent: true,
@@ -727,7 +862,10 @@ mod tests {
             FakeAttachmentStore,
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
-        let err = service.execute(default_envelope(body)).await.unwrap_err();
+        let err = service
+            .execute(EmailId::default(), default_envelope(body))
+            .await
+            .unwrap_err();
         assert_eq!(err.error_class(), ErrorClass::Rejected);
         assert!(err.to_string().contains("550"), "{err}");
     }
@@ -741,7 +879,10 @@ mod tests {
         async fn deliver<'a>(
             &'a self,
             email: &'a OutboundEmail,
-        ) -> Result<(), crate::port::email_transport::TransportError> {
+        ) -> Result<
+            crate::port::email_transport::DeliveryReceipt,
+            crate::port::email_transport::TransportError,
+        > {
             let size =
                 email.body.html().map_or(0, str::len) + email.body.text().map_or(0, str::len);
             if size > self.max {
@@ -750,7 +891,7 @@ mod tests {
                     source: anyhow::anyhow!("rendered message exceeds CATAPULTE_MAX_MESSAGE_BYTES"),
                 });
             }
-            Ok(())
+            Ok(crate::port::email_transport::DeliveryReceipt::default())
         }
     }
 
@@ -791,7 +932,7 @@ mod tests {
         vars.insert("big".into(), Value::String("x".repeat(10_000)));
 
         let err = service
-            .execute(default_envelope_with_vars(body, vars))
+            .execute(EmailId::default(), default_envelope_with_vars(body, vars))
             .await
             .unwrap_err();
 
@@ -802,7 +943,7 @@ mod tests {
     struct NoMatchingRouteSender;
 
     impl EmailSender for NoMatchingRouteSender {
-        async fn send(&self, _email: OutboundEmail) -> Result<SenderName, SendError> {
+        async fn send(&self, _email: OutboundEmail) -> Result<SentEmail, SendError> {
             Err(SendError::NoMatchingRoute {
                 sender_domain: "example.com".to_owned(),
             })
@@ -824,7 +965,10 @@ mod tests {
         );
         let body = BodySource::Plain(Plain::try_new(Some("hello".into()), None).unwrap());
         let envelope = default_envelope(body);
-        let err = service.execute(envelope).await.unwrap_err();
+        let err = service
+            .execute(EmailId::default(), envelope)
+            .await
+            .unwrap_err();
         assert_eq!(err.error_class(), ErrorClass::Routing);
     }
 }

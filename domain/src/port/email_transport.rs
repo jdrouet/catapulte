@@ -20,6 +20,13 @@ pub struct TransportError {
     pub source: anyhow::Error,
 }
 
+/// What the relay answered when it accepted a message.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeliveryReceipt {
+    /// `"{code} {lines}"`, already capped in length.
+    pub smtp_response: Option<String>,
+}
+
 pub trait EmailTransport: Send + Sync + 'static {
     /// # Errors
     ///
@@ -27,5 +34,5 @@ pub trait EmailTransport: Send + Sync + 'static {
     fn deliver<'a>(
         &'a self,
         email: &'a OutboundEmail,
-    ) -> impl std::future::Future<Output = Result<(), TransportError>> + Send + 'a;
+    ) -> impl std::future::Future<Output = Result<DeliveryReceipt, TransportError>> + Send + 'a;
 }

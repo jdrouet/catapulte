@@ -429,14 +429,12 @@ mod tests {
 
     fn sample_envelope() -> Envelope {
         Envelope {
-            idempotency_key: None,
-            correlation_id: None,
             subject: Some("Test subject".to_owned()),
-            sender: "sender@example.com".to_owned(),
-            recipients: vec![],
-            body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
-            variables: serde_json::Map::new(),
-            attachments: vec![],
+            ..Envelope::new(
+                "sender@example.com",
+                vec![],
+                BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
+            )
         }
     }
 

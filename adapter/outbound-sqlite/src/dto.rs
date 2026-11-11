@@ -2,6 +2,7 @@ use anyhow::Context;
 use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain};
 use catapulte_domain::entity::email::{RecipientKind, bare_address};
+use catapulte_domain::entity::envelope::Unsubscribe;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -124,6 +125,8 @@ pub struct AttachmentRefDto {
     pub content_type: String,
     pub size_bytes: u64,
     pub blob: BlobRefDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
 }
 
 impl From<&AttachmentRef> for AttachmentRefDto {
@@ -136,6 +139,7 @@ impl From<&AttachmentRef> for AttachmentRefDto {
                 backend: a.blob.backend.clone(),
                 key: a.blob.key.clone(),
             },
+            content_id: a.content_id.clone(),
         }
     }
 }
@@ -150,6 +154,7 @@ impl From<AttachmentRefDto> for AttachmentRef {
                 backend: dto.blob.backend,
                 key: dto.blob.key,
             },
+            content_id: dto.content_id,
         }
     }
 }
@@ -226,6 +231,7 @@ mod tests {
             },
             attachments: vec![
                 AttachmentRefDto {
+                    content_id: None,
                     filename: "invoice.pdf".to_owned(),
                     content_type: "application/pdf".to_owned(),
                     size_bytes: 1024,
@@ -235,6 +241,7 @@ mod tests {
                     },
                 },
                 AttachmentRefDto {
+                    content_id: None,
                     filename: "photo.png".to_owned(),
                     content_type: "image/png".to_owned(),
                     size_bytes: 2048,
@@ -281,5 +288,105 @@ mod tests {
                 key: "media/photo.png".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn attachment_ref_dto_content_id_roundtrips_and_legacy_json_loads() {
+        use catapulte_domain::entity::attachment::AttachmentRef;
+
+        use super::AttachmentRefDto;
+
+        let legacy = r#"{"filename":"a.png","content_type":"image/png","size_bytes":3,"blob":{"backend":"fs","key":"k"}}"#;
+        let dto: AttachmentRefDto = serde_json::from_str(legacy).unwrap();
+        assert_eq!(AttachmentRef::from(dto).content_id, None);
+
+        let mut dto: AttachmentRefDto = serde_json::from_str(legacy).unwrap();
+        assert!(!serde_json::to_string(&dto).unwrap().contains("content_id"));
+
+        dto.content_id = Some("logo".to_owned());
+        let json = serde_json::to_string(&dto).unwrap();
+        let back: AttachmentRefDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            AttachmentRef::from(back).content_id.as_deref(),
+            Some("logo")
+        );
+    }
+
+    #[test]
+    fn unsubscribe_round_trips_and_legacy_extras_load() {
+        use super::{EnvelopeExtrasDto, Unsubscribe, UnsubscribeDto};
+
+        let legacy: EnvelopeExtrasDto =
+            serde_json::from_str(r#"{"reply_to":[],"headers":[]}"#).unwrap();
+        assert!(legacy.unsubscribe.is_none());
+        assert!(
+            !serde_json::to_string(&legacy)
+                .unwrap()
+                .contains("unsubscribe")
+        );
+
+        let original = Unsubscribe {
+            url: Some("https://example.com/u/1".parse().unwrap()),
+            mailto: Some("u@example.com".to_owned()),
+        };
+        let extras = EnvelopeExtrasDto {
+            unsubscribe: Some(UnsubscribeDto::from(&original)),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&extras).unwrap();
+        let back: EnvelopeExtrasDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            Unsubscribe::try_from(back.unsubscribe.unwrap()).unwrap(),
+            original
+        );
+
+        let url_only = UnsubscribeDto::from(&Unsubscribe {
+            url: original.url.clone(),
+            mailto: None,
+        });
+        assert!(!serde_json::to_string(&url_only).unwrap().contains("mailto"));
+    }
+}
+
+/// Optional envelope fields stored in the `extras` column; a NULL column reads as the default.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct EnvelopeExtrasDto {
+    #[serde(default)]
+    pub reply_to: Vec<String>,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsubscribe: Option<UnsubscribeDto>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UnsubscribeDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailto: Option<String>,
+}
+
+impl From<&Unsubscribe> for UnsubscribeDto {
+    fn from(u: &Unsubscribe) -> Self {
+        Self {
+            url: u.url.as_ref().map(ToString::to_string),
+            mailto: u.mailto.clone(),
+        }
+    }
+}
+
+impl TryFrom<UnsubscribeDto> for Unsubscribe {
+    type Error = anyhow::Error;
+
+    fn try_from(dto: UnsubscribeDto) -> Result<Self, Self::Error> {
+        Ok(Self {
+            url: dto
+                .url
+                .map(|u| u.parse())
+                .transpose()
+                .context("parsing unsubscribe url")?,
+            mailto: dto.mailto,
+        })
     }
 }

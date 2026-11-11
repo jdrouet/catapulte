@@ -8,7 +8,7 @@ use catapulte_domain::port::email_queue::{
 };
 
 use crate::SqliteAdapter;
-use crate::dto::{EnvelopeBodyDtoDeser, RecipientDto, recipients_from_dto};
+use crate::dto::{EnvelopeBodyDtoDeser, EnvelopeExtrasDto, RecipientDto, recipients_from_dto};
 
 use catapulte_domain::entity::body::BodySource;
 
@@ -50,6 +50,9 @@ pub(crate) fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<En
     let correlation_id: Option<String> = row
         .try_get("correlation_id")
         .context("reading correlation_id")?;
+    let extras: Option<sqlx::types::Json<EnvelopeExtrasDto>> =
+        row.try_get("extras").context("reading extras")?;
+    let extras = extras.map(|j| j.0).unwrap_or_default();
     Ok(Envelope {
         idempotency_key,
         correlation_id,
@@ -59,6 +62,13 @@ pub(crate) fn parse_envelope(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<En
         body,
         variables: variables.0,
         attachments,
+        reply_to: extras.reply_to,
+        headers: extras.headers,
+        unsubscribe: extras
+            .unsubscribe
+            .map(catapulte_domain::entity::envelope::Unsubscribe::try_from)
+            .transpose()
+            .context("parsing unsubscribe")?,
     })
 }
 
@@ -154,7 +164,7 @@ impl SqliteAdapter {
         let trace = deserialize_trace_context(trace_raw);
 
         let maybe_row = sqlx::query(
-            "SELECT id, idempotency_key, correlation_id, subject, sender, recipients, body, variables FROM emails WHERE id = ?",
+            "SELECT id, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras FROM emails WHERE id = ?",
         )
         .bind(&email_id_bytes)
         .fetch_optional(self.pool())
@@ -261,16 +271,11 @@ mod tests {
     }
 
     fn sample_envelope() -> Envelope {
-        Envelope {
-            idempotency_key: None,
-            correlation_id: None,
-            subject: None,
-            sender: "sender@example.com".to_owned(),
-            recipients: vec![],
-            body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
-            variables: serde_json::Map::new(),
-            attachments: vec![],
-        }
+        Envelope::new(
+            "sender@example.com",
+            vec![],
+            BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
+        )
     }
 
     async fn save_and_enqueue(adapter: &SqliteAdapter, id: EmailId) {
@@ -282,6 +287,24 @@ mod tests {
     async fn try_dequeue_returns_none_when_empty() {
         let adapter = fresh_adapter().await;
         assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dequeue_returns_reply_to_and_headers() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        let envelope = Envelope {
+            reply_to: vec!["Support <help@example.com>".to_owned()],
+            headers: vec![("X-Order-Id".to_owned(), "42".to_owned())],
+            ..sample_envelope()
+        };
+        adapter.save(id, &envelope).await.unwrap();
+        adapter.enqueue(id, &envelope).await.unwrap();
+
+        let dequeued = adapter.dequeue().await.unwrap();
+
+        assert_eq!(dequeued.envelope.reply_to, envelope.reply_to);
+        assert_eq!(dequeued.envelope.headers, envelope.headers);
     }
 
     #[tokio::test]

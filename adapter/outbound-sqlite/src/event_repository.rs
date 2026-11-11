@@ -107,16 +107,11 @@ mod tests {
     }
 
     fn sample_envelope() -> Envelope {
-        Envelope {
-            idempotency_key: None,
-            correlation_id: None,
-            subject: None,
-            sender: "sender@example.com".to_owned(),
-            recipients: vec![],
-            body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
-            variables: serde_json::Map::new(),
-            attachments: vec![],
-        }
+        Envelope::new(
+            "sender@example.com",
+            vec![],
+            BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
+        )
     }
 
     fn default_params() -> ListEventsParams {
@@ -194,6 +189,8 @@ mod tests {
                 id,
                 sender_name: SenderName::new("test"),
                 correlation_id: None,
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
             })
             .await
             .unwrap();
@@ -264,6 +261,8 @@ mod tests {
                 id,
                 sender_name: SenderName::new("test"),
                 correlation_id: None,
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
             })
             .await
             .unwrap();

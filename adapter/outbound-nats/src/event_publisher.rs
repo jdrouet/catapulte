@@ -94,6 +94,8 @@ mod tests {
             id,
             sender_name: SenderName::new("primary"),
             correlation_id: Some("corr-sent".to_owned()),
+            smtp_response: Some("250 2.0.0 Ok: queued as 4ABC".to_owned()),
+            message_id: "<test@example.com>".to_owned(),
         };
         let expected = serde_json::json!({
             "event_type": "delivery.succeeded",
@@ -101,6 +103,8 @@ mod tests {
             "payload": {
                 "sender_name": "primary",
                 "correlation_id": "corr-sent",
+                "smtp_response": "250 2.0.0 Ok: queued as 4ABC",
+                "message_id": "<test@example.com>",
             },
         });
         assert_eq!(event_to_json(&event), expected);

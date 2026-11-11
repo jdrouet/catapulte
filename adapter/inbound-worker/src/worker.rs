@@ -169,8 +169,8 @@ async fn process_one<S: WorkerState>(
 
         let attachments_for_cleanup = envelope.attachments.clone();
 
-        match state.process_queued_email().execute(envelope).await {
-            Ok(sender_name) => {
+        match state.process_queued_email().execute(id, envelope).await {
+            Ok(processed) => {
                 if let Err(e) = state.email_queue().ack(token).await {
                     tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to ack email");
                     return;
@@ -195,8 +195,10 @@ async fn process_one<S: WorkerState>(
                     .event_publisher()
                     .publish(&LifecycleEvent::Sent {
                         id,
-                        sender_name,
+                        sender_name: processed.sender_name,
                         correlation_id: correlation_id.clone(),
+                        smtp_response: processed.smtp_response,
+                        message_id: processed.message_id,
                     })
                     .await
                 {
@@ -280,29 +282,36 @@ mod tests {
     };
     use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
     use catapulte_domain::use_case::process_queued_email::{
-        ProcessQueuedEmailError, ProcessQueuedEmailUseCase,
+        ProcessQueuedEmailError, ProcessQueuedEmailUseCase, ProcessedEmail,
     };
 
     use super::{Worker, WorkerState, process_one};
 
-    fn sample_envelope() -> Envelope {
-        Envelope {
-            idempotency_key: None,
-            correlation_id: None,
-            subject: None,
-            sender: "sender@example.com".to_owned(),
-            recipients: vec![(RecipientKind::To, "to@example.com".to_owned())],
-            body: BodySource::Plain(Plain::try_new(Some("hi".to_owned()), None).unwrap()),
-            variables: serde_json::Map::new(),
-            attachments: vec![],
+    fn processed(sender: &str) -> ProcessedEmail {
+        ProcessedEmail {
+            sender_name: SenderName::new(sender),
+            smtp_response: Some("250 2.0.0 Ok: queued".to_owned()),
+            message_id: "<m@example.com>".to_owned(),
         }
+    }
+
+    fn sample_envelope() -> Envelope {
+        Envelope::new(
+            "sender@example.com",
+            vec![(RecipientKind::To, "to@example.com".to_owned())],
+            BodySource::Plain(Plain::try_new(Some("hi".to_owned()), None).unwrap()),
+        )
     }
 
     struct OkProcessor;
 
     impl ProcessQueuedEmailUseCase for OkProcessor {
-        async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
-            Ok(SenderName::new("sender"))
+        async fn execute(
+            &self,
+            _: EmailId,
+            _: Envelope,
+        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
+            Ok(processed("sender"))
         }
     }
 
@@ -720,6 +729,7 @@ mod tests {
         };
         let mut envelope = sample_envelope();
         envelope.attachments = vec![AttachmentRef {
+            content_id: None,
             filename: "file.pdf".into(),
             content_type: "application/pdf".into(),
             size_bytes: 1024,
@@ -749,6 +759,7 @@ mod tests {
         };
         let mut envelope = sample_envelope();
         envelope.attachments = vec![AttachmentRef {
+            content_id: None,
             filename: "file.pdf".into(),
             content_type: "application/pdf".into(),
             size_bytes: 512,
@@ -776,7 +787,11 @@ mod tests {
     struct NoMatchingRouteProcessor;
 
     impl ProcessQueuedEmailUseCase for NoMatchingRouteProcessor {
-        async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+        async fn execute(
+            &self,
+            _: EmailId,
+            _: Envelope,
+        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
             Err(ProcessQueuedEmailError::Send(
                 catapulte_domain::port::email_sender::SendError::NoMatchingRoute {
                     sender_domain: "example.com".to_owned(),
@@ -924,6 +939,65 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct OkCapturingState {
+        queue: TrackingQueue,
+        publisher: CapturingEventPublisher,
+    }
+
+    impl WorkerState for OkCapturingState {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &OkProcessor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &self.queue
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &self.publisher
+        }
+
+        fn attachment_store(&self) -> &impl AttachmentStore {
+            &NoopStore
+        }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            &NoopRepository
+        }
+    }
+
+    #[tokio::test]
+    async fn sent_event_carries_smtp_response_and_message_id() {
+        let publisher = CapturingEventPublisher::default();
+        let state = OkCapturingState {
+            queue: TrackingQueue::default(),
+            publisher: publisher.clone(),
+        };
+
+        process_one(
+            &state,
+            EmailId::default(),
+            sample_envelope(),
+            1,
+            AckToken::new(vec![0u8; 8]),
+            TraceCarrier::default(),
+        )
+        .await;
+
+        let events = publisher.events.lock().unwrap();
+        let sent = events
+            .iter()
+            .find(|e| matches!(e, LifecycleEvent::Sent { .. }))
+            .expect("must have a Sent event");
+        assert!(matches!(
+            sent,
+            LifecycleEvent::Sent { smtp_response, message_id, .. }
+                if smtp_response.as_deref() == Some("250 2.0.0 Ok: queued")
+                    && message_id == "<m@example.com>"
+        ));
+    }
+
     #[tokio::test]
     async fn no_matching_route_emits_failed_event_with_routing_error_class() {
         use catapulte_domain::entity::error_class::ErrorClass;
@@ -1026,7 +1100,11 @@ mod tests {
     }
 
     impl ProcessQueuedEmailUseCase for PeakTrackingProcessor {
-        async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+        async fn execute(
+            &self,
+            _: EmailId,
+            _: Envelope,
+        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
             let current = self
                 .in_flight
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -1043,7 +1121,7 @@ mod tests {
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             self.processed
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(SenderName::new("sender"))
+            Ok(processed("sender"))
         }
     }
 
@@ -1098,7 +1176,11 @@ mod tests {
     }
 
     impl ProcessQueuedEmailUseCase for GateProcessor {
-        async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+        async fn execute(
+            &self,
+            _: EmailId,
+            _: Envelope,
+        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
             let current = self
                 .in_flight
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -1115,7 +1197,7 @@ mod tests {
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             self.processed
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(SenderName::new("sender"))
+            Ok(processed("sender"))
         }
     }
 
@@ -1295,12 +1377,16 @@ mod tests {
         }
 
         impl ProcessQueuedEmailUseCase for SlowProcessor {
-            async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+            async fn execute(
+                &self,
+                _: EmailId,
+                _: Envelope,
+            ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
                 self.started.notify_one();
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 self.finished
                     .store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(SenderName::new("sender"))
+                Ok(processed("sender"))
             }
         }
 
@@ -1365,7 +1451,11 @@ mod tests {
     struct PermanentSendProcessor;
 
     impl ProcessQueuedEmailUseCase for PermanentSendProcessor {
-        async fn execute(&self, _: Envelope) -> Result<SenderName, ProcessQueuedEmailError> {
+        async fn execute(
+            &self,
+            _: EmailId,
+            _: Envelope,
+        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
             Err(ProcessQueuedEmailError::Send(
                 catapulte_domain::port::email_sender::SendError::Send {
                     sender_name: SenderName::new("primary"),

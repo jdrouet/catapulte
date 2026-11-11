@@ -133,6 +133,7 @@ fn sqlite_config(smtp_port: u16, http_port: u16, db_tag: &str) -> (AppConfig, te
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
     (config, db_dir)
 }
@@ -173,6 +174,7 @@ pub async fn sqlite_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
     BackendBundle {
         config,
@@ -215,6 +217,7 @@ pub async fn sqlite_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
     BackendBundle {
         config,
@@ -253,6 +256,7 @@ pub async fn postgres_storage(smtp_port: u16, http_port: u16) -> BackendBundle {
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
     BackendBundle {
         config,
@@ -291,6 +295,7 @@ pub async fn postgres_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
     BackendBundle {
         config,
@@ -335,6 +340,7 @@ pub async fn postgres_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
+        allowed_sender_domains: None,
     };
     BackendBundle {
         config,

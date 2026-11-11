@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::entity::attachment::AttachmentRef;
-use crate::entity::email::EmailId;
+use crate::entity::email::{EmailId, bare_address};
 use crate::entity::envelope::Envelope;
 use crate::entity::lifecycle_event::LifecycleEvent;
 use crate::port::attachment_fetcher::AttachmentFetcher;
@@ -17,16 +17,19 @@ pub enum AttachmentInput {
         filename: String,
         content_type: String,
         bytes: bytes::Bytes,
+        content_id: Option<String>,
     },
     Stream {
         filename: String,
         content_type: String,
         reader: crate::port::attachment_store::AttachmentReader,
+        content_id: Option<String>,
     },
     Remote {
         filename: String,
         content_type: String,
         url: url::Url,
+        content_id: Option<String>,
     },
 }
 
@@ -39,6 +42,9 @@ pub struct SubmitEmailInput {
     pub body: crate::entity::body::BodySource,
     pub variables: serde_json::Map<String, serde_json::Value>,
     pub attachments: Vec<AttachmentInput>,
+    pub reply_to: Vec<String>,
+    pub headers: Vec<(String, String)>,
+    pub unsubscribe: Option<crate::entity::envelope::Unsubscribe>,
 }
 
 #[derive(Debug, Error)]
@@ -61,6 +67,8 @@ pub enum SubmitEmailError {
     MessageTooLarge { max_bytes: u64 },
     #[error("submission with this idempotency key is incomplete; retry later")]
     ReservationIncomplete { id: EmailId },
+    #[error("sender domain {domain} is not allowed")]
+    SenderDomainNotAllowed { domain: String },
 }
 
 impl SubmitEmailError {
@@ -77,6 +85,7 @@ impl SubmitEmailError {
             // URL (404, 410, blocked domain, oversize). Don't retry.
             Self::AttachmentFetch { .. }
             | Self::MessageTooLarge { .. }
+            | Self::SenderDomainNotAllowed { .. }
             | Self::ReservationIncomplete { .. } => false,
         }
     }
@@ -89,6 +98,7 @@ pub trait SubmitEmailUseCase: Send + Sync + 'static {
     /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
     /// Returns `SubmitEmailError::AttachmentStore` when blob upload fails.
     /// Returns `SubmitEmailError::MessageTooLarge` when the estimated size exceeds the limit.
+    /// Returns `SubmitEmailError::SenderDomainNotAllowed` when the sender domain is not allowed.
     /// Returns `SubmitEmailError::ReservationIncomplete` when the idempotency key matches a
     /// submission that never completed.
     fn execute(
@@ -98,8 +108,11 @@ pub trait SubmitEmailUseCase: Send + Sync + 'static {
 }
 
 /// Limits applied at submit time.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SubmitLimits {
+    /// Normalized domains allowed as sender, matched exactly (no subdomains). `None` allows
+    /// any domain; `Some` of an empty set denies every sender.
+    pub allowed_sender_domains: Option<std::collections::HashSet<String>>,
     /// Early-rejection threshold for the estimated wire size; the SMTP adapter enforces the
     /// final size on the rendered message.
     pub max_message_bytes: u64,
@@ -109,8 +122,47 @@ impl Default for SubmitLimits {
     fn default() -> Self {
         Self {
             max_message_bytes: 25 * 1024 * 1024,
+            allowed_sender_domains: None,
         }
     }
+}
+
+/// Lowercase punycode form of a domain without a trailing dot; `None` when it cannot be
+/// converted or is not a valid hostname (at most one trailing dot is stripped; labels of 1-63
+/// letters, digits and inner hyphens; at most 253 bytes).
+#[must_use]
+pub fn normalize_sender_domain(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let domain = idna::domain_to_ascii(trimmed.strip_suffix('.').unwrap_or(trimmed))
+        .ok()?
+        .to_ascii_lowercase();
+    let valid = domain.len() <= 253
+        && domain.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        });
+    valid.then_some(domain)
+}
+
+/// Normalizes configured sender domains into a set.
+///
+/// # Errors
+///
+/// Returns an error naming the first entry that cannot be converted.
+pub fn normalize_sender_domains<S: AsRef<str>>(
+    domains: impl IntoIterator<Item = S>,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    domains
+        .into_iter()
+        .map(|d| {
+            normalize_sender_domain(d.as_ref())
+                .ok_or_else(|| anyhow::anyhow!("invalid sender domain {:?}", d.as_ref()))
+        })
+        .collect()
 }
 
 /// Renders an error and its sources as `a: b: c`.
@@ -217,7 +269,22 @@ where
         }
     }
 
-    /// Handles a submission whose idempotency key already exists.
+    fn check_sender_allowed(&self, sender: &str) -> Result<(), SubmitEmailError> {
+        let Some(allowed) = &self.limits.allowed_sender_domains else {
+            return Ok(());
+        };
+        let domain = bare_address(sender).rsplit_once('@').map_or("", |(_, d)| d);
+        if normalize_sender_domain(domain).is_some_and(|d| allowed.contains(&d)) {
+            Ok(())
+        } else {
+            Err(SubmitEmailError::SenderDomainNotAllowed {
+                domain: domain.to_owned(),
+            })
+        }
+    }
+
+    /// Handles a submission whose idempotency key already exists. A recovery republish is
+    /// checked against the stored sender; a plain duplicate only returns the existing id.
     async fn resolve_duplicate(
         &self,
         id: EmailId,
@@ -228,6 +295,7 @@ where
             return Err(SubmitEmailError::ReservationIncomplete { id });
         }
         if let Some(envelope) = recovery {
+            self.check_sender_allowed(&envelope.sender)?;
             self.queue.enqueue(id, &envelope).await?;
             self.mark_enqueued_and_announce(id, &envelope).await;
         }
@@ -266,11 +334,13 @@ where
     /// Returns `SubmitEmailError::Persist` when saving the envelope fails.
     /// Returns `SubmitEmailError::Enqueue` when enqueuing fails.
     /// Returns `SubmitEmailError::AttachmentStore` when blob upload fails.
+    /// Returns `SubmitEmailError::SenderDomainNotAllowed` when the sender domain is not allowed.
     /// Returns `SubmitEmailError::ReservationIncomplete` when the idempotency key matches a
     /// submission that never completed.
     #[allow(clippy::too_many_lines)]
     #[tracing::instrument(skip_all, name = "submit_email", fields(email_id = tracing::field::Empty, correlation_id = tracing::field::Empty))]
     pub async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
+        self.check_sender_allowed(&input.sender)?;
         let id = EmailId::default();
         if let Some(ref cid) = input.correlation_id {
             tracing::Span::current().record("correlation_id", cid.as_str());
@@ -287,6 +357,9 @@ where
             body: input.body.clone(),
             variables: input.variables.clone(),
             attachments: vec![],
+            reply_to: input.reply_to.clone(),
+            headers: input.headers.clone(),
+            unsubscribe: input.unsubscribe.clone(),
         };
 
         let result = self.repository.save(id, &envelope_for_reservation).await?;
@@ -315,31 +388,38 @@ where
             body,
             variables,
             attachments,
+            reply_to,
+            headers,
+            unsubscribe,
         } = input;
 
         let mut written_refs: Vec<AttachmentRef> = Vec::with_capacity(attachments.len());
         for att in attachments {
-            let (filename, content_type, reader) = match att {
+            let (filename, content_type, reader, content_id) = match att {
                 AttachmentInput::Inline {
                     filename,
                     content_type,
                     bytes,
+                    content_id,
                 } => (
                     filename,
                     content_type,
                     Box::pin(std::io::Cursor::new(bytes)) as AttachmentReader,
+                    content_id,
                 ),
                 AttachmentInput::Stream {
                     filename,
                     content_type,
                     reader,
-                } => (filename, content_type, reader),
+                    content_id,
+                } => (filename, content_type, reader, content_id),
                 AttachmentInput::Remote {
                     filename,
                     content_type,
                     url,
+                    content_id,
                 } => match self.attachment_fetcher.fetch(&url).await {
-                    Ok(r) => (filename, content_type, r),
+                    Ok(r) => (filename, content_type, r, content_id),
                     Err(fetch_err) => {
                         let original = SubmitEmailError::AttachmentFetch {
                             source: anyhow::Error::new(fetch_err),
@@ -355,6 +435,7 @@ where
                         content_type,
                         size_bytes: put_result.size_bytes,
                         blob: put_result.blob,
+                        content_id,
                     });
                 }
                 Err(store_err) => {
@@ -390,6 +471,9 @@ where
             body,
             variables,
             attachments: written_refs,
+            reply_to,
+            headers,
+            unsubscribe,
         };
 
         if let Err(e) = self
@@ -446,6 +530,8 @@ where
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use super::{normalize_sender_domain, normalize_sender_domains};
+
     use crate::entity::attachment::{AttachmentRef, BlobRef};
     use crate::entity::body::Plain;
     use crate::entity::email::{EmailId, RecipientKind};
@@ -477,6 +563,9 @@ mod tests {
             ),
             variables: serde_json::Map::new(),
             attachments: vec![],
+            reply_to: vec![],
+            headers: vec![],
+            unsubscribe: None,
         }
     }
 
@@ -910,6 +999,136 @@ mod tests {
         assert_eq!(enqueued[0], id);
     }
 
+    async fn submit_with_allowed(
+        allowed: Option<&[&str]>,
+        sender: &str,
+    ) -> (Result<EmailId, SubmitEmailError>, usize, usize) {
+        let repo = FakeRepository::new();
+        let queue = FakeQueue::new();
+        let service = SubmitEmailService::new(
+            repo.clone(),
+            queue.clone(),
+            FakeEventPublisher::new(),
+            FakeAttachmentStore::new(),
+            FakeFetcher,
+        )
+        .with_limits(SubmitLimits {
+            allowed_sender_domains: allowed.map(|d| normalize_sender_domains(d).unwrap()),
+            ..SubmitLimits::default()
+        });
+        let result = service.execute(make_input(sender)).await;
+        let saved = repo.saved.lock().unwrap().len();
+        let enqueued = queue.enqueued.lock().unwrap().len();
+        (result, saved, enqueued)
+    }
+
+    #[tokio::test]
+    async fn disallowed_sender_domain_saves_and_enqueues_nothing() {
+        let (result, saved, enqueued) =
+            submit_with_allowed(Some(&["example.com"]), "a@other.com").await;
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            SubmitEmailError::SenderDomainNotAllowed { ref domain } if domain == "other.com"
+        ));
+        assert!(!err.is_transient());
+        assert_eq!((saved, enqueued), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn empty_allow_list_denies_every_sender_and_none_allows_all() {
+        let (denied, ..) = submit_with_allowed(Some(&[]), "a@example.com").await;
+        assert!(matches!(
+            denied,
+            Err(SubmitEmailError::SenderDomainNotAllowed { .. })
+        ));
+        let (allowed, saved, _) = submit_with_allowed(None, "a@anything.org").await;
+        assert!(allowed.is_ok());
+        assert_eq!(saved, 1);
+    }
+
+    #[tokio::test]
+    async fn sender_domain_matching_is_exact_case_insensitive_and_idn_aware() {
+        for (entries, sender) in [
+            (vec!["Example.COM."], "a@example.com"),
+            (vec!["example.com"], "Name <a@EXAMPLE.com>"),
+            (vec!["bücher.de"], "a@xn--bcher-kva.de"),
+            (vec!["xn--bcher-kva.de"], "a@Bücher.de"),
+        ] {
+            let (result, ..) = submit_with_allowed(Some(&entries), sender).await;
+            assert!(result.is_ok(), "{entries:?} vs {sender}");
+        }
+        for (entries, sender) in [
+            (vec!["example.com"], "a@news.example.com"),
+            (vec!["example.com"], "a@badexample.com"),
+        ] {
+            let (result, ..) = submit_with_allowed(Some(&entries), sender).await;
+            assert!(result.is_err(), "{entries:?} vs {sender}");
+        }
+    }
+
+    #[test]
+    fn normalize_sender_domain_enforces_hostname_rules() {
+        let long_label = format!("{}.com", "a".repeat(64));
+        for bad in [
+            "-example.com",
+            "example-.com",
+            long_label.as_str(),
+            "example.com..",
+            "a..com",
+            "",
+        ] {
+            assert_eq!(normalize_sender_domain(bad), None, "{bad:?}");
+        }
+        for ok in ["xn--bcher-kva.de", "a-b.example.com", "Example.com."] {
+            assert!(normalize_sender_domain(ok).is_some(), "{ok}");
+        }
+        let too_long = format!("{}.com", vec!["a".repeat(60); 5].join("."));
+        assert_eq!(normalize_sender_domain(&too_long), None);
+    }
+
+    #[tokio::test]
+    async fn recovery_republish_rechecks_the_stored_sender_against_the_policy() {
+        let repo = KeyedRepository::new();
+        let store = FakeAttachmentStore::new();
+        let mut first = keyed_input("k", 10);
+        first.sender = "a@removed.example".to_owned();
+        let failing = service_with(
+            &repo,
+            &ScriptedQueue::failing(&[false]),
+            &FakeEventPublisher::new(),
+            &store,
+        );
+        failing.execute(first).await.unwrap_err();
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+
+        let queue = ScriptedQueue::failing(&[]);
+        let restricted = service_with(&repo, &queue, &FakeEventPublisher::new(), &store)
+            .with_limits(SubmitLimits {
+                allowed_sender_domains: Some(
+                    normalize_sender_domains(["allowed.example"]).unwrap(),
+                ),
+                ..SubmitLimits::default()
+            });
+        let mut retry = keyed_input("k", 10);
+        retry.sender = "a@allowed.example".to_owned();
+
+        let err = restricted.execute(retry).await.unwrap_err();
+
+        assert!(matches!(
+            err,
+            SubmitEmailError::SenderDomainNotAllowed { ref domain } if domain == "removed.example"
+        ));
+        assert!(queue.calls.lock().unwrap().is_empty(), "nothing enqueued");
+        assert_eq!(repo.states(), vec![RowState::Publishable], "row kept");
+    }
+
+    #[test]
+    fn invalid_allowed_domain_entry_is_an_error() {
+        assert!(normalize_sender_domains(["ok.com", "exa mple\u{0}.com"]).is_err());
+        assert!(normalize_sender_domains([""]).is_err());
+    }
+
     #[tokio::test]
     async fn persistence_failure_propagates_as_submit_email_error() {
         let queue = FakeQueue::new();
@@ -935,6 +1154,7 @@ mod tests {
         let spy = FakeEventPublisher::new();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Inline {
+            content_id: None,
             filename: "attach.txt".into(),
             content_type: "text/plain".into(),
             bytes: bytes::Bytes::from_static(b"data"),
@@ -970,6 +1190,7 @@ mod tests {
     fn input_with_attachment(size: usize) -> SubmitEmailInput {
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Inline {
+            content_id: None,
             filename: "big.bin".into(),
             content_type: "application/octet-stream".into(),
             bytes: bytes::Bytes::from(vec![0u8; size]),
@@ -992,6 +1213,7 @@ mod tests {
         )
         .with_limits(SubmitLimits {
             max_message_bytes: 100,
+            ..SubmitLimits::default()
         });
 
         let err = service
@@ -1022,6 +1244,7 @@ mod tests {
         )
         .with_limits(SubmitLimits {
             max_message_bytes: 100,
+            ..SubmitLimits::default()
         });
 
         service.execute(input_with_attachment(50)).await.unwrap();
@@ -1042,6 +1265,7 @@ mod tests {
         )
         .with_limits(SubmitLimits {
             max_message_bytes: 100,
+            ..SubmitLimits::default()
         });
         let mut input = make_input("sender@example.com");
         input
@@ -1301,6 +1525,7 @@ mod tests {
         )
         .with_limits(SubmitLimits {
             max_message_bytes: 100,
+            ..SubmitLimits::default()
         });
 
         let err = service.execute(keyed_input("k", 100)).await.unwrap_err();
@@ -1323,6 +1548,7 @@ mod tests {
         )
         .with_limits(SubmitLimits {
             max_message_bytes: 100,
+            ..SubmitLimits::default()
         });
 
         let err = service.execute(keyed_input("k", 100)).await.unwrap_err();
@@ -1348,6 +1574,7 @@ mod tests {
         );
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Remote {
+            content_id: None,
             filename: "r.bin".into(),
             content_type: "application/octet-stream".into(),
             url: url::Url::parse("https://example.com/r.bin").unwrap(),
@@ -1530,6 +1757,7 @@ mod tests {
         let service = service_with(&repo, &queue, &events, &FakeAttachmentStore::new())
             .with_limits(SubmitLimits {
                 max_message_bytes: 100,
+                ..SubmitLimits::default()
             });
 
         let err = service.execute(keyed_input("k", 100)).await.unwrap_err();
@@ -1551,6 +1779,7 @@ mod tests {
     fn estimate_saturates_instead_of_overflowing() {
         use crate::entity::attachment::BlobRef;
         let refs = vec![AttachmentRef {
+            content_id: None,
             filename: "x".into(),
             content_type: "x/y".into(),
             size_bytes: u64::MAX,
@@ -1680,6 +1909,7 @@ mod tests {
         let queue = FakeQueue::new();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Inline {
+            content_id: None,
             filename: "file.txt".into(),
             content_type: "text/plain".into(),
             bytes: bytes::Bytes::from_static(b"hello"),
@@ -1704,6 +1934,7 @@ mod tests {
         let put_count = store.put_count.clone();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Inline {
+            content_id: None,
             filename: "test.txt".into(),
             content_type: "text/plain".into(),
             bytes: bytes::Bytes::from_static(b"attachment content"),
@@ -1728,6 +1959,7 @@ mod tests {
         let put_count = store.put_count.clone();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Remote {
+            content_id: None,
             filename: "remote.txt".into(),
             content_type: "text/plain".into(),
             url: url::Url::parse("https://example.com/file.txt").unwrap(),
@@ -1750,6 +1982,7 @@ mod tests {
         let queue = FakeQueue::new();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Remote {
+            content_id: None,
             filename: "remote.txt".into(),
             content_type: "text/plain".into(),
             url: url::Url::parse("https://example.com/file.txt").unwrap(),
@@ -1827,6 +2060,7 @@ mod tests {
         let captured = store.captured.clone();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Stream {
+            content_id: None,
             filename: "streamed.txt".into(),
             content_type: "text/plain".into(),
             reader: Box::pin(std::io::Cursor::new(b"streamed bytes".to_vec())),
@@ -1884,6 +2118,7 @@ mod tests {
         let put_count = store.put_count.clone();
         let mut input = make_input("sender@example.com");
         input.attachments.push(AttachmentInput::Inline {
+            content_id: None,
             filename: "idem.txt".into(),
             content_type: "text/plain".into(),
             bytes: bytes::Bytes::from_static(b"x"),

@@ -9,7 +9,7 @@ use catapulte_domain::port::email_queue::{
 };
 
 use crate::PostgresAdapter;
-use crate::dto::{EnvelopeBodyDtoDeser, RecipientDto, recipients_from_dto};
+use crate::dto::{EnvelopeBodyDtoDeser, EnvelopeExtrasDto, RecipientDto, recipients_from_dto};
 
 fn now_ms() -> i64 {
     i64::try_from(
@@ -43,6 +43,9 @@ pub(crate) fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Enve
         .context("reading correlation_id")?;
     let subject = row.try_get("subject").context("reading subject")?;
     let sender = row.try_get("sender").context("reading sender")?;
+    let extras: Option<sqlx::types::Json<EnvelopeExtrasDto>> =
+        row.try_get("extras").context("reading extras")?;
+    let extras = extras.map(|j| j.0).unwrap_or_default();
     Ok(Envelope {
         idempotency_key,
         correlation_id,
@@ -52,6 +55,13 @@ pub(crate) fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Enve
         body,
         variables: variables.0,
         attachments,
+        reply_to: extras.reply_to,
+        headers: extras.headers,
+        unsubscribe: extras
+            .unsubscribe
+            .map(catapulte_domain::entity::envelope::Unsubscribe::try_from)
+            .transpose()
+            .context("parsing unsubscribe")?,
     })
 }
 
@@ -159,7 +169,7 @@ impl PostgresAdapter {
         .map_err(|source| EmailQueueError::Storage { source })?;
 
         let maybe_row = sqlx::query(
-            "SELECT idempotency_key, correlation_id, subject, sender, recipients, body, variables FROM emails WHERE id = $1",
+            "SELECT idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras FROM emails WHERE id = $1",
         )
         .bind(email_id_uuid)
         .fetch_optional(&mut *tx)
@@ -325,21 +335,34 @@ mod tests {
     }
 
     fn sample_envelope() -> Envelope {
-        Envelope {
-            idempotency_key: None,
-            correlation_id: None,
-            subject: None,
-            sender: "sender@example.com".to_owned(),
-            recipients: vec![],
-            body: BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
-            variables: serde_json::Map::new(),
-            attachments: vec![],
-        }
+        Envelope::new(
+            "sender@example.com",
+            vec![],
+            BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
+        )
     }
 
     async fn save_and_enqueue(adapter: &PostgresAdapter, id: EmailId) {
         adapter.save(id, &sample_envelope()).await.unwrap();
         adapter.enqueue(id, &sample_envelope()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dequeue_returns_reply_to_and_headers() {
+        let (adapter, _container) = fresh_adapter().await;
+        let id = EmailId::default();
+        let envelope = Envelope {
+            reply_to: vec!["Support <help@example.com>".to_owned()],
+            headers: vec![("X-Order-Id".to_owned(), "42".to_owned())],
+            ..sample_envelope()
+        };
+        adapter.save(id, &envelope).await.unwrap();
+        adapter.enqueue(id, &envelope).await.unwrap();
+
+        let dequeued = adapter.dequeue().await.unwrap();
+
+        assert_eq!(dequeued.envelope.reply_to, envelope.reply_to);
+        assert_eq!(dequeued.envelope.headers, envelope.headers);
     }
 
     #[tokio::test]

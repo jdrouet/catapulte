@@ -2,10 +2,15 @@ use anyhow::Context;
 use catapulte_domain::entity::attachment::ResolvedAttachment;
 use catapulte_domain::entity::body::RenderedBody;
 use catapulte_domain::entity::email::RecipientKind;
+use catapulte_domain::entity::envelope::Unsubscribe;
+
+use crate::dkim::{DkimSigners, normalize_domain};
 use catapulte_domain::port::email_sender::OutboundEmail;
-use catapulte_domain::port::email_transport::{EmailTransport, TransportError, TransportErrorKind};
+use catapulte_domain::port::email_transport::{
+    DeliveryReceipt, EmailTransport, TransportError, TransportErrorKind,
+};
 use lettre::message::header::{ContentDisposition, ContentType};
-use lettre::message::{Mailbox, MultiPart, SinglePart};
+use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
@@ -86,6 +91,45 @@ fn apply_recipients(
     Ok(builder)
 }
 
+fn apply_reply_to_and_headers(
+    mut builder: lettre::message::MessageBuilder,
+    reply_to: &[String],
+    headers: &[(String, String)],
+    unsubscribe: Option<&Unsubscribe>,
+) -> anyhow::Result<lettre::message::MessageBuilder> {
+    use lettre::message::header::{HeaderName, HeaderValue};
+    for address in reply_to {
+        builder = builder.reply_to(parse_mailbox(address)?);
+    }
+    for (name, value) in headers {
+        let name = HeaderName::new_from_ascii(name.clone())
+            .map_err(|_| anyhow::anyhow!("invalid header name: {name}"))?;
+        builder = builder.raw_header(HeaderValue::new(name, value.clone()));
+    }
+    for (name, value) in unsubscribe.map(Unsubscribe::headers).unwrap_or_default() {
+        let name = HeaderName::new_from_ascii(name.to_owned())
+            .map_err(|_| anyhow::anyhow!("invalid header name: {name}"))?;
+        builder = builder.raw_header(HeaderValue::new(name, value));
+    }
+    Ok(builder)
+}
+
+/// Rejects a message whose top-level header block has a physical line over 998 characters
+/// (RFC 5322). lettre folds only at whitespace, so a long unbroken value stays one line.
+fn check_header_line_lengths(raw: &[u8]) -> anyhow::Result<()> {
+    let end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(raw.len());
+    let longest = raw[..end]
+        .split(|b| *b == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line).len())
+        .max()
+        .unwrap_or(0);
+    anyhow::ensure!(longest <= 998, "a header line exceeds 998 characters");
+    Ok(())
+}
+
 fn build_body_part(body: &RenderedBody) -> MultiPart {
     match (body.text(), body.html()) {
         (Some(text), Some(html)) => MultiPart::alternative()
@@ -115,6 +159,11 @@ fn build_body_part(body: &RenderedBody) -> MultiPart {
     }
 }
 
+fn parse_attachment_type(att: &ResolvedAttachment) -> anyhow::Result<ContentType> {
+    ContentType::parse(&att.content_type)
+        .with_context(|| format!("invalid attachment content-type: {}", att.content_type))
+}
+
 fn finalize_message(
     builder: lettre::message::MessageBuilder,
     subject: Option<&str>,
@@ -125,6 +174,10 @@ fn finalize_message(
         Some(s) => builder.subject(s),
         None => builder,
     };
+
+    // Without an HTML body nothing can reference a cid, so inline attachments are sent as
+    // regular ones.
+    let has_inline = body.html().is_some() && attachments.iter().any(|a| a.content_id.is_some());
 
     if attachments.is_empty() {
         let msg = match (body.text(), body.html()) {
@@ -158,11 +211,34 @@ fn finalize_message(
         msg.context("building email message")
     } else {
         let body_part = build_body_part(body);
-        let mut mixed = MultiPart::mixed().multipart(body_part);
-        for att in attachments {
-            let content_type = ContentType::parse(&att.content_type).with_context(|| {
-                format!("invalid attachment content-type: {}", att.content_type)
-            })?;
+        let mut regular = Vec::new();
+        let first = if has_inline {
+            let mut related = MultiPart::related().multipart(body_part);
+            for att in attachments {
+                match &att.content_id {
+                    Some(cid) => {
+                        let content_type = parse_attachment_type(att)?;
+                        related = related.singlepart(
+                            Attachment::new_inline_with_name(cid.clone(), att.filename.clone())
+                                .body(att.bytes.to_vec(), content_type),
+                        );
+                    }
+                    None => regular.push(att),
+                }
+            }
+            if regular.is_empty() {
+                return builder
+                    .multipart(related)
+                    .context("building email message with inline attachments");
+            }
+            related
+        } else {
+            regular.extend(attachments);
+            body_part
+        };
+        let mut mixed = MultiPart::mixed().multipart(first);
+        for att in regular {
+            let content_type = parse_attachment_type(att)?;
             mixed = mixed.singlepart(
                 SinglePart::builder()
                     .header(content_type)
@@ -246,6 +322,7 @@ impl SmtpConfig {
         Ok(SmtpTransport {
             transport,
             max_message_bytes: None,
+            dkim: std::sync::Arc::new(DkimSigners::empty()),
         })
     }
 }
@@ -253,6 +330,7 @@ impl SmtpConfig {
 pub struct SmtpTransport {
     transport: AsyncSmtpTransport<Tokio1Executor>,
     max_message_bytes: Option<u64>,
+    dkim: std::sync::Arc<DkimSigners>,
 }
 
 /// Message-level rejections (enhanced codes `5.1.x`, `5.2.x`, `5.6.x`) cannot succeed on any
@@ -285,12 +363,23 @@ pub(crate) fn classify(permanent: bool, text: &str) -> TransportErrorKind {
 
 const MAX_REPLY_CHARS: usize = 256;
 
-/// Caps remote-controlled reply text before it reaches events and logs.
+/// Caps remote-controlled reply text, ellipsis included, at 256 characters before it reaches
+/// events and logs.
 fn truncate_reply(text: &str) -> String {
-    match text.char_indices().nth(MAX_REPLY_CHARS) {
-        Some((end, _)) => format!("{}…", &text[..end]),
-        None => text.to_owned(),
+    if text.chars().count() <= MAX_REPLY_CHARS {
+        return text.to_owned();
     }
+    let kept: String = text.chars().take(MAX_REPLY_CHARS - 1).collect();
+    format!("{kept}…")
+}
+
+/// `"{code} {lines joined by space}"`, capped because the relay controls the text.
+fn format_smtp_response<'a>(
+    code: impl std::fmt::Display,
+    lines: impl Iterator<Item = &'a str>,
+) -> String {
+    let joined = lines.collect::<Vec<_>>().join(" ");
+    truncate_reply(&format!("{code} {joined}"))
 }
 
 /// Classifies on the full text, then caps what is kept, so truncation cannot hide the code.
@@ -316,19 +405,48 @@ impl SmtpTransport {
         self
     }
 
+    /// Signs messages whose sender domain has a configured DKIM key.
+    #[must_use]
+    pub fn with_dkim(mut self, dkim: std::sync::Arc<DkimSigners>) -> Self {
+        self.dkim = dkim;
+        self
+    }
+
     /// Builds the message and its wire bytes, enforcing the size limit on the final bytes.
     fn prepare(&self, email: &OutboundEmail) -> Result<(Message, Vec<u8>), TransportError> {
         let from = parse_mailbox(&email.sender).map_err(message_error)?;
-        let builder = apply_recipients(Message::builder().from(from), &email.recipients)
+        let sender_domain = normalize_domain(from.email.domain());
+        let builder = Message::builder()
+            .from(from)
+            .message_id(Some(email.message_id.clone()));
+        let builder = apply_recipients(builder, &email.recipients)
+            .and_then(|b| {
+                apply_reply_to_and_headers(
+                    b,
+                    &email.reply_to,
+                    &email.headers,
+                    email.unsubscribe.as_ref(),
+                )
+            })
             .map_err(message_error)?;
-        let message = finalize_message(
+        let mut message = finalize_message(
             builder,
             email.subject.as_deref(),
             &email.body,
             &email.attachments,
         )
         .map_err(message_error)?;
+        // Signed before the size and header-line checks so they see the final bytes.
+        match &sender_domain {
+            Ok(domain) => {
+                if let Some(config) = self.dkim.for_sender(domain) {
+                    message.sign(config);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "sender domain not normalizable; DKIM skipped"),
+        }
         let raw = message.formatted();
+        check_header_line_lengths(&raw).map_err(message_error)?;
         if self
             .max_message_bytes
             .is_some_and(|max| raw.len() as u64 > max)
@@ -340,18 +458,27 @@ impl SmtpTransport {
         Ok((message, raw))
     }
 
-    pub(crate) async fn send_inner(&self, email: &OutboundEmail) -> Result<(), TransportError> {
+    pub(crate) async fn send_inner(
+        &self,
+        email: &OutboundEmail,
+    ) -> Result<DeliveryReceipt, TransportError> {
         let (message, raw) = self.prepare(email)?;
-        self.transport
+        let response = self
+            .transport
             .send_raw(message.envelope(), &raw)
             .await
             .map_err(|e| smtp_text_error(e.is_permanent(), &e.to_string()))?;
-        Ok(())
+        Ok(DeliveryReceipt {
+            smtp_response: Some(format_smtp_response(response.code(), response.message())),
+        })
     }
 }
 
 impl EmailTransport for SmtpTransport {
-    async fn deliver<'a>(&'a self, email: &'a OutboundEmail) -> Result<(), TransportError> {
+    async fn deliver<'a>(
+        &'a self,
+        email: &'a OutboundEmail,
+    ) -> Result<DeliveryReceipt, TransportError> {
         self.send_inner(email).await
     }
 }
@@ -496,6 +623,7 @@ mod tests {
             filename: "test.txt".to_owned(),
             content_type: "text/plain".to_owned(),
             bytes: bytes::Bytes::from_static(b"hello attachment"),
+            content_id: None,
         };
         assert!(finalize_message(base_builder(), Some("With Attachment"), &body, &[att]).is_ok());
     }
@@ -507,13 +635,120 @@ mod tests {
             filename: "a.txt".to_owned(),
             content_type: "text/plain".to_owned(),
             bytes: bytes::Bytes::from_static(b"file a"),
+            content_id: None,
         };
         let att2 = ResolvedAttachment {
             filename: "b.txt".to_owned(),
             content_type: "text/plain".to_owned(),
             bytes: bytes::Bytes::from_static(b"file b"),
+            content_id: None,
         };
         assert!(finalize_message(base_builder(), Some("Multi"), &body, &[att1, att2]).is_ok());
+    }
+
+    fn cid_att(name: &str, cid: Option<&str>) -> ResolvedAttachment {
+        ResolvedAttachment {
+            filename: name.to_owned(),
+            content_type: "image/png".to_owned(),
+            bytes: bytes::Bytes::from_static(b"png"),
+            content_id: cid.map(str::to_owned),
+        }
+    }
+
+    fn raw_message(body: &RenderedBody, atts: &[ResolvedAttachment]) -> String {
+        let msg = finalize_message(base_builder(), Some("s"), body, atts).unwrap();
+        String::from_utf8(msg.formatted()).unwrap()
+    }
+
+    #[test]
+    fn inline_attachment_with_html_builds_related_only() {
+        let raw = raw_message(&multipart_body(), &[cid_att("logo.png", Some("logo"))]);
+        assert!(raw.contains("multipart/related"));
+        assert!(!raw.contains("multipart/mixed"));
+        assert!(raw.contains("Content-ID: <logo>"));
+        assert!(raw.contains("Content-Disposition: inline"));
+    }
+
+    struct Part {
+        headers: String,
+        children: Vec<Part>,
+    }
+
+    impl Part {
+        fn parse(raw: &str) -> Self {
+            let (headers, body) = raw.split_once("\r\n\r\n").unwrap_or((raw, ""));
+            let headers = headers.replace("\r\n ", " ").replace("\r\n\t", " ");
+            let mut children = Vec::new();
+            if let Some(boundary) = headers
+                .split("boundary=\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+            {
+                let delim = format!("--{boundary}");
+                let mut sections = body.split(delim.as_str()).skip(1).collect::<Vec<_>>();
+                sections.pop();
+                children = sections
+                    .into_iter()
+                    .map(|c| Self::parse(c.strip_prefix("\r\n").unwrap_or(c)))
+                    .collect();
+            }
+            Self { headers, children }
+        }
+
+        fn kind(&self) -> &str {
+            let ct = self.headers.split("Content-Type: ").nth(1).unwrap_or("");
+            ct.split([';', '\r']).next().unwrap_or("")
+        }
+
+        fn shape(&self) -> String {
+            if self.children.is_empty() {
+                return self.kind().to_owned();
+            }
+            let inner: Vec<_> = self.children.iter().map(Self::shape).collect();
+            format!("{}[{}]", self.kind(), inner.join(","))
+        }
+    }
+
+    #[test]
+    fn inline_and_regular_attachments_build_mixed_wrapping_related() {
+        let raw = raw_message(
+            &multipart_body(),
+            &[cid_att("logo.png", Some("logo")), cid_att("b.png", None)],
+        );
+        let root = Part::parse(&raw);
+        assert_eq!(
+            root.shape(),
+            "multipart/mixed[multipart/related[multipart/alternative[text/plain,text/html],\
+             image/png],image/png]"
+        );
+        let inline = &root.children[0].children[1];
+        assert!(inline.headers.contains("Content-ID: <logo>"));
+        assert!(inline.headers.contains("Content-Disposition: inline"));
+        assert!(inline.headers.contains("filename=\"logo.png\""));
+        assert!(root.children[1].headers.contains("filename=\"b.png\""));
+    }
+
+    #[test]
+    fn inline_attachment_with_html_only_body_builds_related_of_html_and_image() {
+        let plain = Plain::try_new(None, Some("<img src=\"cid:logo\">".to_string())).unwrap();
+        let raw = raw_message(
+            &RenderedBody::new(plain),
+            &[cid_att("logo.png", Some("logo"))],
+        );
+        let root = Part::parse(&raw);
+        assert_eq!(
+            root.shape(),
+            "multipart/related[multipart/alternative[text/html],image/png]"
+        );
+    }
+
+    #[test]
+    fn inline_attachment_without_html_falls_back_to_regular() {
+        let raw = raw_message(&plain_text_body(), &[cid_att("logo.png", Some("logo"))]);
+        assert!(raw.contains("multipart/mixed"));
+        assert!(!raw.contains("multipart/related"));
+        assert!(!raw.contains("Content-ID"));
+        assert!(raw.contains("filename=\"logo.png\""));
     }
 
     #[test]
@@ -523,6 +758,7 @@ mod tests {
             filename: "bad.bin".to_owned(),
             content_type: "not a content type///".to_owned(),
             bytes: bytes::Bytes::from_static(b"data"),
+            content_id: None,
         };
         assert!(finalize_message(base_builder(), None, &body, &[att]).is_err());
     }
@@ -650,9 +886,10 @@ mod tests {
         assert_eq!(truncate_reply("short"), "short");
         let long = "é".repeat(300);
         let cut = truncate_reply(&long);
-        assert_eq!(cut.chars().count(), 257);
+        assert_eq!(cut.chars().count(), 256);
         assert!(cut.ends_with('…'));
-        assert!(cut.starts_with(&"é".repeat(256)));
+        assert!(cut.starts_with(&"é".repeat(255)));
+        assert_eq!(truncate_reply(&"é".repeat(256)), "é".repeat(256));
     }
 
     #[test]
@@ -662,7 +899,7 @@ mod tests {
         let err = smtp_text_error(true, &text);
 
         assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
-        assert_eq!(err.source.to_string().chars().count(), 257);
+        assert_eq!(err.source.to_string().chars().count(), 256);
     }
 
     fn local_transport(max: Option<u64>) -> super::SmtpTransport {
@@ -691,10 +928,15 @@ mod tests {
             recipients: vec![(kind, "to@example.com".into())],
             body: plain_text_body(),
             attachments: vec![ResolvedAttachment {
+                content_id: None,
                 filename: "big.bin".into(),
                 content_type: "application/octet-stream".into(),
                 bytes: bytes::Bytes::from(vec![7u8; size]),
             }],
+            reply_to: vec![],
+            headers: vec![],
+            unsubscribe: None,
+            message_id: "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>".into(),
         }
     }
 
@@ -753,5 +995,374 @@ mod tests {
         let err = transport.prepare(&email).unwrap_err();
 
         assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+    }
+
+    fn plain_email() -> catapulte_domain::port::email_sender::OutboundEmail {
+        catapulte_domain::port::email_sender::OutboundEmail {
+            sender: "from@example.com".into(),
+            subject: Some("hi".into()),
+            recipients: vec![(RecipientKind::To, "to@example.com".into())],
+            body: plain_text_body(),
+            attachments: vec![],
+            reply_to: vec![],
+            headers: vec![],
+            unsubscribe: None,
+            message_id: "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn reply_to_and_custom_headers_appear_in_the_message() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.reply_to = vec![
+            "Support <help@example.com>".into(),
+            "ops@example.com".into(),
+        ];
+        email.headers = vec![
+            ("X-Order-Id".into(), "42".into()),
+            ("In-Reply-To".into(), "<a@b.c>".into()),
+        ];
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            text.contains("Reply-To: Support <help@example.com>, ops@example.com"),
+            "{text}"
+        );
+        assert!(text.contains("X-Order-Id: 42"), "{text}");
+        assert!(text.contains("In-Reply-To: <a@b.c>"), "{text}");
+    }
+
+    fn unsubscribe_message(url: Option<&str>, mailto: Option<&str>) -> String {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.unsubscribe = Some(super::Unsubscribe {
+            url: url.map(|u| u.parse().unwrap()),
+            mailto: mailto.map(str::to_owned),
+        });
+        let (_, raw) = transport.prepare(&email).unwrap();
+        String::from_utf8_lossy(&raw).into_owned()
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_url_emits_list_unsubscribe_and_one_click_post() {
+        let text = unsubscribe_message(Some("https://example.com/u/1"), None);
+        assert!(
+            text.contains("List-Unsubscribe: <https://example.com/u/1>\r\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_mailto_only_has_no_post_header() {
+        let text = unsubscribe_message(None, Some("unsub@example.com"));
+        assert!(
+            text.contains("List-Unsubscribe: <mailto:unsub@example.com>\r\n"),
+            "{text}"
+        );
+        assert!(!text.contains("List-Unsubscribe-Post"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_with_both_lists_url_then_mailto_and_post_header() {
+        let text = unsubscribe_message(Some("https://example.com/u/1"), Some("unsub@example.com"));
+        assert!(
+            text.contains(
+                "List-Unsubscribe: <https://example.com/u/1>, <mailto:unsub@example.com>\r\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("List-Unsubscribe-Post: List-Unsubscribe=One-Click"));
+    }
+
+    fn dkim_transport(max: Option<u64>) -> super::SmtpTransport {
+        let signers = std::sync::Arc::new(crate::dkim::tests::signers(&["example.com"]));
+        local_transport(max).with_dkim(signers)
+    }
+
+    #[tokio::test]
+    async fn message_from_a_configured_domain_is_dkim_signed() {
+        let (_, raw) = dkim_transport(None).prepare(&plain_email()).unwrap();
+        let text = String::from_utf8_lossy(&raw);
+
+        assert!(text.contains("\r\nDKIM-Signature: "), "{text}");
+        let signature = text.split("\r\n\r\n").next().unwrap().replace("\r\n ", " ");
+        for tag in [
+            "d=example.com",
+            "s=s1",
+            "a=ed25519-sha256",
+            "c=relaxed/relaxed",
+        ] {
+            assert!(signature.contains(tag), "{tag} missing in {signature}");
+        }
+        assert!(
+            signature.contains("h=from:subject:to:date:message-id"),
+            "{signature}"
+        );
+    }
+
+    #[tokio::test]
+    async fn idn_sender_is_signed_with_the_punycode_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("k");
+        std::fs::write(&path, crate::dkim::tests::TEST_ED25519_SEED).unwrap();
+        let vars = std::collections::HashMap::from([
+            ("CATAPULTE_DKIM_DOMAINS", "idn".to_owned()),
+            ("CATAPULTE_DKIM_IDN_DOMAIN", "bücher.de".to_owned()),
+            ("CATAPULTE_DKIM_IDN_SELECTOR", "s1".to_owned()),
+            (
+                "CATAPULTE_DKIM_IDN_PRIVATE_KEY_FILE",
+                path.to_string_lossy().into_owned(),
+            ),
+            ("CATAPULTE_DKIM_IDN_ALGORITHM", "ed25519".to_owned()),
+        ]);
+        let signers = crate::dkim::DkimSigners::from_lookup(|k| {
+            vars.get(k).cloned().ok_or(std::env::VarError::NotPresent)
+        })
+        .unwrap();
+        let transport = local_transport(None).with_dkim(std::sync::Arc::new(signers));
+        let mut email = plain_email();
+        email.sender = "from@Bücher.de".into();
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let text = String::from_utf8_lossy(&raw).replace("\r\n ", " ");
+        assert!(text.contains("d=xn--bcher-kva.de"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn message_from_an_unconfigured_domain_is_not_signed() {
+        let mut email = plain_email();
+        email.sender = "from@badexample.com".into();
+        let (_, raw) = dkim_transport(None).prepare(&email).unwrap();
+        assert!(!String::from_utf8_lossy(&raw).contains("DKIM-Signature"));
+    }
+
+    #[tokio::test]
+    async fn size_limit_counts_the_dkim_signature() {
+        let unsigned = local_transport(None)
+            .prepare(&plain_email())
+            .unwrap()
+            .1
+            .len() as u64;
+        assert!(
+            local_transport(Some(unsigned))
+                .prepare(&plain_email())
+                .is_ok()
+        );
+        let err = dkim_transport(Some(unsigned))
+            .prepare(&plain_email())
+            .unwrap_err();
+        assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+    }
+
+    #[tokio::test]
+    async fn non_ascii_header_value_is_encoded_not_sent_raw() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.headers = vec![("X-Note".into(), "caf\u{e9}".into())];
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        assert!(
+            String::from_utf8_lossy(&raw)
+                .to_ascii_lowercase()
+                .contains("x-note: =?utf-8?"),
+            "non-ASCII value must be RFC 2047 encoded"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_header_name_or_reply_to_is_a_message_level_failure() {
+        let transport = local_transport(None);
+        let mut bad_name = plain_email();
+        bad_name.headers = vec![("Bad Name".into(), "v".into())];
+        let mut bad_reply_to = plain_email();
+        bad_reply_to.reply_to = vec!["not an address".into()];
+
+        for email in [bad_name, bad_reply_to] {
+            let err = transport.prepare(&email).unwrap_err();
+            assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+        }
+    }
+
+    #[tokio::test]
+    async fn header_line_limit_is_enforced_on_the_final_message() {
+        let transport = local_transport(None);
+        let with_value = |n: usize| {
+            let mut email = plain_email();
+            email.headers = vec![("X-A".into(), "v".repeat(n))];
+            email
+        };
+
+        assert!(transport.prepare(&with_value(993)).is_ok());
+        let err = transport.prepare(&with_value(994)).unwrap_err();
+        assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+
+        let mut long_name = plain_email();
+        long_name.headers = vec![("N".repeat(76), "v".repeat(920))];
+        assert!(transport.prepare(&long_name).is_ok());
+        long_name.headers = vec![("N".repeat(76), "v".repeat(921))];
+        assert!(transport.prepare(&long_name).is_err());
+    }
+
+    fn header_block(raw: &[u8]) -> &[u8] {
+        let end = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("header block end");
+        &raw[..end]
+    }
+
+    #[tokio::test]
+    async fn space_separated_long_value_is_folded_within_the_line_limit() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        // 76 + 2 + 949 characters would be 1027 on one line.
+        email.headers = vec![("N".repeat(76), "word ".repeat(190).trim_end().to_owned())];
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let headers = header_block(&raw);
+        let text = String::from_utf8_lossy(headers);
+        assert!(
+            text.contains("\r\n\t") || text.contains("\r\n "),
+            "no fold: {text}"
+        );
+        assert!(
+            headers
+                .split(|b| *b == b'\n')
+                .all(|l| l.strip_suffix(b"\r").unwrap_or(l).len() <= 998)
+        );
+    }
+
+    #[tokio::test]
+    async fn tab_separated_long_value_is_not_folded_and_fails() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.headers = vec![("N".repeat(76), "word\t".repeat(190))];
+
+        assert!(transport.prepare(&email).is_err());
+    }
+
+    #[tokio::test]
+    async fn over_long_subject_and_names_fail_while_just_under_builds() {
+        let transport = local_transport(None);
+        for (label, long, under) in [
+            ("subject", "s".repeat(1000), "s".repeat(900)),
+            ("sender", "n".repeat(1000), "n".repeat(900)),
+            ("recipient", "n".repeat(1000), "n".repeat(900)),
+        ] {
+            let build = |v: &str| {
+                let mut email = plain_email();
+                match label {
+                    "subject" => email.subject = Some(v.to_owned()),
+                    "sender" => email.sender = format!("{v} <from@example.com>"),
+                    _ => {
+                        email.recipients =
+                            vec![(RecipientKind::To, format!("{v} <to@example.com>"))];
+                    }
+                }
+                transport.prepare(&email)
+            };
+            assert!(build(&under).is_ok(), "{label} under the limit");
+            assert_eq!(
+                build(&long).unwrap_err().kind,
+                TransportErrorKind::PermanentMessage,
+                "{label} over the limit"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn long_body_line_and_long_mime_part_header_do_not_trip_the_top_level_check() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.body = RenderedBody::new(Plain::try_new(Some("b".repeat(5000)), None).unwrap());
+        email.attachments = vec![ResolvedAttachment {
+            filename: "f".repeat(1200),
+            content_type: "text/plain".to_owned(),
+            bytes: bytes::Bytes::from_static(b"data"),
+            content_id: None,
+        }];
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let top_ok = header_block(&raw)
+            .split(|b| *b == b'\n')
+            .all(|l| l.strip_suffix(b"\r").unwrap_or(l).len() <= 998);
+        assert!(top_ok);
+    }
+
+    #[test]
+    fn line_check_looks_only_at_the_top_level_header_block() {
+        let long = "x".repeat(2000);
+        let body_long = format!("Subject: hi\r\n\r\n{long}\r\n");
+        let part_header_long = format!("Subject: hi\r\n\r\n--b\r\nContent-Disposition: {long}\r\n");
+        let header_long = format!("Subject: {long}\r\n\r\nbody");
+        assert!(super::check_header_line_lengths(body_long.as_bytes()).is_ok());
+        assert!(super::check_header_line_lengths(part_header_long.as_bytes()).is_ok());
+        assert!(super::check_header_line_lengths(header_long.as_bytes()).is_err());
+    }
+
+    #[tokio::test]
+    async fn message_id_header_is_set_from_the_outbound_email() {
+        let transport = local_transport(None);
+        let email = plain_email();
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            text.contains("Message-ID: <018f4e3c-2d1a-7b3c-8f00-1234567890ab@example.com>"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn message_id_survives_the_header_line_check_with_a_long_domain() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.message_id = format!(
+            "<{}@{}.example.com>",
+            "00000000-0000-0000-0000-000000000000",
+            "d".repeat(60)
+        );
+
+        assert!(transport.prepare(&email).is_ok());
+    }
+
+    #[tokio::test]
+    async fn punycode_message_id_is_written_verbatim() {
+        let transport = local_transport(None);
+        let mut email = plain_email();
+        email.message_id = "<018f4e3c-2d1a-7b3c-8f00-1234567890ab@xn--bcher-kva.de>".into();
+
+        let (_, raw) = transport.prepare(&email).unwrap();
+
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            text.contains("Message-ID: <018f4e3c-2d1a-7b3c-8f00-1234567890ab@xn--bcher-kva.de>"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn smtp_response_is_code_and_joined_lines_and_capped() {
+        use super::format_smtp_response;
+        assert_eq!(
+            format_smtp_response(250, ["2.0.0 Ok: queued as 4ABC", "second"].into_iter()),
+            "250 2.0.0 Ok: queued as 4ABC second"
+        );
+        let long = "x".repeat(1000);
+        let capped = format_smtp_response(250, std::iter::once(long.as_str()));
+        assert_eq!(capped.chars().count(), 256);
+        assert!(capped.starts_with("250 "));
     }
 }
