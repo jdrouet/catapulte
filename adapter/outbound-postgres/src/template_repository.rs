@@ -120,54 +120,8 @@ impl TemplateRepository for PostgresAdapter {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::fresh_adapter;
     use catapulte_domain::port::template_repository::TemplateRepository;
-
-    use crate::PostgresAdapter;
-
-    async fn wait_for_tcp(port: u16, timeout: std::time::Duration) {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            if tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_ok()
-            {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "127.0.0.1:{port} did not accept connections within {timeout:?}"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
-
-    async fn fresh_adapter() -> PostgresAdapter {
-        use testcontainers::GenericImage;
-        use testcontainers::ImageExt;
-        use testcontainers::core::WaitFor;
-        use testcontainers::runners::AsyncRunner;
-
-        let pg = GenericImage::new("postgres", "16-alpine")
-            .with_wait_for(WaitFor::message_on_stderr(
-                "database system is ready to accept connections",
-            ))
-            .with_env_var("POSTGRES_USER", "catapulte")
-            .with_env_var("POSTGRES_PASSWORD", "catapulte")
-            .with_env_var("POSTGRES_DB", "catapulte")
-            .start()
-            .await
-            .expect("failed to start postgres container; ensure Docker is running");
-
-        let port = pg.get_host_port_ipv4(5432u16).await.unwrap();
-        wait_for_tcp(port, std::time::Duration::from_secs(15)).await;
-        let url = format!("postgres://catapulte:catapulte@127.0.0.1:{port}/catapulte");
-        let adapter = PostgresAdapter::connect(&url, 10, std::time::Duration::from_secs(30))
-            .await
-            .unwrap();
-        adapter.migrate().await.unwrap();
-        std::mem::forget(pg);
-        adapter
-    }
 
     #[tokio::test]
     async fn put_creates_versions_and_latest_wins() {

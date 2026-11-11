@@ -285,6 +285,7 @@ impl EmailQueue for PostgresAdapter {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::fresh_adapter;
     use catapulte_domain::entity::body::{BodySource, Plain};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
@@ -292,53 +293,6 @@ mod tests {
     use catapulte_domain::port::email_repository::EmailRepository;
 
     use crate::PostgresAdapter;
-
-    async fn wait_for_tcp(port: u16, timeout: std::time::Duration) {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            if tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_ok()
-            {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "127.0.0.1:{port} did not accept connections within {timeout:?}"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
-
-    async fn fresh_adapter() -> (
-        PostgresAdapter,
-        testcontainers::ContainerAsync<testcontainers::GenericImage>,
-    ) {
-        use testcontainers::GenericImage;
-        use testcontainers::ImageExt;
-        use testcontainers::core::WaitFor;
-        use testcontainers::runners::AsyncRunner;
-
-        let pg = GenericImage::new("postgres", "16-alpine")
-            .with_wait_for(WaitFor::message_on_stderr(
-                "database system is ready to accept connections",
-            ))
-            .with_env_var("POSTGRES_USER", "catapulte")
-            .with_env_var("POSTGRES_PASSWORD", "catapulte")
-            .with_env_var("POSTGRES_DB", "catapulte")
-            .start()
-            .await
-            .expect("failed to start postgres container; ensure Docker is running");
-
-        let port = pg.get_host_port_ipv4(5432u16).await.unwrap();
-        wait_for_tcp(port, std::time::Duration::from_secs(15)).await;
-        let url = format!("postgres://catapulte:catapulte@127.0.0.1:{port}/catapulte");
-        let adapter = PostgresAdapter::connect(&url, 10, std::time::Duration::from_secs(30))
-            .await
-            .unwrap();
-        adapter.migrate().await.unwrap();
-        (adapter, pg)
-    }
 
     fn sample_envelope() -> Envelope {
         Envelope::new(
@@ -355,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn dequeue_returns_reply_to_and_headers() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         let envelope = Envelope {
             reply_to: vec!["Support <help@example.com>".to_owned()],
@@ -373,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn enqueue_then_dequeue_returns_email() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
@@ -383,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn ack_removes_item_from_queue() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
@@ -401,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_dequeue_cleans_up_orphaned_entry_when_email_missing() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
@@ -456,7 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn nack_updates_claimed_until() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         save_and_enqueue(&adapter, id).await;
 
@@ -473,7 +427,7 @@ mod tests {
 
     #[tokio::test]
     async fn null_trace_context_decodes_to_empty_carrier() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
         // Insert a queue row with NULL trace_context to simulate a pre-migration row.
