@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env::VarError;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Context;
 use catapulte_domain::entity::body::{BodySource, MjmlSource, ResolvedBody};
@@ -17,6 +18,7 @@ pub struct TemplateResolverAdapter {
     allowed_domains: HashSet<String>,
     http_client: reqwest::Client,
     auth_headers: HashMap<String, reqwest::header::HeaderMap>,
+    max_bytes: u64,
 }
 
 impl TemplateResolverAdapter {
@@ -37,8 +39,13 @@ impl TemplateResolverAdapter {
         templates: HashMap<String, String>,
         allowed_domains: HashSet<String>,
         auth_entries: Vec<ResolverAuthEntry>,
+        fetch_timeout: Duration,
+        max_bytes: u64,
     ) -> anyhow::Result<Self> {
+        // Redirects stay off so auth headers and allow-listed hosts cannot be bypassed.
         let http_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(fetch_timeout)
             .build()
             .context("building reqwest client for template resolver")?;
 
@@ -85,6 +92,7 @@ impl TemplateResolverAdapter {
             allowed_domains,
             http_client,
             auth_headers,
+            max_bytes,
         })
     }
 
@@ -106,28 +114,48 @@ impl TemplateResolverAdapter {
         if let Some(headers) = host.as_deref().and_then(|h| self.auth_headers.get(h)) {
             request = request.headers(headers.clone());
         }
-        let response = request
+        let fetch_err = |source: anyhow::Error| ResolveError::Fetch {
+            url: url_str.clone(),
+            source,
+        };
+        let mut response = request
             .send()
             .await
             .context("http request failed")
-            .map_err(|source| ResolveError::Fetch {
-                url: url_str.clone(),
-                source,
-            })?
-            .error_for_status()
-            .context("http error response")
-            .map_err(|source| ResolveError::Fetch {
-                url: url_str.clone(),
-                source,
-            })?;
-        response
-            .text()
+            .map_err(fetch_err)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(fetch_err(anyhow::anyhow!(
+                "unexpected http status {status}"
+            )));
+        }
+        if response
+            .content_length()
+            .is_some_and(|n| n > self.max_bytes)
+        {
+            return Err(fetch_err(anyhow::anyhow!(
+                "response exceeds {} bytes",
+                self.max_bytes
+            )));
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
             .context("reading response body")
-            .map_err(|source| ResolveError::Fetch {
-                url: url_str,
-                source,
-            })
+            .map_err(fetch_err)?
+        {
+            if body.len() as u64 + chunk.len() as u64 > self.max_bytes {
+                return Err(fetch_err(anyhow::anyhow!(
+                    "response exceeds {} bytes",
+                    self.max_bytes
+                )));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        String::from_utf8(body)
+            .context("response body is not valid utf-8")
+            .map_err(fetch_err)
     }
 
     async fn resolve_mjml(&self, source: MjmlSource) -> Result<String, ResolveError> {
@@ -181,10 +209,27 @@ fn load_templates_from_dir(dir: &std::path::Path) -> anyhow::Result<HashMap<Stri
         .collect()
 }
 
+fn parse_positive<F>(lookup: &F, key: &str, default: u64) -> anyhow::Result<u64>
+where
+    F: Fn(&str) -> Result<String, VarError>,
+{
+    let raw = match lookup(key) {
+        Ok(raw) => raw,
+        Err(VarError::NotPresent) => return Ok(default),
+        Err(VarError::NotUnicode(_)) => anyhow::bail!("env var {key} is not valid unicode"),
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => anyhow::bail!("env var {key} must be a positive integer, got {raw:?}"),
+    }
+}
+
 pub struct TemplateResolverConfig {
     pub allowed_domains: HashSet<String>,
     pub templates_dir: Option<PathBuf>,
     pub auth_entries: Vec<ResolverAuthEntry>,
+    pub fetch_timeout: Duration,
+    pub max_bytes: u64,
 }
 
 impl TemplateResolverConfig {
@@ -204,6 +249,9 @@ impl TemplateResolverConfig {
     ///   FRAGMENT is the header name uppercased with `-` replaced by `_` (e.g. `ACCEPT`,
     ///   `PRIVATE_TOKEN`); treated as secret, never logged
     ///
+    /// - `{prefix}_FETCH_TIMEOUT_MS` — total timeout per remote fetch in milliseconds (default 30000)
+    /// - `{prefix}_MAX_BYTES` — maximum remote template size in bytes (default 1048576)
+    ///
     /// Each entry listed in `_TOKENS` must configure at least a bearer token or one header;
     /// a host-only entry with no auth is rejected.
     ///
@@ -214,6 +262,7 @@ impl TemplateResolverConfig {
     /// - a named entry has neither a bearer token nor any headers
     /// - a header listed in `_HEADERS` is missing its `_VALUE` variable
     /// - two header names in `_HEADERS` map to the same FRAGMENT (would silently shadow)
+    /// - `_FETCH_TIMEOUT_MS` or `_MAX_BYTES` is not a positive integer
     pub fn from_env(prefix: &str) -> anyhow::Result<Self> {
         Self::from_lookup(prefix, |key| std::env::var(key))
     }
@@ -311,10 +360,19 @@ impl TemplateResolverConfig {
             .transpose()?
             .unwrap_or_default();
 
+        let fetch_timeout = Duration::from_millis(parse_positive(
+            &lookup,
+            &format!("{prefix}_FETCH_TIMEOUT_MS"),
+            30_000,
+        )?);
+        let max_bytes = parse_positive(&lookup, &format!("{prefix}_MAX_BYTES"), 1_048_576)?;
+
         Ok(Self {
             allowed_domains,
             templates_dir,
             auth_entries,
+            fetch_timeout,
+            max_bytes,
         })
     }
 
@@ -328,8 +386,14 @@ impl TemplateResolverConfig {
             None => HashMap::new(),
             Some(ref dir) => load_templates_from_dir(dir)?,
         };
-        TemplateResolverAdapter::new(templates, self.allowed_domains, self.auth_entries)
-            .context("building template resolver adapter")
+        TemplateResolverAdapter::new(
+            templates,
+            self.allowed_domains,
+            self.auth_entries,
+            self.fetch_timeout,
+            self.max_bytes,
+        )
+        .context("building template resolver adapter")
     }
 }
 
@@ -338,11 +402,15 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::env::VarError;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain, ResolvedBody};
     use catapulte_domain::port::template_resolver::{ResolveError, TemplateResolver};
 
     use super::{ResolverAuthEntry, TemplateResolverAdapter, TemplateResolverConfig};
+
+    const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+    const TEST_MAX_BYTES: u64 = 1_048_576;
 
     fn make_lookup(
         vars: HashMap<&'static str, &'static str>,
@@ -356,8 +424,14 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_plain_passthrough() {
-        let adapter =
-            TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), Vec::new()).unwrap();
+        let adapter = TemplateResolverAdapter::new(
+            HashMap::new(),
+            HashSet::new(),
+            Vec::new(),
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        )
+        .unwrap();
         let plain = Plain::try_new(Some("hello".to_owned()), None).unwrap();
         let body = BodySource::Plain(plain);
 
@@ -374,8 +448,14 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_mjml_inline_passthrough() {
-        let adapter =
-            TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), Vec::new()).unwrap();
+        let adapter = TemplateResolverAdapter::new(
+            HashMap::new(),
+            HashSet::new(),
+            Vec::new(),
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        )
+        .unwrap();
         let body = BodySource::Mjml(MjmlSource::Inline("source".to_owned()));
 
         let result = adapter.resolve(body).await.unwrap();
@@ -390,7 +470,14 @@ mod tests {
     async fn resolve_named_found() {
         let mut templates = HashMap::new();
         templates.insert("welcome".to_owned(), "<mjml/>".to_owned());
-        let adapter = TemplateResolverAdapter::new(templates, HashSet::new(), Vec::new()).unwrap();
+        let adapter = TemplateResolverAdapter::new(
+            templates,
+            HashSet::new(),
+            Vec::new(),
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        )
+        .unwrap();
         let body = BodySource::Mjml(MjmlSource::Named("welcome".to_owned()));
 
         let result = adapter.resolve(body).await.unwrap();
@@ -403,8 +490,14 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_named_not_found() {
-        let adapter =
-            TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), Vec::new()).unwrap();
+        let adapter = TemplateResolverAdapter::new(
+            HashMap::new(),
+            HashSet::new(),
+            Vec::new(),
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        )
+        .unwrap();
         let body = BodySource::Mjml(MjmlSource::Named("missing".to_owned()));
 
         let result = adapter.resolve(body).await;
@@ -417,8 +510,14 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_remote_domain_not_in_whitelist_returns_error() {
-        let adapter =
-            TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), Vec::new()).unwrap();
+        let adapter = TemplateResolverAdapter::new(
+            HashMap::new(),
+            HashSet::new(),
+            Vec::new(),
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        )
+        .unwrap();
         let url = url::Url::parse("https://example.com/template.mjml").unwrap();
         let body = BodySource::Mjml(MjmlSource::Remote(url));
 
@@ -431,7 +530,14 @@ mod tests {
     async fn resolve_remote_domain_in_whitelist_proceeds() {
         let mut allowed = HashSet::new();
         allowed.insert("example.com".to_owned());
-        let adapter = TemplateResolverAdapter::new(HashMap::new(), allowed, Vec::new()).unwrap();
+        let adapter = TemplateResolverAdapter::new(
+            HashMap::new(),
+            allowed,
+            Vec::new(),
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        )
+        .unwrap();
         let url = url::Url::parse("https://example.com/template.mjml").unwrap();
         let body = BodySource::Mjml(MjmlSource::Remote(url));
 
@@ -575,7 +681,13 @@ mod tests {
                 headers: Vec::new(),
             },
         ];
-        let result = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries);
+        let result = TemplateResolverAdapter::new(
+            HashMap::new(),
+            HashSet::new(),
+            entries,
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        );
         assert!(result.is_err());
     }
 
@@ -586,7 +698,13 @@ mod tests {
             bearer_token: Some("bad\nvalue".to_owned()),
             headers: Vec::new(),
         }];
-        let result = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries);
+        let result = TemplateResolverAdapter::new(
+            HashMap::new(),
+            HashSet::new(),
+            entries,
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        );
         assert!(result.is_err());
     }
 
@@ -597,7 +715,13 @@ mod tests {
             bearer_token: None,
             headers: vec![("bad header name".to_owned(), "value".to_owned())],
         }];
-        let result = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries);
+        let result = TemplateResolverAdapter::new(
+            HashMap::new(),
+            HashSet::new(),
+            entries,
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        );
         assert!(result.is_err());
     }
 
@@ -608,7 +732,13 @@ mod tests {
             bearer_token: None,
             headers: vec![("X-Custom".to_owned(), "bad\nvalue".to_owned())],
         }];
-        let result = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries);
+        let result = TemplateResolverAdapter::new(
+            HashMap::new(),
+            HashSet::new(),
+            entries,
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        );
         assert!(result.is_err());
     }
 
@@ -619,7 +749,13 @@ mod tests {
             bearer_token: Some("tok-a".to_owned()),
             headers: vec![("Authorization".to_owned(), "Bearer other".to_owned())],
         }];
-        let Err(err) = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), entries) else {
+        let Err(err) = TemplateResolverAdapter::new(
+            HashMap::new(),
+            HashSet::new(),
+            entries,
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        ) else {
             panic!("expected conflict error but got Ok")
         };
         let msg = format!("{err:#}");
@@ -631,7 +767,13 @@ mod tests {
 
     #[test]
     fn new_no_entries_builds_ok() {
-        let result = TemplateResolverAdapter::new(HashMap::new(), HashSet::new(), Vec::new());
+        let result = TemplateResolverAdapter::new(
+            HashMap::new(),
+            HashSet::new(),
+            Vec::new(),
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        );
         assert!(result.is_ok());
     }
 
@@ -641,6 +783,8 @@ mod tests {
             allowed_domains: HashSet::new(),
             templates_dir: None,
             auth_entries: Vec::new(),
+            fetch_timeout: TEST_TIMEOUT,
+            max_bytes: TEST_MAX_BYTES,
         };
         assert!(config.build().is_ok());
     }
@@ -651,6 +795,8 @@ mod tests {
             allowed_domains: HashSet::new(),
             templates_dir: Some(PathBuf::from("/nonexistent/resolver/templates")),
             auth_entries: Vec::new(),
+            fetch_timeout: TEST_TIMEOUT,
+            max_bytes: TEST_MAX_BYTES,
         };
         assert!(config.build().is_err());
     }
@@ -664,6 +810,8 @@ mod tests {
             allowed_domains: HashSet::new(),
             templates_dir: Some(dir.path().to_owned()),
             auth_entries: Vec::new(),
+            fetch_timeout: TEST_TIMEOUT,
+            max_bytes: TEST_MAX_BYTES,
         };
         let adapter = config.build().unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -716,7 +864,14 @@ mod tests {
                 headers: Vec::new(),
             },
         ];
-        let adapter = TemplateResolverAdapter::new(HashMap::new(), allowed, entries).unwrap();
+        let adapter = TemplateResolverAdapter::new(
+            HashMap::new(),
+            allowed,
+            entries,
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        )
+        .unwrap();
 
         let url = url::Url::parse(&format!("http://{host}:{port}/template.mjml")).unwrap();
         let body = BodySource::Mjml(MjmlSource::Remote(url));
@@ -753,7 +908,14 @@ mod tests {
             bearer_token: None,
             headers: vec![("X-Custom-Header".to_owned(), "custom-value".to_owned())],
         }];
-        let adapter = TemplateResolverAdapter::new(HashMap::new(), allowed, entries).unwrap();
+        let adapter = TemplateResolverAdapter::new(
+            HashMap::new(),
+            allowed,
+            entries,
+            TEST_TIMEOUT,
+            TEST_MAX_BYTES,
+        )
+        .unwrap();
 
         let url = url::Url::parse(&format!("http://{host}:{port}/template.mjml")).unwrap();
         let body = BodySource::Mjml(MjmlSource::Remote(url));
@@ -763,5 +925,225 @@ mod tests {
             ResolvedBody::Mjml(s) => assert_eq!(s, "<mjml/>"),
             ResolvedBody::Plain(_) => panic!("expected Mjml variant"),
         }
+    }
+
+    fn remote_adapter(
+        host: &str,
+        entries: Vec<ResolverAuthEntry>,
+        timeout: Duration,
+        max_bytes: u64,
+    ) -> TemplateResolverAdapter {
+        let allowed = HashSet::from([host.to_owned()]);
+        TemplateResolverAdapter::new(HashMap::new(), allowed, entries, timeout, max_bytes).unwrap()
+    }
+
+    async fn assert_fetch_fails(adapter: &TemplateResolverAdapter, server: &wiremock::MockServer) {
+        let url = url::Url::parse(&format!("{}/t.mjml", server.uri())).unwrap();
+        let body = BodySource::Mjml(MjmlSource::Remote(url));
+        let result = adapter.resolve(body).await;
+        assert!(matches!(result, Err(ResolveError::Fetch { .. })));
+    }
+
+    #[tokio::test]
+    async fn redirect_is_not_followed() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let target = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<mjml/>"))
+            .expect(0)
+            .mount(&target)
+            .await;
+        let origin = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/t.mjml"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/t.mjml", target.uri())),
+            )
+            .expect(1)
+            .mount(&origin)
+            .await;
+
+        let host = origin.address().ip().to_string();
+        let entries = vec![ResolverAuthEntry {
+            host: host.clone(),
+            bearer_token: None,
+            headers: vec![("PRIVATE-TOKEN".to_owned(), "secret".to_owned())],
+        }];
+        let adapter = remote_adapter(&host, entries, TEST_TIMEOUT, TEST_MAX_BYTES);
+
+        assert_fetch_fails(&adapter, &origin).await;
+    }
+
+    #[tokio::test]
+    async fn oversize_body_is_rejected() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(64)))
+            .mount(&server)
+            .await;
+        let host = server.address().ip().to_string();
+        let adapter = remote_adapter(&host, Vec::new(), TEST_TIMEOUT, 16);
+
+        assert_fetch_fails(&adapter, &server).await;
+    }
+
+    #[tokio::test]
+    async fn slow_response_times_out() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("<mjml/>")
+                    .set_delay(Duration::from_millis(500)),
+            )
+            .mount(&server)
+            .await;
+        let host = server.address().ip().to_string();
+        let adapter = remote_adapter(&host, Vec::new(), Duration::from_millis(50), TEST_MAX_BYTES);
+
+        assert_fetch_fails(&adapter, &server).await;
+    }
+
+    #[test]
+    fn config_fetch_limits_default() {
+        let config = TemplateResolverConfig::from_lookup("P", make_lookup(HashMap::new())).unwrap();
+        assert_eq!(config.fetch_timeout, Duration::from_secs(30));
+        assert_eq!(config.max_bytes, 1_048_576);
+    }
+
+    #[test]
+    fn config_fetch_limits_parsed() {
+        let vars = HashMap::from([("P_FETCH_TIMEOUT_MS", "1500"), ("P_MAX_BYTES", "2048")]);
+        let config = TemplateResolverConfig::from_lookup("P", make_lookup(vars)).unwrap();
+        assert_eq!(config.fetch_timeout, Duration::from_millis(1500));
+        assert_eq!(config.max_bytes, 2048);
+    }
+
+    #[test]
+    fn config_fetch_limits_invalid_rejected() {
+        for (key, value) in [
+            ("P_FETCH_TIMEOUT_MS", "abc"),
+            ("P_FETCH_TIMEOUT_MS", "0"),
+            ("P_MAX_BYTES", "-1"),
+            ("P_MAX_BYTES", "0"),
+        ] {
+            let vars = HashMap::from([(key, value)]);
+            assert!(TemplateResolverConfig::from_lookup("P", make_lookup(vars)).is_err());
+        }
+    }
+
+    /// Serves one HTTP/1.1 response; each step is written after its delay.
+    async fn serve_raw(steps: Vec<(Duration, Vec<u8>)>) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            for (delay, bytes) in steps {
+                tokio::time::sleep(delay).await;
+                if socket.write_all(&bytes).await.is_err() {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+        port
+    }
+
+    async fn fetch_raw(
+        port: u16,
+        timeout: Duration,
+        max_bytes: u64,
+    ) -> Result<ResolvedBody, ResolveError> {
+        let adapter = remote_adapter("127.0.0.1", Vec::new(), timeout, max_bytes);
+        let url = url::Url::parse(&format!("http://127.0.0.1:{port}/t.mjml")).unwrap();
+        adapter
+            .resolve(BodySource::Mjml(MjmlSource::Remote(url)))
+            .await
+    }
+
+    const CHUNKED_HEAD: &[u8] = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+    const NO_DELAY: Duration = Duration::ZERO;
+
+    #[tokio::test]
+    async fn chunked_body_over_cap_is_rejected() {
+        let mut steps = vec![(NO_DELAY, CHUNKED_HEAD.to_vec())];
+        for _ in 0..3 {
+            steps.push((NO_DELAY, b"8\r\nxxxxxxxx\r\n".to_vec()));
+        }
+        steps.push((NO_DELAY, b"0\r\n\r\n".to_vec()));
+        let port = serve_raw(steps).await;
+
+        let result = fetch_raw(port, TEST_TIMEOUT, 16).await;
+
+        assert!(matches!(result, Err(ResolveError::Fetch { .. })));
+    }
+
+    #[tokio::test]
+    async fn stalled_body_times_out() {
+        let steps = vec![
+            (NO_DELAY, CHUNKED_HEAD.to_vec()),
+            (Duration::from_millis(600), b"1\r\nx\r\n0\r\n\r\n".to_vec()),
+        ];
+        let port = serve_raw(steps).await;
+
+        let result = fetch_raw(port, Duration::from_millis(100), TEST_MAX_BYTES).await;
+
+        assert!(matches!(result, Err(ResolveError::Fetch { .. })));
+    }
+
+    #[tokio::test]
+    async fn body_exactly_at_cap_succeeds() {
+        let steps = vec![(
+            NO_DELAY,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\nxxxxxxxxxxxxxxxx".to_vec(),
+        )];
+        let port = serve_raw(steps).await;
+
+        let result = fetch_raw(port, TEST_TIMEOUT, 16).await.unwrap();
+
+        match result {
+            ResolvedBody::Mjml(s) => assert_eq!(s.len(), 16),
+            ResolvedBody::Plain(_) => panic!("expected Mjml variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_body_is_rejected() {
+        let steps = vec![(
+            NO_DELAY,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n\xff\xfe".to_vec(),
+        )];
+        let port = serve_raw(steps).await;
+
+        let result = fetch_raw(port, TEST_TIMEOUT, TEST_MAX_BYTES).await;
+
+        assert!(matches!(result, Err(ResolveError::Fetch { .. })));
+    }
+
+    #[test]
+    fn config_fetch_limit_not_unicode_rejected() {
+        use std::ffi::OsString;
+
+        let lookup = |key: &str| {
+            if key == "P_MAX_BYTES" {
+                Err(VarError::NotUnicode(OsString::from("x")))
+            } else {
+                Err(VarError::NotPresent)
+            }
+        };
+        assert!(TemplateResolverConfig::from_lookup("P", lookup).is_err());
     }
 }

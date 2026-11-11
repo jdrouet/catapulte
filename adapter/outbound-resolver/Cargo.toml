@@ -18,5 +18,5 @@ url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { version = "3" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
 wiremock = { version = "0.6" }

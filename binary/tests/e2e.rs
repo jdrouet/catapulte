@@ -101,6 +101,8 @@ fn base_resolver() -> TemplateResolverConfig {
         allowed_domains: HashSet::new(),
         templates_dir: None,
         auth_entries: Vec::new(),
+        fetch_timeout: std::time::Duration::from_secs(30),
+        max_bytes: 1_048_576,
     }
 }
 
