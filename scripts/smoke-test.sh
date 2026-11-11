@@ -43,7 +43,12 @@ SUBMIT_RESPONSE=$(run_curl -s -X POST http://catapulte:3000/emails \
     "sender": "smoke-test@example.com",
     "recipients": [{"kind": "to", "address": "recipient@example.com"}],
     "subject": "Smoke Test",
-    "body": {"kind": "plain", "text": "Hello from smoke test!"}
+    "body": {"kind": "plain", "text": "Hello from smoke test!"},
+    "attachments": [{
+      "filename": "smoke.txt",
+      "content_type": "text/plain",
+      "inline_base64": "c21va2UgdGVzdCBhdHRhY2htZW50Cg=="
+    }]
   }')
 
 echo "Submit response: $SUBMIT_RESPONSE"
@@ -65,14 +70,19 @@ FOUND=$(echo "$MAILPIT_RESPONSE" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 messages = data.get('messages', [])
-found = any('smoke-test@example.com' in m.get('From', {}).get('Address', '') for m in messages)
+# The attachment makes this pass through whichever attachment store the stack uses.
+found = any(
+    'smoke-test@example.com' in m.get('From', {}).get('Address', '')
+    and m.get('Attachments', 0) >= 1
+    for m in messages
+)
 print('true' if found else 'false')
 ")
 
 if [ "$FOUND" == "true" ]; then
     echo "SUCCESS: Email found in Mailpit!"
 else
-    echo "FAILURE: Email not found in Mailpit."
+    echo "FAILURE: Email with its attachment not found in Mailpit."
     echo "Recent Mailpit messages: $MAILPIT_RESPONSE"
     "${COMPOSE[@]}" logs
     exit 1

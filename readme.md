@@ -49,8 +49,8 @@ The easiest way to run Catapulte is using Docker Compose. Several examples are p
   Starts Catapulte with a persistent SQLite database.
 - **Postgres & NATS**: `docker-compose -f compose/postgres-nats.yml up`
   A more robust setup using Postgres for storage and NATS for the email queue and events.
-- **MinIO (S3 attachments)**: `docker-compose -f compose/minio.yml up`
-  Runs Catapulte with a local [MinIO](https://min.io) instance as the S3-compatible attachment backend.
+- **S3 (RustFS)**: `docker-compose -f compose/minio.yml up`
+  Runs Catapulte with a local [RustFS](https://rustfs.com) instance as the S3-compatible attachment backend. (The file and its `minio` service names are unchanged; the MinIO images are no longer published.)
 - **Redis (attachments)**: `docker-compose -f compose/redis.yml up`
   Runs Catapulte with a Redis instance as the attachment backend.
 - **Observability (OpenTelemetry)**: `docker-compose -f compose/observability.yml up`
