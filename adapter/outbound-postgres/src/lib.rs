@@ -8,6 +8,8 @@ mod health;
 pub mod sender_usage;
 pub mod suppression_repository;
 pub mod template_repository;
+#[cfg(test)]
+mod test_support;
 
 use anyhow::Context;
 use sqlx::PgPool;

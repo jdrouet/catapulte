@@ -451,6 +451,7 @@ impl PostgresAdapter {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::fresh_adapter;
     use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
     use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain};
     use catapulte_domain::entity::email::{EmailId, RecipientKind};
@@ -465,53 +466,6 @@ mod tests {
 
     use crate::PostgresAdapter;
 
-    async fn wait_for_tcp(port: u16, timeout: std::time::Duration) {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            if tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_ok()
-            {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "127.0.0.1:{port} did not accept connections within {timeout:?}"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
-
-    async fn fresh_adapter() -> (
-        PostgresAdapter,
-        testcontainers::ContainerAsync<testcontainers::GenericImage>,
-    ) {
-        use testcontainers::GenericImage;
-        use testcontainers::ImageExt;
-        use testcontainers::core::WaitFor;
-        use testcontainers::runners::AsyncRunner;
-
-        let pg = GenericImage::new("postgres", "16-alpine")
-            .with_wait_for(WaitFor::message_on_stderr(
-                "database system is ready to accept connections",
-            ))
-            .with_env_var("POSTGRES_USER", "catapulte")
-            .with_env_var("POSTGRES_PASSWORD", "catapulte")
-            .with_env_var("POSTGRES_DB", "catapulte")
-            .start()
-            .await
-            .expect("failed to start postgres container; ensure Docker is running");
-
-        let port = pg.get_host_port_ipv4(5432u16).await.unwrap();
-        wait_for_tcp(port, std::time::Duration::from_secs(15)).await;
-        let url = format!("postgres://catapulte:catapulte@127.0.0.1:{port}/catapulte");
-        let adapter = PostgresAdapter::connect(&url, 10, std::time::Duration::from_secs(30))
-            .await
-            .unwrap();
-        adapter.migrate().await.unwrap();
-        (adapter, pg)
-    }
-
     fn sample_envelope() -> Envelope {
         Envelope::new(
             "sender@example.com",
@@ -522,7 +476,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_inserts_a_row() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
 
@@ -535,7 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_with_same_idempotency_key_returns_duplicate() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id1 = EmailId::default();
         let mut envelope = sample_envelope();
         envelope.idempotency_key = Some("key-abc".to_owned());
@@ -596,7 +550,7 @@ mod tests {
 
     #[tokio::test]
     async fn publishable_duplicate_without_events_returns_the_stored_envelope() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
 
         let (found, _, recovery) = duplicate(&adapter).await;
@@ -608,7 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn publishable_duplicate_with_only_informational_events_still_returns_the_envelope() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
         add_event(&adapter, id, "queued").await;
         add_event(&adapter, id, "suppressed").await;
@@ -621,7 +575,7 @@ mod tests {
 
     #[tokio::test]
     async fn publishable_duplicate_with_a_worker_event_becomes_enqueued() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
         add_event(&adapter, id, "sending").await;
 
@@ -634,7 +588,7 @@ mod tests {
 
     #[tokio::test]
     async fn reserved_duplicate_is_never_replayed() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         keyed_row(&adapter, None).await;
 
         let (_, state, recovery) = duplicate(&adapter).await;
@@ -645,7 +599,7 @@ mod tests {
 
     #[tokio::test]
     async fn reply_to_and_headers_survive_save_and_recovery() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         let mut envelope = sample_envelope();
         envelope.idempotency_key = Some("key-abc".to_owned());
@@ -666,7 +620,7 @@ mod tests {
 
     #[tokio::test]
     async fn row_without_extras_recovers_with_empty_reply_to_and_headers() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
         sqlx::query("UPDATE emails SET extras = NULL WHERE id = $1")
             .bind(id.as_uuid())
@@ -683,7 +637,7 @@ mod tests {
 
     #[tokio::test]
     async fn enqueued_duplicate_returns_no_recovery() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         keyed_row(&adapter, Some(EnqueueState::Enqueued)).await;
 
         let (_, state, recovery) = duplicate(&adapter).await;
@@ -694,7 +648,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_without_idempotency_key_always_inserts() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let envelope = sample_envelope(); // idempotency_key: None
 
         let r1 = adapter.save(EmailId::default(), &envelope).await.unwrap();
@@ -726,14 +680,14 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_returns_empty_when_no_emails() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let emails = adapter.list_emails(default_list_params()).await.unwrap();
         assert!(emails.is_empty());
     }
 
     #[tokio::test]
     async fn list_emails_status_defaults_to_queued_when_no_events() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
 
@@ -744,7 +698,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_status_sent_for_latest_event_sent() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
         adapter
@@ -777,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_status_failed_filter() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
         adapter
@@ -804,7 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_status_queued_filter_includes_no_events_and_processing() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
 
         // First: no events
         let id1 = EmailId::default();
@@ -847,7 +801,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_filters_by_id() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id1 = EmailId::default();
         let id2 = EmailId::default();
         adapter.save(id1, &sample_envelope()).await.unwrap();
@@ -866,7 +820,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_filters_by_recipient() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         let mut envelope = sample_envelope();
         envelope.recipients = vec![(RecipientKind::To, "alice@example.com".into())];
@@ -904,7 +858,7 @@ mod tests {
 
     #[tokio::test]
     async fn recipient_filter_matches_bare_address_not_display_name() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let mut envelope = sample_envelope();
         envelope.recipients = vec![(RecipientKind::To, "Acme <Bob@Example.com>".into())];
         adapter.save(EmailId::default(), &envelope).await.unwrap();
@@ -915,7 +869,7 @@ mod tests {
 
     #[tokio::test]
     async fn recipient_filter_still_matches_legacy_rows_without_bare() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         sqlx::query(
             "INSERT INTO emails (id, sender, recipients, body, variables) \
              VALUES ($1, 'sender@example.com', '[{\"kind\":\"to\",\"address\":\"legacy@example.com\"}]'::jsonb, \
@@ -932,7 +886,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_filters_by_created_at_range() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id1 = uuid::Uuid::now_v7();
         let id2 = uuid::Uuid::now_v7();
         let env = sample_envelope();
@@ -979,7 +933,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_orders_by_created_at_desc() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id1 = EmailId::default();
         let id2 = EmailId::default();
         adapter.save(id1, &sample_envelope()).await.unwrap();
@@ -992,7 +946,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_respects_limit_and_offset() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         for _ in 0..5 {
             adapter
                 .save(EmailId::default(), &sample_envelope())
@@ -1026,7 +980,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_with_duplicate_id_and_no_idempotency_key_returns_error() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
         let result = adapter.save(id, &sample_envelope()).await;
@@ -1040,7 +994,7 @@ mod tests {
     async fn set_attachments_persists_refs_and_preserves_body() {
         use crate::dto::EnvelopeBodyDtoDeser;
 
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
 
@@ -1088,7 +1042,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_attachments_on_missing_id_returns_storage_error() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         let result = adapter.set_attachments(id, &[]).await;
         assert!(
@@ -1101,7 +1055,7 @@ mod tests {
     async fn set_attachments_normalizes_legacy_body_shape() {
         use crate::dto::EnvelopeBodyDtoDeser;
 
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         let id_uuid = id.as_uuid();
 
@@ -1162,7 +1116,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_removes_the_row() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         adapter.save(id, &sample_envelope()).await.unwrap();
 
@@ -1180,7 +1134,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_emails_template_filter_matches_only_named_mjml() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
 
         // Save a named MJML email.
         let id_named = EmailId::default();
@@ -1210,7 +1164,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_all_attachment_blobs_excludes_terminal_emails() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
 
         // No emails yet.
         let blobs = adapter.list_all_attachment_blobs().await.unwrap();
@@ -1336,7 +1290,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_comes_from_the_latest_terminal_event() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let mut ids = Vec::new();
         for _ in 0..5 {
             let id = EmailId::default();
@@ -1438,7 +1392,7 @@ mod tests {
 
     #[tokio::test]
     async fn gc_liveness_follows_the_latest_event_of_any_type() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let redelivered = email_with_blob(&adapter, "redelivered").await;
         add_event_at(&adapter, redelivered, "delivery.failed", 1).await;
         add_event_at(&adapter, redelivered, "sending", 2).await;
@@ -1463,7 +1417,7 @@ mod tests {
 
     #[tokio::test]
     async fn gc_liveness_ignores_informational_events() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let suppressed = email_with_blob(&adapter, "suppressed").await;
         add_event_at(&adapter, suppressed, "delivery.failed", 1).await;
         add_event_at(&adapter, suppressed, "suppressed", 2).await;
@@ -1489,7 +1443,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_follows_the_latest_terminal_event_and_breaks_ties_by_id() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let status_of = |id: EmailId| {
             let adapter = &adapter;
             async move {
@@ -1536,7 +1490,7 @@ mod tests {
 
     #[tokio::test]
     async fn same_idempotency_key_is_unique_per_owner() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let a = EmailId::default();
         let b = EmailId::default();
 
@@ -1556,7 +1510,7 @@ mod tests {
 
     #[tokio::test]
     async fn another_owners_same_key_never_replays_or_updates_a_publishable_row() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let a = EmailId::default();
         adapter.save(a, &owned_envelope("a", "k")).await.unwrap();
         adapter
@@ -1586,7 +1540,7 @@ mod tests {
     async fn list_emails_and_events_are_scoped_to_the_owner() {
         use catapulte_domain::port::event_repository::{EventRepository, ListEventsParams};
 
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let a = EmailId::default();
         let b = EmailId::default();
         adapter.save(a, &owned_envelope("a", "ka")).await.unwrap();
@@ -1642,7 +1596,7 @@ mod tests {
 
     #[tokio::test]
     async fn tag_filter_combines_with_owner_scoping_and_records_carry_tags() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let tagged = |owner: &str, key: &str, tags: &[&str]| {
             let mut envelope = owned_envelope(owner, key);
             envelope.tags = tags.iter().map(|t| (*t).to_owned()).collect();
@@ -1688,7 +1642,7 @@ mod tests {
 
     #[tokio::test]
     async fn recovery_replays_tags_and_metadata() {
-        let (adapter, _container) = fresh_adapter().await;
+        let adapter = fresh_adapter().await;
         let id = EmailId::default();
         let mut envelope = owned_envelope("", "key-abc");
         envelope.tags = vec!["welcome".to_owned()];
