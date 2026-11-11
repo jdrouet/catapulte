@@ -11,6 +11,7 @@ pub enum ErrorClass {
     Delivery,
     Rejected,
     Routing,
+    Suppressed,
 }
 
 impl ErrorClass {
@@ -24,6 +25,7 @@ impl ErrorClass {
             Self::Delivery => "delivery",
             Self::Rejected => "rejected",
             Self::Routing => "routing",
+            Self::Suppressed => "suppressed",
         }
     }
 }
@@ -46,6 +48,7 @@ impl FromStr for ErrorClass {
             "delivery" => Ok(Self::Delivery),
             "rejected" => Ok(Self::Rejected),
             "routing" => Ok(Self::Routing),
+            "suppressed" => Ok(Self::Suppressed),
             _ => Err(UnknownErrorClass {
                 value: s.to_owned(),
             }),

@@ -4,6 +4,7 @@ use crate::entity::attachment::AttachmentRef;
 use crate::entity::email::{EmailId, bare_address};
 use crate::entity::envelope::Envelope;
 use crate::entity::lifecycle_event::LifecycleEvent;
+use crate::entity::suppression::suppression_key;
 use crate::port::attachment_fetcher::AttachmentFetcher;
 use crate::port::attachment_store::{AttachmentReader, AttachmentStore};
 use crate::port::email_queue::{EmailQueue, EmailQueueError};
@@ -11,6 +12,9 @@ use crate::port::email_repository::{
     DuplicateState, EmailRepository, EmailRepositoryError, EnqueueState, SaveResult,
 };
 use crate::port::event_publisher::EventPublisher;
+use crate::port::suppression_repository::{
+    NoopSuppressionList, SuppressionRepository, SuppressionRepositoryError,
+};
 
 pub enum AttachmentInput {
     Inline {
@@ -74,6 +78,10 @@ pub enum SubmitEmailError {
     ReservationIncomplete { id: EmailId },
     #[error("sender domain {domain} is not allowed")]
     SenderDomainNotAllowed { domain: String },
+    #[error("every recipient is on the suppression list")]
+    AllRecipientsSuppressed,
+    #[error(transparent)]
+    Suppression(#[from] SuppressionRepositoryError),
 }
 
 impl SubmitEmailError {
@@ -85,12 +93,16 @@ impl SubmitEmailError {
             // Storage / queue issues are infrastructure-level and likely transient.
             // Attachment store I/O could be either; treat as transient (disk full
             // recovers; remote storage hiccup recovers).
-            Self::Persist(_) | Self::Enqueue(_) | Self::AttachmentStore { .. } => true,
+            Self::Persist(_)
+            | Self::Enqueue(_)
+            | Self::AttachmentStore { .. }
+            | Self::Suppression(_) => true,
             // Remote URL fetch errors are almost always permanent for the given
             // URL (404, 410, blocked domain, oversize). Don't retry.
             Self::AttachmentFetch { .. }
             | Self::MessageTooLarge { .. }
             | Self::SenderDomainNotAllowed { .. }
+            | Self::AllRecipientsSuppressed
             | Self::ReservationIncomplete { .. } => false,
         }
     }
@@ -106,6 +118,8 @@ pub trait SubmitEmailUseCase: Send + Sync + 'static {
     /// Returns `SubmitEmailError::SenderDomainNotAllowed` when the sender domain is not allowed.
     /// Returns `SubmitEmailError::ReservationIncomplete` when the idempotency key matches a
     /// submission that never completed.
+    /// Returns `SubmitEmailError::AllRecipientsSuppressed` when no recipient is left after
+    /// removing suppressed ones.
     fn execute(
         &self,
         input: SubmitEmailInput,
@@ -201,23 +215,17 @@ fn estimate_message_bytes(
     u64::try_from(total * 4 / 3).unwrap_or(u64::MAX)
 }
 
-pub struct SubmitEmailService<R, Q, P, A, F> {
+pub struct SubmitEmailService<R, Q, P, A, F, X = NoopSuppressionList> {
     repository: R,
     queue: Q,
     event_publisher: P,
     attachment_store: A,
     attachment_fetcher: F,
+    suppressions: X,
     limits: SubmitLimits,
 }
 
-impl<R, Q, P, A, F> SubmitEmailService<R, Q, P, A, F>
-where
-    R: EmailRepository,
-    Q: EmailQueue,
-    P: EventPublisher,
-    A: AttachmentStore,
-    F: AttachmentFetcher,
-{
+impl<R, Q, P, A, F> SubmitEmailService<R, Q, P, A, F, NoopSuppressionList> {
     #[must_use]
     pub fn new(
         repository: R,
@@ -232,7 +240,24 @@ where
             event_publisher,
             attachment_store,
             attachment_fetcher,
+            suppressions: NoopSuppressionList,
             limits: SubmitLimits::default(),
+        }
+    }
+}
+
+impl<R, Q, P, A, F, X> SubmitEmailService<R, Q, P, A, F, X> {
+    /// Drops suppressed recipients at submit time.
+    #[must_use]
+    pub fn with_suppression_list<Y>(self, suppressions: Y) -> SubmitEmailService<R, Q, P, A, F, Y> {
+        SubmitEmailService {
+            repository: self.repository,
+            queue: self.queue,
+            event_publisher: self.event_publisher,
+            attachment_store: self.attachment_store,
+            attachment_fetcher: self.attachment_fetcher,
+            suppressions,
+            limits: self.limits,
         }
     }
 
@@ -241,7 +266,17 @@ where
         self.limits = limits;
         self
     }
+}
 
+impl<R, Q, P, A, F, X> SubmitEmailService<R, Q, P, A, F, X>
+where
+    R: EmailRepository,
+    Q: EmailQueue,
+    P: EventPublisher,
+    A: AttachmentStore,
+    F: AttachmentFetcher,
+    X: SuppressionRepository,
+{
     /// Removes the stored blobs and the reserved row, and returns the error to report.
     ///
     /// Blob failures are logged and ignored (GC sweeps orphans). If the row delete fails the
@@ -343,6 +378,23 @@ where
         }
     }
 
+    async fn announce_suppressed(&self, id: EmailId, envelope: &Envelope, addresses: Vec<String>) {
+        if addresses.is_empty() {
+            return;
+        }
+        if let Err(e) = self
+            .event_publisher
+            .publish(&LifecycleEvent::Suppressed {
+                id,
+                addresses,
+                correlation_id: envelope.correlation_id.clone(),
+            })
+            .await
+        {
+            tracing::warn!(error = %e, email_id = %id.as_uuid(), "failed to publish suppressed event");
+        }
+    }
+
     /// # Errors
     ///
     /// Returns `SubmitEmailError::Persist` when saving the envelope fails.
@@ -351,6 +403,7 @@ where
     /// Returns `SubmitEmailError::SenderDomainNotAllowed` when the sender domain is not allowed.
     /// Returns `SubmitEmailError::ReservationIncomplete` when the idempotency key matches a
     /// submission that never completed.
+    /// Returns `SubmitEmailError::AllRecipientsSuppressed` when every recipient is suppressed.
     #[allow(clippy::too_many_lines)]
     #[tracing::instrument(skip_all, name = "submit_email", fields(email_id = tracing::field::Empty, correlation_id = tracing::field::Empty))]
     pub async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
@@ -362,13 +415,40 @@ where
 
         // Reserve the row with an empty attachment list first; the final list is
         // patched in after blobs are written so the worker never sees stale refs.
+        let keys: Vec<String> = input
+            .recipients
+            .iter()
+            .map(|(_, address)| suppression_key(address))
+            .collect();
+        let suppressed = self.suppressions.find_suppressed(&keys).await?;
+        let filtered: Vec<_> = input
+            .recipients
+            .iter()
+            .filter(|(_, address)| !suppressed.contains(&suppression_key(address)))
+            .cloned()
+            .collect();
+        let all_suppressed = filtered.is_empty();
+        let mut dropped: Vec<String> = keys
+            .into_iter()
+            .filter(|key| suppressed.contains(key))
+            .collect();
+        dropped.sort();
+        dropped.dedup();
+        // The stored envelope is the published one, so a recovery replay never resurrects a
+        // dropped recipient. A fully suppressed row only reserves the key until it is deleted.
+        let recipients = if all_suppressed {
+            input.recipients.clone()
+        } else {
+            filtered
+        };
+
         let envelope_for_reservation = Envelope {
             owner: input.owner.clone(),
             idempotency_key: input.idempotency_key.clone(),
             correlation_id: input.correlation_id.clone(),
             subject: input.subject.clone(),
             sender: input.sender.clone(),
-            recipients: input.recipients.clone(),
+            recipients: recipients.clone(),
             body: input.body.clone(),
             variables: input.variables.clone(),
             attachments: vec![],
@@ -395,6 +475,11 @@ where
                 tracing::Span::current().record("email_id", id.as_uuid().to_string());
             }
         }
+        if all_suppressed {
+            return Err(self
+                .rollback(id, &[], SubmitEmailError::AllRecipientsSuppressed)
+                .await);
+        }
 
         let SubmitEmailInput {
             owner,
@@ -403,7 +488,7 @@ where
             correlation_id,
             subject,
             sender,
-            recipients,
+            recipients: _,
             body,
             variables,
             attachments,
@@ -511,7 +596,10 @@ where
         }
 
         match self.queue.enqueue(id, &envelope).await {
-            Ok(()) => self.mark_enqueued_and_announce(id, &envelope).await,
+            Ok(()) => {
+                self.mark_enqueued_and_announce(id, &envelope).await;
+                self.announce_suppressed(id, &envelope, dropped).await;
+            }
             // The message may be queued: keep the row and blobs so a retry can republish it.
             Err(e @ EmailQueueError::Uncertain { .. }) => {
                 return Err(SubmitEmailError::Enqueue(e));
@@ -530,13 +618,14 @@ where
     }
 }
 
-impl<R, Q, P, A, F> SubmitEmailUseCase for SubmitEmailService<R, Q, P, A, F>
+impl<R, Q, P, A, F, X> SubmitEmailUseCase for SubmitEmailService<R, Q, P, A, F, X>
 where
     R: EmailRepository + Send + Sync + 'static,
     Q: EmailQueue + Send + Sync + 'static,
     P: EventPublisher + Send + Sync + 'static,
     A: AttachmentStore + Send + Sync + 'static,
     F: AttachmentFetcher + Send + Sync + 'static,
+    X: SuppressionRepository,
 {
     fn execute(
         &self,
@@ -1830,6 +1919,183 @@ mod tests {
         assert!(!run(Some(&["b.com"]), Some(&["a.com"]), "x@a.com").await);
         assert!(run(Some(&["a.com", "b.com"]), Some(&["a.com"]), "x@a.com").await);
         assert!(!run(Some(&["a.com"]), None, "x@b.com").await);
+    }
+
+    #[derive(Clone, Default)]
+    struct FakeSuppressions(Arc<Mutex<std::collections::HashSet<String>>>);
+
+    impl FakeSuppressions {
+        fn with(addresses: &[&str]) -> Self {
+            Self(Arc::new(Mutex::new(
+                addresses.iter().map(|a| (*a).to_owned()).collect(),
+            )))
+        }
+    }
+
+    #[allow(async_fn_in_trait)]
+    impl crate::port::suppression_repository::SuppressionRepository for FakeSuppressions {
+        async fn list(
+            &self,
+            _params: crate::port::suppression_repository::ListSuppressionsParams,
+        ) -> Result<
+            Vec<crate::entity::suppression::Suppression>,
+            crate::port::suppression_repository::SuppressionRepositoryError,
+        > {
+            Ok(vec![])
+        }
+
+        async fn add(
+            &self,
+            _entries: &[crate::entity::suppression::Suppression],
+        ) -> Result<(), crate::port::suppression_repository::SuppressionRepositoryError> {
+            Ok(())
+        }
+
+        async fn delete(
+            &self,
+            address: &str,
+        ) -> Result<bool, crate::port::suppression_repository::SuppressionRepositoryError> {
+            Ok(self.0.lock().unwrap().remove(address))
+        }
+
+        async fn find_suppressed(
+            &self,
+            addresses: &[String],
+        ) -> Result<
+            std::collections::HashSet<String>,
+            crate::port::suppression_repository::SuppressionRepositoryError,
+        > {
+            let set = self.0.lock().unwrap();
+            Ok(addresses
+                .iter()
+                .filter(|a| set.contains(*a))
+                .cloned()
+                .collect())
+        }
+    }
+
+    fn two_recipient_input(key: &str) -> SubmitEmailInput {
+        let mut input = keyed_input(key, 10);
+        input.recipients = vec![
+            (RecipientKind::To, "A@x.com".into()),
+            (RecipientKind::Cc, "Bee <b@x.com>".into()),
+        ];
+        input
+    }
+
+    fn stored_recipients(repo: &KeyedRepository) -> Vec<Vec<String>> {
+        repo.rows
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                r.envelope
+                    .recipients
+                    .iter()
+                    .map(|(_, a)| a.clone())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn fully_suppressed_submits_leave_no_row_and_enqueue_nothing() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[]);
+        let suppressions = FakeSuppressions::with(&["a@x.com", "b@x.com"]);
+        let service = service_with(
+            &repo,
+            &queue,
+            &FakeEventPublisher::new(),
+            &FakeAttachmentStore::new(),
+        )
+        .with_suppression_list(suppressions.clone());
+
+        for _ in 0..2 {
+            let err = service.execute(two_recipient_input("k")).await.unwrap_err();
+            assert!(
+                matches!(err, SubmitEmailError::AllRecipientsSuppressed),
+                "{err}"
+            );
+            assert!(!err.is_transient());
+        }
+        assert!(repo.rows.lock().unwrap().is_empty());
+        assert!(queue.calls.lock().unwrap().is_empty());
+
+        suppressions.0.lock().unwrap().clear();
+        service.execute(two_recipient_input("k")).await.unwrap();
+        assert_eq!(queue.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn suppression_added_after_acceptance_does_not_turn_a_resubmit_into_an_error() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[]);
+        let suppressions = FakeSuppressions::default();
+        let service = service_with(
+            &repo,
+            &queue,
+            &FakeEventPublisher::new(),
+            &FakeAttachmentStore::new(),
+        )
+        .with_suppression_list(suppressions.clone());
+        let id = service.execute(two_recipient_input("k")).await.unwrap();
+
+        suppressions
+            .0
+            .lock()
+            .unwrap()
+            .extend(["a@x.com".to_owned(), "b@x.com".to_owned()]);
+        let again = service.execute(two_recipient_input("k")).await.unwrap();
+
+        assert_eq!(again, id);
+        assert_eq!(queue.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn partial_suppression_stores_and_publishes_only_the_remaining_recipients() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[]);
+        let events = FakeEventPublisher::new();
+        let service = service_with(&repo, &queue, &events, &FakeAttachmentStore::new())
+            .with_suppression_list(FakeSuppressions::with(&["b@x.com"]));
+
+        service.execute(two_recipient_input("k")).await.unwrap();
+
+        assert_eq!(stored_recipients(&repo), vec![vec!["A@x.com".to_owned()]]);
+        let published = events.published.lock().unwrap();
+        assert!(matches!(published[0], LifecycleEvent::Queued { .. }));
+        assert!(matches!(
+            &published[1],
+            LifecycleEvent::Suppressed { addresses, .. } if addresses == &["b@x.com".to_owned()]
+        ));
+    }
+
+    #[tokio::test]
+    async fn recovery_replays_the_stored_filtered_envelope_even_after_the_suppression_is_removed() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[true]);
+        let suppressions = FakeSuppressions::with(&["b@x.com"]);
+        let service = service_with(
+            &repo,
+            &queue,
+            &FakeEventPublisher::new(),
+            &FakeAttachmentStore::new(),
+        )
+        .with_suppression_list(suppressions.clone());
+        service.execute(two_recipient_input("k")).await.unwrap_err();
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+
+        suppressions.0.lock().unwrap().clear();
+        service.execute(two_recipient_input("k")).await.unwrap();
+
+        assert_eq!(stored_recipients(&repo), vec![vec!["A@x.com".to_owned()]]);
+        assert_eq!(
+            queue.calls.lock().unwrap().len(),
+            2,
+            "uncertain call, then the replay"
+        );
+        assert_eq!(repo.states(), vec![RowState::Enqueued]);
     }
 
     #[tokio::test]

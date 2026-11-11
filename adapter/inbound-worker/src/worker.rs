@@ -3,9 +3,7 @@ use catapulte_domain::port::attachment_store::AttachmentStore;
 use catapulte_domain::port::email_queue::{AckToken, EmailQueue};
 use catapulte_domain::port::email_repository::EmailRepository;
 use catapulte_domain::port::event_publisher::EventPublisher;
-use catapulte_domain::use_case::process_queued_email::{
-    ProcessQueuedEmailError, ProcessQueuedEmailUseCase,
-};
+use catapulte_domain::use_case::process_queued_email::ProcessQueuedEmailUseCase;
 use tracing::Instrument as _;
 
 const MAX_ATTEMPTS: u32 = 3;
@@ -204,6 +202,18 @@ async fn process_one<S: WorkerState>(
                 {
                     tracing::error!(error = %e, "failed to publish sent event");
                 }
+                if !processed.suppressed.is_empty()
+                    && let Err(e) = state
+                        .event_publisher()
+                        .publish(&LifecycleEvent::Suppressed {
+                            id,
+                            addresses: processed.suppressed,
+                            correlation_id: correlation_id.clone(),
+                        })
+                        .await
+                {
+                    tracing::error!(error = %e, "failed to publish suppressed event");
+                }
             }
             Err(e) => {
                 tracing::error!(
@@ -215,9 +225,7 @@ async fn process_one<S: WorkerState>(
                 let reason = e.to_string();
                 let error_class = e.error_class();
                 let sender_name = e.sender_name().cloned();
-                let is_terminal =
-                    matches!(&e, ProcessQueuedEmailError::Send(s) if !s.is_transient())
-                        || attempt >= MAX_ATTEMPTS;
+                let is_terminal = e.is_permanent() || attempt >= MAX_ATTEMPTS;
                 let event = if is_terminal {
                     if let Err(ack_err) = state.email_queue().ack(token).await {
                         tracing::error!(error = %ack_err, "failed to ack permanently failed email");
@@ -292,6 +300,7 @@ mod tests {
             sender_name: SenderName::new(sender),
             smtp_response: Some("250 2.0.0 Ok: queued".to_owned()),
             message_id: "<m@example.com>".to_owned(),
+            suppressed: vec![],
         }
     }
 
@@ -1033,6 +1042,97 @@ mod tests {
             matches!(failed, LifecycleEvent::Failed { error_class, .. } if *error_class == ErrorClass::Routing),
             "NoMatchingRoute must produce Routing error class, got: {failed:?}"
         );
+    }
+
+    #[derive(Clone)]
+    struct ScriptedProcessor {
+        all_suppressed: bool,
+    }
+
+    impl ProcessQueuedEmailUseCase for ScriptedProcessor {
+        async fn execute(
+            &self,
+            _: EmailId,
+            _: Envelope,
+        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
+            if self.all_suppressed {
+                return Err(ProcessQueuedEmailError::AllRecipientsSuppressed);
+            }
+            Ok(ProcessedEmail {
+                suppressed: vec!["b@x.com".to_owned()],
+                ..processed("sender")
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct ScriptedState {
+        processor: ScriptedProcessor,
+        queue: TrackingQueue,
+        publisher: CapturingEventPublisher,
+    }
+
+    impl WorkerState for ScriptedState {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &self.processor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &self.queue
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &self.publisher
+        }
+
+        fn attachment_store(&self) -> &impl AttachmentStore {
+            &NoopStore
+        }
+
+        fn email_repository(&self) -> &impl EmailRepository {
+            &NoopRepository
+        }
+    }
+
+    async fn run_scripted(all_suppressed: bool) -> (TrackingQueue, Vec<LifecycleEvent>) {
+        let state = ScriptedState {
+            processor: ScriptedProcessor { all_suppressed },
+            queue: TrackingQueue::default(),
+            publisher: CapturingEventPublisher::default(),
+        };
+        process_one(
+            &state,
+            EmailId::default(),
+            sample_envelope(),
+            1,
+            AckToken::new(vec![0u8; 8]),
+            TraceCarrier::default(),
+        )
+        .await;
+        let events = state.publisher.events.lock().unwrap().clone();
+        (state.queue, events)
+    }
+
+    #[tokio::test]
+    async fn all_recipients_suppressed_acks_and_fails_with_the_suppressed_class() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+
+        let (queue, events) = run_scripted(true).await;
+
+        assert_eq!(*queue.acked.lock().unwrap(), 1);
+        assert_eq!(*queue.nacked.lock().unwrap(), 0);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LifecycleEvent::Failed { error_class, .. } if *error_class == ErrorClass::Suppressed
+        )));
+    }
+
+    #[tokio::test]
+    async fn partial_suppression_sends_then_announces_the_dropped_recipients() {
+        let (_, events) = run_scripted(false).await;
+
+        let types: Vec<_> = events.iter().map(LifecycleEvent::event_type).collect();
+        assert_eq!(types, ["sending", "delivery.succeeded", "suppressed"]);
     }
 
     // -------------------------------------------------------------------------

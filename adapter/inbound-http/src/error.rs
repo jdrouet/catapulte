@@ -57,6 +57,10 @@ impl IntoResponse for AppError {
             Self::Submit(SubmitEmailError::SenderDomainNotAllowed { .. }) => {
                 (StatusCode::FORBIDDEN, "sender domain is not allowed")
             }
+            Self::Submit(SubmitEmailError::AllRecipientsSuppressed) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "every recipient is on the suppression list",
+            ),
             Self::Submit(SubmitEmailError::ReservationIncomplete { .. }) => (
                 StatusCode::CONFLICT,
                 "submission with this idempotency key is incomplete; retry later",
@@ -64,7 +68,8 @@ impl IntoResponse for AppError {
             Self::Submit(
                 SubmitEmailError::Persist(_)
                 | SubmitEmailError::Enqueue(_)
-                | SubmitEmailError::AttachmentStore { .. },
+                | SubmitEmailError::AttachmentStore { .. }
+                | SubmitEmailError::Suppression(_),
             )
             | Self::ListEmails(_)
             | Self::ListEvents(_)

@@ -240,19 +240,23 @@ impl AppConfig {
                 attachment_store.clone(),
                 attachment_fetcher,
             )
+            .with_suppression_list(storage.clone())
             .with_limits(SubmitLimits {
                 max_message_bytes: self.max_message_bytes,
                 allowed_sender_domains: self.allowed_sender_domains.clone(),
             }),
         );
         let mjml_renderer = MjmlRenderer::new(self.include_loader.build());
-        let process_queued_email = Arc::new(ProcessQueuedEmailService::new(
-            resolver,
-            MiniJinjaInterpolator::new(),
-            mjml_renderer,
-            smtp,
-            attachment_store.clone(),
-        ));
+        let process_queued_email = Arc::new(
+            ProcessQueuedEmailService::new(
+                resolver,
+                MiniJinjaInterpolator::new(),
+                mjml_renderer,
+                smtp,
+                attachment_store.clone(),
+            )
+            .with_suppression_list(storage.clone()),
+        );
 
         let check_readiness = Arc::new(
             catapulte_domain::use_case::check_readiness::CheckReadinessService::new(

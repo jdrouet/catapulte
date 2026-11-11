@@ -80,6 +80,7 @@ pub async fn submit_email_batch<S: HttpServerState>(
                 Err(
                     e @ (SubmitEmailError::MessageTooLarge { .. }
                     | SubmitEmailError::SenderDomainNotAllowed { .. }
+                    | SubmitEmailError::AllRecipientsSuppressed
                     | SubmitEmailError::ReservationIncomplete { .. }),
                 ) => {
                     results.push(BatchItemResultDto::Rejected {

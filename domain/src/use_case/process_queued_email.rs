@@ -6,8 +6,12 @@ use crate::entity::email::EmailId;
 use crate::entity::envelope::Envelope;
 use crate::entity::error_class::ErrorClass;
 use crate::entity::sender::SenderName;
+use crate::entity::suppression::suppression_key;
 use crate::port::attachment_store::AttachmentStore;
 use crate::port::email_sender::{EmailSender, OutboundEmail, SendError};
+use crate::port::suppression_repository::{
+    NoopSuppressionList, SuppressionRepository, SuppressionRepositoryError,
+};
 use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
 use crate::port::template_renderer::{RenderError, TemplateRenderer};
 use crate::port::template_resolver::{ResolveError, TemplateResolver};
@@ -18,6 +22,8 @@ pub struct ProcessedEmail {
     pub sender_name: SenderName,
     pub smtp_response: Option<String>,
     pub message_id: String,
+    /// Lowercased addresses dropped because they were suppressed since submission.
+    pub suppressed: Vec<String>,
 }
 
 /// `<{email uuid}@{lowercased sender domain}>`. Derived only from the email id and sender,
@@ -67,6 +73,10 @@ pub enum ProcessQueuedEmailError {
         #[source]
         source: anyhow::Error,
     },
+    #[error("every recipient is on the suppression list")]
+    AllRecipientsSuppressed,
+    #[error(transparent)]
+    Suppression(#[from] SuppressionRepositoryError),
 }
 
 impl ProcessQueuedEmailError {
@@ -75,6 +85,16 @@ impl ProcessQueuedEmailError {
         match self {
             Self::Send(e) => e.sender_name(),
             _ => None,
+        }
+    }
+
+    /// True when retrying cannot succeed.
+    #[must_use]
+    pub fn is_permanent(&self) -> bool {
+        match self {
+            Self::Send(e) => !e.is_transient(),
+            Self::AllRecipientsSuppressed => true,
+            _ => false,
         }
     }
 
@@ -88,28 +108,23 @@ impl ProcessQueuedEmailError {
             Self::Send(SendError::Send {
                 permanent: true, ..
             }) => ErrorClass::Rejected,
-            Self::Send(SendError::Send { .. }) => ErrorClass::Delivery,
+            Self::Send(SendError::Send { .. }) | Self::Suppression(_) => ErrorClass::Delivery,
             Self::Send(SendError::NoMatchingRoute { .. }) => ErrorClass::Routing,
+            Self::AllRecipientsSuppressed => ErrorClass::Suppressed,
         }
     }
 }
 
-pub struct ProcessQueuedEmailService<R, I, Rdr, S, A> {
+pub struct ProcessQueuedEmailService<R, I, Rdr, S, A, X = NoopSuppressionList> {
     resolver: R,
     interpolator: I,
     renderer: Rdr,
     sender: S,
     attachment_store: A,
+    suppressions: X,
 }
 
-impl<R, I, Rdr, S, A> ProcessQueuedEmailService<R, I, Rdr, S, A>
-where
-    R: TemplateResolver,
-    I: TemplateInterpolator,
-    Rdr: TemplateRenderer,
-    S: EmailSender,
-    A: AttachmentStore,
-{
+impl<R, I, Rdr, S, A> ProcessQueuedEmailService<R, I, Rdr, S, A, NoopSuppressionList> {
     pub fn new(
         resolver: R,
         interpolator: I,
@@ -123,9 +138,38 @@ where
             renderer,
             sender,
             attachment_store,
+            suppressions: NoopSuppressionList,
         }
     }
+}
 
+impl<R, I, Rdr, S, A, X> ProcessQueuedEmailService<R, I, Rdr, S, A, X> {
+    /// Re-checks recipients against the suppression list before sending.
+    #[must_use]
+    pub fn with_suppression_list<Y>(
+        self,
+        suppressions: Y,
+    ) -> ProcessQueuedEmailService<R, I, Rdr, S, A, Y> {
+        ProcessQueuedEmailService {
+            resolver: self.resolver,
+            interpolator: self.interpolator,
+            renderer: self.renderer,
+            sender: self.sender,
+            attachment_store: self.attachment_store,
+            suppressions,
+        }
+    }
+}
+
+impl<R, I, Rdr, S, A, X> ProcessQueuedEmailService<R, I, Rdr, S, A, X>
+where
+    R: TemplateResolver,
+    I: TemplateInterpolator,
+    Rdr: TemplateRenderer,
+    S: EmailSender,
+    A: AttachmentStore,
+    X: SuppressionRepository,
+{
     /// # Errors
     ///
     /// Returns a `ProcessQueuedEmailError` if the body fails to resolve, interpolate, render, or send.
@@ -150,6 +194,23 @@ where
             unsubscribe,
             ..
         } = envelope;
+        let keys: Vec<String> = recipients.iter().map(|(_, a)| suppression_key(a)).collect();
+        let suppressed_set = self.suppressions.find_suppressed(&keys).await?;
+        let remaining: Vec<_> = recipients
+            .iter()
+            .filter(|(_, a)| !suppressed_set.contains(&suppression_key(a)))
+            .cloned()
+            .collect();
+        if remaining.is_empty() && !recipients.is_empty() {
+            return Err(ProcessQueuedEmailError::AllRecipientsSuppressed);
+        }
+        let mut suppressed: Vec<String> = keys
+            .into_iter()
+            .filter(|k| suppressed_set.contains(k))
+            .collect();
+        suppressed.sort();
+        suppressed.dedup();
+        let recipients = remaining;
         let resolved = self.resolver.resolve(body).await?;
         let interpolated = self.interpolator.interpolate(resolved, &variables)?;
         let rendered = self.renderer.render(interpolated).await?;
@@ -174,6 +235,7 @@ where
             sender_name: sent.sender_name,
             smtp_response: sent.smtp_response,
             message_id,
+            suppressed,
         })
     }
 }
@@ -207,13 +269,14 @@ async fn resolve_attachments<A: AttachmentStore>(
     Ok(resolved)
 }
 
-impl<R, I, Rdr, S, A> ProcessQueuedEmailUseCase for ProcessQueuedEmailService<R, I, Rdr, S, A>
+impl<R, I, Rdr, S, A, X> ProcessQueuedEmailUseCase for ProcessQueuedEmailService<R, I, Rdr, S, A, X>
 where
     R: TemplateResolver,
     I: TemplateInterpolator,
     Rdr: TemplateRenderer,
     S: EmailSender,
     A: AttachmentStore,
+    X: SuppressionRepository,
 {
     fn execute(
         &self,
@@ -628,6 +691,98 @@ mod tests {
             FakeAttachmentStore,
         );
         (service, spy)
+    }
+
+    struct FixedSuppressions(Vec<&'static str>);
+
+    #[allow(async_fn_in_trait)]
+    impl crate::port::suppression_repository::SuppressionRepository for FixedSuppressions {
+        async fn list(
+            &self,
+            _: crate::port::suppression_repository::ListSuppressionsParams,
+        ) -> Result<
+            Vec<crate::entity::suppression::Suppression>,
+            crate::port::suppression_repository::SuppressionRepositoryError,
+        > {
+            Ok(vec![])
+        }
+
+        async fn add(
+            &self,
+            _: &[crate::entity::suppression::Suppression],
+        ) -> Result<(), crate::port::suppression_repository::SuppressionRepositoryError> {
+            Ok(())
+        }
+
+        async fn delete(
+            &self,
+            _: &str,
+        ) -> Result<bool, crate::port::suppression_repository::SuppressionRepositoryError> {
+            Ok(false)
+        }
+
+        async fn find_suppressed(
+            &self,
+            addresses: &[String],
+        ) -> Result<
+            std::collections::HashSet<String>,
+            crate::port::suppression_repository::SuppressionRepositoryError,
+        > {
+            Ok(addresses
+                .iter()
+                .filter(|a| self.0.contains(&a.as_str()))
+                .cloned()
+                .collect())
+        }
+    }
+
+    fn envelope_to(recipients: &[&str]) -> Envelope {
+        let mut envelope = default_envelope(BodySource::Plain(
+            Plain::try_new(Some("hello".into()), None).unwrap(),
+        ));
+        envelope.recipients = recipients
+            .iter()
+            .map(|a| (RecipientKind::To, (*a).to_owned()))
+            .collect();
+        envelope
+    }
+
+    #[tokio::test]
+    async fn suppressed_recipients_are_dropped_before_sending() {
+        let (service, spy) = capturing_service();
+        let service = service.with_suppression_list(FixedSuppressions(vec!["b@x.com"]));
+
+        let processed = service
+            .execute(EmailId::default(), envelope_to(&["a@x.com", "B <B@x.com>"]))
+            .await
+            .unwrap();
+
+        let sent = spy.lock().unwrap().take().unwrap();
+        assert_eq!(sent.recipients.len(), 1);
+        assert_eq!(sent.recipients[0].1, "a@x.com");
+        assert_eq!(processed.suppressed, vec!["b@x.com".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn all_recipients_suppressed_is_permanent_and_sends_nothing() {
+        let (service, spy) = capturing_service();
+        let service = service.with_suppression_list(FixedSuppressions(vec!["a@x.com"]));
+
+        let err = service
+            .execute(EmailId::default(), envelope_to(&["a@x.com"]))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ProcessQueuedEmailError::AllRecipientsSuppressed
+        ));
+        assert!(err.is_permanent());
+        assert_eq!(
+            err.error_class(),
+            crate::entity::error_class::ErrorClass::Suppressed
+        );
+        assert!(spy.lock().unwrap().is_none());
     }
 
     #[tokio::test]

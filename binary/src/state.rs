@@ -34,6 +34,7 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
     MjmlRenderer,
     RoutedEmailSender<SenderTransport, StorageAdapter>,
     AttachmentStoreAdapter,
+    StorageAdapter,
 >;
 
 pub(crate) type ListSendersServiceImpl = ListSendersService<StorageAdapter, SystemClock>;
@@ -53,6 +54,7 @@ pub(crate) struct AppState {
             PublisherAdapter,
             AttachmentStoreAdapter,
             HttpAttachmentFetcher,
+            StorageAdapter,
         >,
     >,
     pub(crate) process_queued_email: Arc<ProcessService>,
