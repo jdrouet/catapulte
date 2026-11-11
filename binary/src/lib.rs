@@ -10,8 +10,6 @@ use catapulte_inbound_http::{InboundHttpConfig, InboundHttpServer};
 use catapulte_inbound_nats::server::{InboundNatsConfig, InboundNatsServer};
 use catapulte_inbound_worker::worker::{Worker, WorkerConfig};
 use catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcher;
-use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
-use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverConfig;
 use catapulte_outbound_smtp::multi_sender::MultiSenderConfig;
 
@@ -22,12 +20,17 @@ mod health;
 mod metrics;
 pub mod publisher;
 pub mod queue;
+pub mod render_sandbox;
 mod state;
 pub mod storage;
 
 use publisher::PublisherAdapterConfig;
+use render_sandbox::{RenderSandbox, RenderSandboxConfig};
 use state::AppState;
 use storage::StorageBackendConfig;
+
+/// Time the shutdown waits for background tasks and render children to finish.
+const SHUTDOWN_DRAIN: Duration = Duration::from_secs(30);
 
 pub struct AppConfig {
     pub storage: StorageBackendConfig,
@@ -42,6 +45,7 @@ pub struct AppConfig {
     pub attachment_fetcher:
         catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcherConfig,
     pub include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig,
+    pub render: RenderSandboxConfig,
     pub gc_sweep_interval: Duration,
     pub gc_grace_period: Duration,
     /// Single limit shared by the submit-time estimate and the SMTP wire-size check.
@@ -138,6 +142,7 @@ impl AppConfig {
                 "CATAPULTE_INCLUDE_LOADER",
             )
             .context("loading include loader config")?;
+        let render = RenderSandboxConfig::from_env().context("loading render sandbox config")?;
         let gc_sweep_secs: u64 = std::env::var("CATAPULTE_GC_SWEEP_INTERVAL_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -163,6 +168,7 @@ impl AppConfig {
             attachment_store,
             attachment_fetcher,
             include_loader,
+            render,
             gc_sweep_interval,
             gc_grace_period,
             max_message_bytes,
@@ -281,18 +287,31 @@ impl AppConfig {
                 allowed_sender_domains: self.allowed_sender_domains.clone(),
             }),
         );
-        let mjml_renderer = Arc::new(MjmlRenderer::new(
-            self.include_loader
-                .build()
-                .context("building include loader")?,
-        ));
+        self.render
+            .check_fits(self.http.request_timeout, SHUTDOWN_DRAIN)
+            .context("checking the render sandbox timeout")?;
+        // Every fetch is bounded by the stage deadline, so one fetch may use at most half of it.
+        let fetch_limit = self.render.timeout / 2;
+        if self.include_loader.http_timeout() > fetch_limit {
+            tracing::warn!(
+                configured_ms = self.include_loader.http_timeout().as_millis(),
+                clamped_ms = fetch_limit.as_millis(),
+                "include HTTP timeout lowered to half of CATAPULTE_RENDER_TIMEOUT_MS"
+            );
+        }
+        let include_loader = self.include_loader.with_max_http_timeout(fetch_limit);
+        let sandbox = RenderSandbox::new(self.render, include_loader);
+        sandbox
+            .self_test()
+            .await
+            .context("render sandbox self-test failed")?;
         let manage_templates = Arc::new(
             catapulte_domain::use_case::manage_templates::ManageTemplatesService::new(
                 storage.clone(),
                 Arc::clone(&resolver),
-                MiniJinjaInterpolator::new(),
-                MiniJinjaInterpolator::new(),
-                Arc::clone(&mjml_renderer),
+                sandbox.clone(),
+                sandbox.clone(),
+                sandbox.clone(),
                 catapulte_domain::port::clock::SystemClock,
             ),
         );
@@ -307,8 +326,8 @@ impl AppConfig {
         );
         let mut process_queued_email = ProcessQueuedEmailService::new(
             Arc::clone(&resolver),
-            MiniJinjaInterpolator::new(),
-            mjml_renderer,
+            sandbox.clone(),
+            sandbox.clone(),
             smtp,
             attachment_store.clone(),
         )
@@ -360,6 +379,7 @@ impl AppConfig {
             inbound_nats_server,
             worker,
             gc,
+            sandbox,
             metrics_enabled: false,
             metric_export_interval: Duration::from_mins(1),
         })
@@ -372,11 +392,19 @@ pub struct Application {
     inbound_nats_server: Option<InboundNatsServer>,
     worker: Worker,
     gc: gc::AttachmentGc,
+    sandbox: RenderSandbox,
     metrics_enabled: bool,
     metric_export_interval: Duration,
 }
 
 impl Application {
+    /// The shared render sandbox, for tests that need to observe admission.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn render_sandbox(&self) -> &RenderSandbox {
+        &self.sandbox
+    }
+
     /// Configures whether the metrics sampler should run and at what interval.
     #[must_use]
     pub fn with_metrics(mut self, enabled: bool, interval: Duration) -> Self {
@@ -465,7 +493,7 @@ impl Application {
         cancel.cancelled().await;
 
         // Drain all tasks with a bounded timeout so in-flight work can finish.
-        let drain_timeout = std::time::Duration::from_secs(30);
+        let sandbox = self.sandbox;
         let drain = async {
             while let Some(joined) = tasks.join_next().await {
                 match joined {
@@ -474,10 +502,13 @@ impl Application {
                     Err(e) => tracing::warn!(error = %e, "background task panicked or was aborted"),
                 }
             }
+            // In-flight renders have finished by now; this reaps any child left behind.
+            sandbox.shutdown().await;
         };
-        if tokio::time::timeout(drain_timeout, drain).await.is_err() {
+        if tokio::time::timeout(SHUTDOWN_DRAIN, drain).await.is_err() {
             tracing::warn!("background tasks did not finish within shutdown timeout; aborting");
             tasks.abort_all();
+            sandbox.shutdown().await;
         }
 
         Ok(())

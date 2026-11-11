@@ -1,7 +1,6 @@
 use anyhow::Context;
 use catapulte_domain::entity::body::{InterpolatedBody, Plain, ResolvedBody};
-use catapulte_domain::port::template_interpolator::{InterpolateError, TemplateInterpolator};
-use catapulte_domain::port::template_validator::TemplateValidator;
+use catapulte_domain::port::template_interpolator::InterpolateError;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,6 +29,28 @@ impl<W: std::fmt::Write> std::fmt::Write for Bounded<'_, W> {
             return Err(std::fmt::Error);
         }
         self.inner.write_str(s)
+    }
+}
+
+/// An `io::Write` into memory that fails once the rendered output, literal text included,
+/// passes `MAX_RENDER_BYTES`. The formatter bound only counts interpolated values.
+struct CappedBuffer {
+    buf: Vec<u8>,
+    exceeded: bool,
+}
+
+impl std::io::Write for CappedBuffer {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.buf.len() + data.len() > MAX_RENDER_BYTES {
+            self.exceeded = true;
+            return Err(std::io::Error::other("rendered output exceeds its cap"));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -184,16 +205,25 @@ fn render_with<'a>(
         .get_template("t")
         .context("getting template")
         .map_err(|source| InterpolateError::Engine { source })?;
-    tmpl.render(minijinja::value::Serde(variables))
-        .map_err(|e| {
-            if e.kind() == minijinja::ErrorKind::OutOfFuel {
+    let mut out = CappedBuffer {
+        buf: Vec::new(),
+        exceeded: false,
+    };
+    let rendered = tmpl.render_captured_to(minijinja::value::Serde(variables), &mut out);
+    if let Err(e) = rendered {
+        return Err(
+            if out.exceeded || e.kind() == minijinja::ErrorKind::OutOfFuel {
                 InterpolateError::BudgetExceeded
             } else {
                 InterpolateError::Engine {
                     source: anyhow::Error::new(e).context("rendering template"),
                 }
-            }
-        })
+            },
+        );
+    }
+    String::from_utf8(out.buf)
+        .context("decoding rendered template")
+        .map_err(|source| InterpolateError::Engine { source })
 }
 
 fn render_str(
@@ -236,9 +266,13 @@ fn interpolate_plain(
     Ok(InterpolatedBody::Plain(plain))
 }
 
-impl TemplateValidator for MiniJinjaInterpolator {
+impl MiniJinjaInterpolator {
     /// Same escaping as a send, but missing variables and attributes render as empty.
-    fn validate(
+    ///
+    /// # Errors
+    ///
+    /// Returns an `InterpolateError` when the source does not parse or cannot render.
+    pub fn validate(
         &self,
         source: &str,
         variables: &serde_json::Map<String, serde_json::Value>,
@@ -249,10 +283,11 @@ impl TemplateValidator for MiniJinjaInterpolator {
             variables,
         )
     }
-}
 
-impl TemplateInterpolator for MiniJinjaInterpolator {
-    fn interpolate(
+    /// # Errors
+    ///
+    /// Returns an `InterpolateError` when the templating engine fails to process the body.
+    pub fn interpolate(
         &self,
         body: ResolvedBody,
         variables: &serde_json::Map<String, serde_json::Value>,
@@ -271,7 +306,7 @@ mod tests {
     use serde_json::{Map, Value};
 
     use catapulte_domain::entity::body::{InterpolatedBody, Plain, ResolvedBody};
-    use catapulte_domain::port::template_interpolator::{InterpolateError, TemplateInterpolator};
+    use catapulte_domain::port::template_interpolator::InterpolateError;
 
     use super::MiniJinjaInterpolator;
 
@@ -502,8 +537,6 @@ mod tests {
 
     #[test]
     fn validation_accepts_missing_nested_attributes_but_sending_still_fails() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let source = "<mj-text>{{ customer.name }}</mj-text>";
         let none = Map::new();
 
@@ -519,8 +552,6 @@ mod tests {
 
     #[test]
     fn validation_needs_representative_data_for_value_requiring_expressions() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let source = "<mj-text>{{ total + 1 }}</mj-text>";
         let interpolator = MiniJinjaInterpolator::new();
 
@@ -535,8 +566,6 @@ mod tests {
 
     #[test]
     fn validation_reports_syntax_errors_and_escapes_like_a_send() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let interpolator = MiniJinjaInterpolator::new();
         assert!(interpolator.validate("{% if %}", &Map::new()).is_err());
 
@@ -555,8 +584,6 @@ mod tests {
 
     #[test]
     fn a_runaway_loop_exhausts_the_budget_quickly_when_sending_and_validating() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let interpolator = MiniJinjaInterpolator::new();
         let started = std::time::Instant::now();
 
@@ -568,6 +595,27 @@ mod tests {
         assert!(matches!(sent, Err(InterpolateError::BudgetExceeded)));
         assert!(matches!(validated, Err(InterpolateError::BudgetExceeded)));
         assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
+    }
+
+    #[test]
+    fn a_repeated_literal_is_bounded_by_the_total_output_cap() {
+        let source = format!(
+            "{{% for i in range(3000) %}}{}{{% endfor %}}",
+            "x".repeat(1000)
+        );
+        let interpolator = MiniJinjaInterpolator::new();
+
+        let sent = interpolator.interpolate(ResolvedBody::Mjml(source.clone()), &Map::new());
+        let validated = interpolator.validate(&source, &Map::new());
+
+        assert!(
+            matches!(sent, Err(InterpolateError::BudgetExceeded)),
+            "{sent:?}"
+        );
+        assert!(
+            matches!(validated, Err(InterpolateError::BudgetExceeded)),
+            "{validated:?}"
+        );
     }
 
     #[test]
@@ -597,8 +645,6 @@ mod tests {
 
     #[test]
     fn exponentially_expanding_values_are_cut_off_by_every_stringifier() {
-        use catapulte_domain::port::template_validator::TemplateValidator;
-
         let interpolator = MiniJinjaInterpolator::new();
         for output in [
             "{{ a }}",

@@ -94,9 +94,9 @@ impl ProcessQueuedEmailError {
     pub fn is_permanent(&self) -> bool {
         match self {
             Self::Send(e) => !e.is_transient(),
-            Self::AllRecipientsSuppressed | Self::Interpolate(InterpolateError::BudgetExceeded) => {
-                true
-            }
+            Self::AllRecipientsSuppressed
+            | Self::Interpolate(InterpolateError::BudgetExceeded)
+            | Self::Render(RenderError::BudgetExceeded) => true,
             _ => false,
         }
     }
@@ -225,7 +225,7 @@ where
         suppressed.dedup();
         let recipients = remaining;
         let resolved = self.resolver.resolve(body).await?;
-        let interpolated = self.interpolator.interpolate(resolved, &variables)?;
+        let interpolated = self.interpolator.interpolate(resolved, &variables).await?;
         let rendered = self.renderer.render(interpolated).await?;
         let resolved_attachments =
             resolve_attachments(&self.attachment_store, &attachments).await?;
@@ -403,7 +403,7 @@ mod tests {
     }
 
     impl TemplateInterpolator for FakeInterpolator {
-        fn interpolate(
+        async fn interpolate(
             &self,
             body: ResolvedBody,
             variables: &Map<String, Value>,
@@ -498,7 +498,7 @@ mod tests {
     struct FailingInterpolator;
 
     impl TemplateInterpolator for FailingInterpolator {
-        fn interpolate(
+        async fn interpolate(
             &self,
             _body: ResolvedBody,
             _variables: &Map<String, Value>,
@@ -814,6 +814,30 @@ mod tests {
         assert!(!other.is_permanent());
         assert_eq!(
             budget.error_class(),
+            crate::entity::error_class::ErrorClass::TemplateInterpolate
+        );
+    }
+
+    #[test]
+    fn only_budget_failures_are_permanent_and_infrastructure_failures_retry() {
+        let infra = || anyhow::anyhow!("sandbox died");
+        let render_budget = ProcessQueuedEmailError::Render(RenderError::BudgetExceeded);
+        let render_infra =
+            ProcessQueuedEmailError::Render(RenderError::Infrastructure { source: infra() });
+        let interpolate_infra =
+            ProcessQueuedEmailError::Interpolate(InterpolateError::Infrastructure {
+                source: infra(),
+            });
+
+        assert!(render_budget.is_permanent());
+        assert!(!render_infra.is_permanent());
+        assert!(!interpolate_infra.is_permanent());
+        assert_eq!(
+            render_budget.error_class(),
+            crate::entity::error_class::ErrorClass::TemplateRender
+        );
+        assert_eq!(
+            interpolate_infra.error_class(),
             crate::entity::error_class::ErrorClass::TemplateInterpolate
         );
     }

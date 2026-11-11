@@ -20,8 +20,6 @@ use catapulte_domain::use_case::submit_email::{SubmitEmailService, SubmitEmailUs
 use catapulte_inbound_http::HttpServerState;
 use catapulte_inbound_nats::server::InboundNatsState;
 use catapulte_inbound_worker::worker::WorkerState;
-use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
-use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverAdapter;
 use catapulte_outbound_smtp::transport::SenderTransport;
 
@@ -30,6 +28,7 @@ use catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcher;
 use crate::attachment_store::AttachmentStoreAdapter;
 use crate::publisher::PublisherAdapter;
 use crate::queue::QueueAdapter;
+use crate::render_sandbox::RenderSandbox;
 use crate::storage::StorageAdapter;
 
 pub(crate) type StoredResolver = StoredTemplateResolver<StorageAdapter, TemplateResolverAdapter>;
@@ -38,16 +37,16 @@ pub(crate) type ManageTemplates =
     catapulte_domain::use_case::manage_templates::ManageTemplatesService<
         StorageAdapter,
         TemplateResolverAdapter,
-        MiniJinjaInterpolator,
-        MiniJinjaInterpolator,
-        Arc<MjmlRenderer>,
+        RenderSandbox,
+        RenderSandbox,
+        RenderSandbox,
         SystemClock,
     >;
 
 pub(crate) type ProcessService = ProcessQueuedEmailService<
     Arc<StoredResolver>,
-    MiniJinjaInterpolator,
-    Arc<MjmlRenderer>,
+    RenderSandbox,
+    RenderSandbox,
     RoutedEmailSender<SenderTransport, StorageAdapter>,
     AttachmentStoreAdapter,
     StorageAdapter,

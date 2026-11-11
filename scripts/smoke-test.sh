@@ -88,4 +88,32 @@ else
     exit 1
 fi
 
+# An mjml_inline send goes through the render sandbox (a child process of the same binary).
+echo "Sending an mjml_inline test email..."
+MJML_RESPONSE=$(run_curl -s -X POST http://catapulte:3000/emails \
+    -H "Content-Type: application/json" \
+    -d '{
+    "sender": "smoke-mjml@example.com",
+    "recipients": [{"kind": "to", "address": "recipient@example.com"}],
+    "subject": "Smoke MJML",
+    "body": {"kind": "mjml_inline", "source": "<mjml><mj-body><mj-section><mj-column><mj-text>Hello {{ name }}</mj-text></mj-column></mj-section></mj-body></mjml>"},
+    "variables": {"name": "smoke"}
+  }')
+echo "MJML submit response: $MJML_RESPONSE"
+sleep 5
+
+MJML_FOUND=$(run_curl -s http://mailpit:8025/api/v1/messages | python3 -c "
+import sys, json
+messages = json.load(sys.stdin).get('messages', [])
+print('true' if any('smoke-mjml@example.com' in m.get('From', {}).get('Address', '') for m in messages) else 'false')
+")
+
+if [ "$MJML_FOUND" == "true" ]; then
+    echo "SUCCESS: mjml_inline email found in Mailpit!"
+else
+    echo "FAILURE: mjml_inline email not found in Mailpit."
+    "${COMPOSE[@]}" logs
+    exit 1
+fi
+
 echo "Smoke test passed for $COMPOSE_FILE"

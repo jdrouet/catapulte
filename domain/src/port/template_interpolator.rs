@@ -13,6 +13,13 @@ pub enum InterpolateError {
         #[source]
         source: anyhow::Error,
     },
+    /// The render sandbox itself failed (spawn, crash, abort); the template is not at fault, so
+    /// retrying can succeed.
+    #[error("template rendering infrastructure failure")]
+    Infrastructure {
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 pub trait TemplateInterpolator: Send + Sync + 'static {
@@ -23,5 +30,5 @@ pub trait TemplateInterpolator: Send + Sync + 'static {
         &self,
         body: ResolvedBody,
         variables: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<InterpolatedBody, InterpolateError>;
+    ) -> impl std::future::Future<Output = Result<InterpolatedBody, InterpolateError>> + Send;
 }

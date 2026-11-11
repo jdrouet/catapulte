@@ -492,18 +492,22 @@ Pass representative `validation_variables` for those. A passing validation prove
 structure, not that the template renders for every input; sends are strict, and a missing nested
 attribute fails at send time.
 
-Every render (send, validation and preview) has a fixed budget of work. A template that exceeds it, for
-example a runaway nested loop, fails permanently at send time (`delivery.failed` with `error_class`
-`template_interpolate`, no retry) and is rejected with `400` on upload or preview. A table of 500 rows uses
-about 3% of the budget.
+Every render (send, validation and preview) runs in a resource-limited child process and has a fixed
+budget of work. A template that exceeds it, for example a runaway nested loop, fails permanently at send
+time (`delivery.failed` with `error_class` `template_interpolate`, no retry) and is rejected with `400` on
+upload or preview. A table of 500 rows uses about 3% of the budget.
 
 Rendering also writes at most 1 MiB of output per part, and a filter that turns a list or map into text
 fails once the text would pass 1 MiB. To keep that bound, the `format`, `pprint` and `indent` filters are
 not available, and `replace` takes no `count`.
 
-These limits do not yet cover every template operation: string concatenation with `~` and comparisons of
-large nested lists can still use excessive CPU and memory. Until rendering moves into a resource-limited
-process (tracked in #815), only give API keys to callers you trust not to submit hostile templates.
+Some operations cannot be metered inside the engine: string concatenation with `~` and comparisons of
+large nested lists. The child process covers them with a 2 s CPU limit, a memory limit and a wall-clock
+deadline (`CATAPULTE_RENDER_TIMEOUT_MS`), and a render that hits one of these is a permanent failure like
+any other budget failure. A deeply nested MJML document can crash the child. That is reported as a
+failure of the render service, not of the template: a send is retried and then fails, and template
+upload or preview answers `503` instead of `400`. When all render slots are busy, further renders wait
+for one up to the deadline.
 
 ## Suppression list
 

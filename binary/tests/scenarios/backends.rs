@@ -133,6 +133,9 @@ fn sqlite_config(smtp_port: u16, http_port: u16, db_tag: &str) -> (AppConfig, te
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -176,6 +179,9 @@ pub async fn sqlite_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -221,6 +227,9 @@ pub async fn sqlite_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -262,6 +271,9 @@ pub async fn postgres_storage(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -303,6 +315,9 @@ pub async fn postgres_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,
@@ -350,6 +365,9 @@ pub async fn postgres_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
         }),
         attachment_fetcher: base_attachment_fetcher(),
         include_loader: catapulte_outbound_mjml::include_loader::IncludeLoaderConfig::default(),
+        render: catapulte::render_sandbox::RenderSandboxConfig::new(
+            env!("CARGO_BIN_EXE_catapulte").into(),
+        ),
         gc_sweep_interval: std::time::Duration::from_hours(1),
         gc_grace_period: std::time::Duration::from_hours(1),
         max_message_bytes: 26_214_400,

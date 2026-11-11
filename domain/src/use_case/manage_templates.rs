@@ -4,8 +4,8 @@ use thiserror::Error;
 
 use crate::entity::body::{BodySource, InterpolatedBody, MjmlSource};
 use crate::port::clock::Clock;
-use crate::port::template_interpolator::TemplateInterpolator;
-use crate::port::template_renderer::TemplateRenderer;
+use crate::port::template_interpolator::{InterpolateError, TemplateInterpolator};
+use crate::port::template_renderer::{RenderError, TemplateRenderer};
 use crate::port::template_repository::{
     StoredTemplate, TemplateRepository, TemplateRepositoryError,
 };
@@ -24,6 +24,12 @@ pub enum ManageTemplatesError {
     /// The source does not parse, render or compile; the message says why.
     #[error("invalid template: {message}")]
     Invalid { message: String },
+    /// The render sandbox failed through no fault of the template; retrying can succeed.
+    #[error("template rendering is unavailable")]
+    Unavailable {
+        #[source]
+        source: anyhow::Error,
+    },
     #[error(transparent)]
     Repository(#[from] TemplateRepositoryError),
     #[error(transparent)]
@@ -124,6 +130,26 @@ fn invalid(e: &dyn std::error::Error) -> ManageTemplatesError {
     }
 }
 
+fn unavailable(e: &dyn std::error::Error) -> ManageTemplatesError {
+    ManageTemplatesError::Unavailable {
+        source: anyhow::anyhow!(error_chain(e)),
+    }
+}
+
+fn from_interpolate(e: &InterpolateError) -> ManageTemplatesError {
+    match e {
+        InterpolateError::Infrastructure { .. } => unavailable(e),
+        InterpolateError::BudgetExceeded | InterpolateError::Engine { .. } => invalid(e),
+    }
+}
+
+fn from_render(e: &RenderError) -> ManageTemplatesError {
+    match e {
+        RenderError::Infrastructure { .. } => unavailable(e),
+        RenderError::BudgetExceeded | RenderError::Mjml { .. } => invalid(e),
+    }
+}
+
 impl<T, D, V, I, R, C> ManageTemplatesService<T, D, V, I, R, C>
 where
     T: TemplateRepository,
@@ -173,11 +199,12 @@ where
         let interpolated = self
             .validator
             .validate(&source, &validation_variables)
-            .map_err(|e| invalid(&e))?;
+            .await
+            .map_err(|e| from_interpolate(&e))?;
         self.renderer
             .render(InterpolatedBody::Mjml(interpolated))
             .await
-            .map_err(|e| invalid(&e))?;
+            .map_err(|e| from_render(&e))?;
         Ok(self
             .repository
             .put(&name, &source, self.clock.now_ms())
@@ -212,12 +239,13 @@ where
         let interpolated = self
             .interpolator
             .interpolate(resolved, &variables)
-            .map_err(|e| invalid(&e))?;
+            .await
+            .map_err(|e| from_interpolate(&e))?;
         let rendered = self
             .renderer
             .render(interpolated)
             .await
-            .map_err(|e| invalid(&e))?;
+            .map_err(|e| from_render(&e))?;
         Ok(TemplatePreview {
             html: rendered.html().unwrap_or_default().to_owned(),
             text: rendered.text().map(str::to_owned),
@@ -231,20 +259,23 @@ mod tests {
 
     use super::*;
     use crate::entity::body::{Plain, RenderedBody, ResolvedBody};
-    use crate::port::template_interpolator::InterpolateError;
-    use crate::port::template_renderer::RenderError;
     use crate::service::stored_template_resolver::fakes::{FakeDisk, FakeRepo};
 
     struct Validator;
 
     impl TemplateValidator for Validator {
-        fn validate(
+        async fn validate(
             &self,
             source: &str,
             _: &serde_json::Map<String, serde_json::Value>,
         ) -> Result<String, InterpolateError> {
             if source.contains("{% for") {
                 return Err(InterpolateError::BudgetExceeded);
+            }
+            if source.contains("{{ infra") {
+                return Err(InterpolateError::Infrastructure {
+                    source: anyhow::anyhow!("sandbox died"),
+                });
             }
             if source.contains("{{ boom") {
                 return Err(InterpolateError::Engine {
@@ -258,7 +289,7 @@ mod tests {
     struct Interpolator;
 
     impl TemplateInterpolator for Interpolator {
-        fn interpolate(
+        async fn interpolate(
             &self,
             body: ResolvedBody,
             _: &serde_json::Map<String, serde_json::Value>,
@@ -275,6 +306,14 @@ mod tests {
     impl TemplateRenderer for Renderer {
         async fn render(&self, body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
             match body {
+                InterpolatedBody::Mjml(s) if s.contains("<infra") => {
+                    Err(RenderError::Infrastructure {
+                        source: anyhow::anyhow!("sandbox died"),
+                    })
+                }
+                InterpolatedBody::Mjml(s) if s.contains("<slow") => {
+                    Err(RenderError::BudgetExceeded)
+                }
                 InterpolatedBody::Mjml(s) if s.contains("<bad") => Err(RenderError::Mjml {
                     source: anyhow::anyhow!("bad mjml"),
                 }),
@@ -382,6 +421,29 @@ mod tests {
         );
         assert!(
             matches!(&mjml, ManageTemplatesError::Invalid { message } if message.contains("bad mjml"))
+        );
+        assert!(repo.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sandbox_infrastructure_failures_are_unavailable_and_budget_failures_invalid() {
+        let repo = FakeRepo::default();
+        let svc = service(&repo, &[]);
+
+        let validate_infra = svc.put("a".into(), "{{ infra".into(), vars()).await;
+        let render_infra = svc.put("a".into(), "<infra".into(), vars()).await;
+        let render_budget = svc.put("a".into(), "<slow".into(), vars()).await;
+
+        assert!(matches!(
+            validate_infra,
+            Err(ManageTemplatesError::Unavailable { .. })
+        ));
+        assert!(matches!(
+            render_infra,
+            Err(ManageTemplatesError::Unavailable { .. })
+        ));
+        assert!(
+            matches!(render_budget, Err(ManageTemplatesError::Invalid { message }) if message.contains("budget"))
         );
         assert!(repo.0.lock().unwrap().is_empty());
     }
