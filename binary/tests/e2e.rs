@@ -2079,8 +2079,13 @@ async fn feedback_reports_suppress_only_verified_single_recipient_emails() {
     assert!(suppressed(&base).await.is_empty());
 
     // Rejections leave no event and no suppression.
-    let tampered =
-        format!("{}x", &verp_single[..verp_single.find('@').unwrap() - 1]) + "@bounces.example.com";
+    let at = verp_single.find('@').unwrap();
+    let last = if verp_single.as_bytes()[at - 1] == b'x' {
+        'y'
+    } else {
+        'x'
+    };
+    let tampered = format!("{}{last}", &verp_single[..at - 1]) + "@bounces.example.com";
     for (body, why) in [
         (
             dsn(&single, "alice@example.org", "failed", "5.1.1", &tampered),
