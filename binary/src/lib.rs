@@ -183,7 +183,7 @@ impl AppConfig {
             .collect();
         let routes: Vec<
             catapulte_domain::service::routed_email_sender::SenderRoute<
-                catapulte_outbound_smtp::transport::SmtpTransport,
+                catapulte_outbound_smtp::transport::SenderTransport,
             >,
         > = entries
             .into_iter()

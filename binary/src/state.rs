@@ -19,7 +19,7 @@ use catapulte_inbound_worker::worker::WorkerState;
 use catapulte_outbound_interpolator::interpolator::MiniJinjaInterpolator;
 use catapulte_outbound_mjml::renderer::MjmlRenderer;
 use catapulte_outbound_resolver::resolver::TemplateResolverAdapter;
-use catapulte_outbound_smtp::transport::SmtpTransport;
+use catapulte_outbound_smtp::transport::SenderTransport;
 
 use catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcher;
 
@@ -32,7 +32,7 @@ pub(crate) type ProcessService = ProcessQueuedEmailService<
     TemplateResolverAdapter,
     MiniJinjaInterpolator,
     MjmlRenderer,
-    RoutedEmailSender<SmtpTransport, StorageAdapter>,
+    RoutedEmailSender<SenderTransport, StorageAdapter>,
     AttachmentStoreAdapter,
 >;
 

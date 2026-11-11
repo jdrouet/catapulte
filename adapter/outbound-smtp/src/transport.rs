@@ -397,6 +397,47 @@ fn message_error(e: anyhow::Error) -> TransportError {
     }
 }
 
+/// Builds the message and its wire bytes with DKIM applied; the size limit is the caller's.
+fn build_message(
+    email: &OutboundEmail,
+    dkim: &DkimSigners,
+) -> Result<(Message, Vec<u8>), TransportError> {
+    let from = parse_mailbox(&email.sender).map_err(message_error)?;
+    let sender_domain = normalize_domain(from.email.domain());
+    let builder = Message::builder()
+        .from(from)
+        .message_id(Some(email.message_id.clone()));
+    let builder = apply_recipients(builder, &email.recipients)
+        .and_then(|b| {
+            apply_reply_to_and_headers(
+                b,
+                &email.reply_to,
+                &email.headers,
+                email.unsubscribe.as_ref(),
+            )
+        })
+        .map_err(message_error)?;
+    let mut message = finalize_message(
+        builder,
+        email.subject.as_deref(),
+        &email.body,
+        &email.attachments,
+    )
+    .map_err(message_error)?;
+    // Signed before the size and header-line checks so they see the final bytes.
+    match &sender_domain {
+        Ok(domain) => {
+            if let Some(config) = dkim.for_sender(domain) {
+                message.sign(config);
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "sender domain not normalizable; DKIM skipped"),
+    }
+    let raw = message.formatted();
+    check_header_line_lengths(&raw).map_err(message_error)?;
+    Ok((message, raw))
+}
+
 impl SmtpTransport {
     /// Rejects, as a message-level failure, any rendered message larger than `max` bytes.
     #[must_use]
@@ -414,39 +455,7 @@ impl SmtpTransport {
 
     /// Builds the message and its wire bytes, enforcing the size limit on the final bytes.
     fn prepare(&self, email: &OutboundEmail) -> Result<(Message, Vec<u8>), TransportError> {
-        let from = parse_mailbox(&email.sender).map_err(message_error)?;
-        let sender_domain = normalize_domain(from.email.domain());
-        let builder = Message::builder()
-            .from(from)
-            .message_id(Some(email.message_id.clone()));
-        let builder = apply_recipients(builder, &email.recipients)
-            .and_then(|b| {
-                apply_reply_to_and_headers(
-                    b,
-                    &email.reply_to,
-                    &email.headers,
-                    email.unsubscribe.as_ref(),
-                )
-            })
-            .map_err(message_error)?;
-        let mut message = finalize_message(
-            builder,
-            email.subject.as_deref(),
-            &email.body,
-            &email.attachments,
-        )
-        .map_err(message_error)?;
-        // Signed before the size and header-line checks so they see the final bytes.
-        match &sender_domain {
-            Ok(domain) => {
-                if let Some(config) = self.dkim.for_sender(domain) {
-                    message.sign(config);
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "sender domain not normalizable; DKIM skipped"),
-        }
-        let raw = message.formatted();
-        check_header_line_lengths(&raw).map_err(message_error)?;
+        let (message, raw) = build_message(email, &self.dkim)?;
         if self
             .max_message_bytes
             .is_some_and(|max| raw.len() as u64 > max)
@@ -480,6 +489,28 @@ impl EmailTransport for SmtpTransport {
         email: &'a OutboundEmail,
     ) -> Result<DeliveryReceipt, TransportError> {
         self.send_inner(email).await
+    }
+}
+
+/// A configured sender: a real SMTP relay, or a sink that builds the message then discards it.
+pub enum SenderTransport {
+    Smtp(SmtpTransport),
+    Sink { dkim: std::sync::Arc<DkimSigners> },
+}
+
+impl EmailTransport for SenderTransport {
+    async fn deliver<'a>(
+        &'a self,
+        email: &'a OutboundEmail,
+    ) -> Result<DeliveryReceipt, TransportError> {
+        match self {
+            Self::Smtp(transport) => transport.send_inner(email).await,
+            Self::Sink { dkim } => {
+                build_message(email, dkim)?;
+                tracing::debug!(message_id = %email.message_id, "sink discarded message");
+                Ok(DeliveryReceipt::default())
+            }
+        }
     }
 }
 
@@ -1364,5 +1395,35 @@ mod tests {
         let capped = format_smtp_response(250, std::iter::once(long.as_str()));
         assert_eq!(capped.chars().count(), 256);
         assert!(capped.starts_with("250 "));
+    }
+
+    fn sink() -> super::SenderTransport {
+        super::SenderTransport::Sink {
+            dkim: std::sync::Arc::new(crate::dkim::DkimSigners::empty()),
+        }
+    }
+
+    #[tokio::test]
+    async fn sink_accepts_a_valid_email_without_an_smtp_response() {
+        use catapulte_domain::port::email_transport::EmailTransport;
+
+        let receipt = sink().deliver(&plain_email()).await.unwrap();
+
+        assert_eq!(receipt.smtp_response, None);
+    }
+
+    #[tokio::test]
+    async fn sink_ignores_the_size_limit_but_rejects_invalid_messages() {
+        use catapulte_domain::port::email_transport::EmailTransport;
+
+        sink()
+            .deliver(&email_with_attachment(2_000_000, RecipientKind::To))
+            .await
+            .unwrap();
+
+        let mut bad = plain_email();
+        bad.sender = "not an address".into();
+        let err = sink().deliver(&bad).await.unwrap_err();
+        assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
     }
 }

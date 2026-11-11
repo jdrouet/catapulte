@@ -11,6 +11,9 @@ pub const WORKER_EVENT_TYPES: &[&str] = &[
     "delivery.failed",
 ];
 
+/// Event types that settle an email's status; every other event is informational.
+pub const TERMINAL_EVENT_TYPES: &[&str] = &["delivery.succeeded", "delivery.failed"];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LifecycleEvent {
     Queued {

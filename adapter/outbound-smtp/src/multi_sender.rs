@@ -5,19 +5,24 @@ use anyhow::Context;
 use catapulte_domain::entity::sender::{QuotaRange, SenderName, SenderQuota};
 
 use crate::dkim::DkimSigners;
-use crate::transport::{SmtpConfig, SmtpTransport};
+use crate::transport::{SenderTransport, SmtpConfig};
 
 pub struct SmtpTransportEntry {
     pub name: SenderName,
     pub priority: u8,
     pub quota: Option<SenderQuota>,
     pub match_sender_domain: Option<String>,
-    pub transport: SmtpTransport,
+    pub transport: SenderTransport,
+}
+
+enum SenderKind {
+    Smtp(SmtpConfig),
+    Sink,
 }
 
 struct SingleSenderConfig {
     name: SenderName,
-    smtp: SmtpConfig,
+    kind: SenderKind,
     priority: u8,
     quota: Option<SenderQuota>,
     match_sender_domain: Option<String>,
@@ -28,7 +33,9 @@ struct SingleSenderConfig {
 /// Environment variables:
 /// - `CATAPULTE_SENDERS`: comma-separated list of sender names
 /// - For each `NAME`:
-///   - `CATAPULTE_SENDER_{NAME}_HOST` (required)
+///   - `CATAPULTE_SENDER_{NAME}_KIND` (optional: "smtp" (default) or "sink", which
+///     accepts and discards emails and needs none of the SMTP variables below)
+///   - `CATAPULTE_SENDER_{NAME}_HOST` (required for smtp)
 ///   - `CATAPULTE_SENDER_{NAME}_PORT` (optional, default 587)
 ///   - `CATAPULTE_SENDER_{NAME}_USERNAME` (optional)
 ///   - `CATAPULTE_SENDER_{NAME}_PASSWORD` (optional)
@@ -53,7 +60,7 @@ impl MultiSenderConfig {
         Self {
             senders: vec![SingleSenderConfig {
                 name: SenderName::new(name),
-                smtp,
+                kind: SenderKind::Smtp(smtp),
                 priority: 100,
                 quota: None,
                 match_sender_domain: None,
@@ -92,7 +99,7 @@ impl MultiSenderConfig {
     ) -> Self {
         self.senders.push(SingleSenderConfig {
             name: SenderName::new(name),
-            smtp,
+            kind: SenderKind::Smtp(smtp),
             priority,
             quota,
             match_sender_domain: None,
@@ -113,10 +120,24 @@ impl MultiSenderConfig {
     ) -> Self {
         self.senders.push(SingleSenderConfig {
             name: SenderName::new(name),
-            smtp,
+            kind: SenderKind::Smtp(smtp),
             priority,
             quota,
             match_sender_domain,
+        });
+        self.senders.sort_by_key(|s| s.priority);
+        self
+    }
+
+    /// Adds a sink sender, which builds each message and discards it.
+    #[must_use]
+    pub fn with_sink_sender(mut self, name: impl Into<String>, priority: u8) -> Self {
+        self.senders.push(SingleSenderConfig {
+            name: SenderName::new(name),
+            kind: SenderKind::Sink,
+            priority,
+            quota: None,
+            match_sender_domain: None,
         });
         self.senders.sort_by_key(|s| s.priority);
         self
@@ -145,7 +166,7 @@ impl MultiSenderConfig {
             .map(|raw_name| {
                 let upper = raw_name.to_uppercase();
                 let prefix = format!("CATAPULTE_SENDER_{upper}");
-                let smtp = SmtpConfig::from_lookup(&prefix, &lookup)?;
+                let kind = parse_kind(&prefix, &lookup)?;
                 let priority = parse_priority(
                     lookup(&format!("{prefix}_PRIORITY")).ok(),
                     &format!("{prefix}_PRIORITY"),
@@ -157,7 +178,7 @@ impl MultiSenderConfig {
                     .filter(|v| !v.is_empty());
                 Ok(SingleSenderConfig {
                     name: SenderName::new(raw_name),
-                    smtp,
+                    kind,
                     priority,
                     quota,
                     match_sender_domain,
@@ -183,10 +204,24 @@ impl MultiSenderConfig {
         self.senders
             .into_iter()
             .map(|cfg| {
-                let mut transport = cfg.smtp.build()?.with_dkim(Arc::clone(&dkim));
-                if let Some(max) = max_message_bytes {
-                    transport = transport.with_max_message_bytes(max);
-                }
+                let transport = match cfg.kind {
+                    SenderKind::Smtp(smtp) => {
+                        let mut transport = smtp.build()?.with_dkim(Arc::clone(&dkim));
+                        if let Some(max) = max_message_bytes {
+                            transport = transport.with_max_message_bytes(max);
+                        }
+                        SenderTransport::Smtp(transport)
+                    }
+                    SenderKind::Sink => {
+                        tracing::warn!(
+                            "sender {} is a sink: emails are accepted and discarded",
+                            cfg.name.as_str()
+                        );
+                        SenderTransport::Sink {
+                            dkim: Arc::clone(&dkim),
+                        }
+                    }
+                };
                 Ok(SmtpTransportEntry {
                     name: cfg.name,
                     priority: cfg.priority,
@@ -196,6 +231,18 @@ impl MultiSenderConfig {
                 })
             })
             .collect()
+    }
+}
+
+fn parse_kind<F>(prefix: &str, lookup: &F) -> anyhow::Result<SenderKind>
+where
+    F: Fn(&str) -> Result<String, VarError>,
+{
+    let key = format!("{prefix}_KIND");
+    match lookup(&key).ok().as_deref() {
+        None | Some("smtp") => Ok(SenderKind::Smtp(SmtpConfig::from_lookup(prefix, lookup)?)),
+        Some("sink") => Ok(SenderKind::Sink),
+        Some(other) => anyhow::bail!("unknown value for env var {key}: {other}"),
     }
 }
 
@@ -356,5 +403,49 @@ mod tests {
         vars.insert("CATAPULTE_SENDER_PRIMARY_HOST", "smtp.example.com");
         let config = MultiSenderConfig::from_lookup(make_lookup(vars)).unwrap();
         assert!(config.senders[0].match_sender_domain.is_none());
+    }
+
+    #[test]
+    fn sink_kind_needs_no_host() {
+        let mut vars = HashMap::new();
+        vars.insert("CATAPULTE_SENDERS", "ci");
+        vars.insert("CATAPULTE_SENDER_CI_KIND", "sink");
+        let config = MultiSenderConfig::from_lookup(make_lookup(vars)).unwrap();
+        assert!(matches!(config.senders[0].kind, super::SenderKind::Sink));
+    }
+
+    #[test]
+    fn kind_defaults_to_smtp() {
+        let mut vars = HashMap::new();
+        vars.insert("CATAPULTE_SENDERS", "primary");
+        vars.insert("CATAPULTE_SENDER_PRIMARY_HOST", "smtp.example.com");
+        let config = MultiSenderConfig::from_lookup(make_lookup(vars)).unwrap();
+        assert!(matches!(config.senders[0].kind, super::SenderKind::Smtp(_)));
+    }
+
+    #[test]
+    fn unknown_kind_names_the_variable() {
+        let mut vars = HashMap::new();
+        vars.insert("CATAPULTE_SENDERS", "ci");
+        vars.insert("CATAPULTE_SENDER_CI_KIND", "pigeon");
+        let err = MultiSenderConfig::from_lookup(make_lookup(vars))
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("CATAPULTE_SENDER_CI_KIND"));
+    }
+
+    #[test]
+    fn sink_keeps_priority_and_match_domain() {
+        let mut vars = HashMap::new();
+        vars.insert("CATAPULTE_SENDERS", "ci");
+        vars.insert("CATAPULTE_SENDER_CI_KIND", "sink");
+        vars.insert("CATAPULTE_SENDER_CI_PRIORITY", "5");
+        vars.insert("CATAPULTE_SENDER_CI_MATCH_DOMAIN", "test.example");
+        let config = MultiSenderConfig::from_lookup(make_lookup(vars)).unwrap();
+        assert_eq!(config.senders[0].priority, 5);
+        assert_eq!(
+            config.senders[0].match_sender_domain.as_deref(),
+            Some("test.example")
+        );
     }
 }
