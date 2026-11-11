@@ -2,7 +2,9 @@
 //! Everything read here is untrusted; the use case decides what it is worth.
 
 use catapulte_domain::entity::email::{EmailId, bare_address};
-use catapulte_domain::use_case::ingest_feedback::{FeedbackReport, ReportKind, ReturnPathEvidence};
+use catapulte_domain::use_case::ingest_feedback::{
+    FeedbackReport, ReportItem, ReportKind, ReturnPathEvidence,
+};
 use mail_parser::{Message, MessageParser, MessagePart, MimeHeaders, PartType};
 
 /// The message is not a report this service understands.
@@ -86,43 +88,91 @@ fn email_id_from_message_id(value: &str) -> Option<EmailId> {
     uuid::Uuid::parse_str(local).ok().map(EmailId::from)
 }
 
-/// Looks for `bounces+{uuid}-{tag}@` in the headers that can carry the return path.
+/// Most candidate return paths examined in one report; more is treated as hostile.
+const MAX_CANDIDATES: usize = 16;
+/// `bounces+{uuid}-{tag}`: a 36-character uuid, a dash and a 16-character tag.
+const TOKEN_LEN: usize = 36 + 1 + 16;
+
+/// Looks for `bounces+{uuid}-{tag}@` in the headers that can carry the return path, in one
+/// pass over each header. Stops at the first malformed or conflicting candidate.
 fn return_path_evidence(headers: &[&str]) -> ReturnPathEvidence {
-    let mut found: Vec<ReturnPathEvidence> = Vec::new();
+    const MARKER: &str = "bounces+";
+    let mut first: Option<ReturnPathEvidence> = None;
+    let mut seen = 0;
     for value in headers {
         let lower = value.to_ascii_lowercase();
         let mut rest = lower.as_str();
-        while let Some(at) = rest.find("bounces+") {
-            let after = &rest[at + "bounces+".len()..];
-            let token = after.split(['@', '>', ' ', ',', ';']).next().unwrap_or("");
-            found.push(parse_token(token));
-            rest = after;
+        while let Some(at) = rest.find(MARKER) {
+            seen += 1;
+            if seen > MAX_CANDIDATES {
+                return ReturnPathEvidence::Malformed;
+            }
+            let after = &rest[at + MARKER.len()..];
+            // A token is bounded by its delimiter or, failing that, by one byte past the
+            // expected length; this keeps the scan linear however many markers follow.
+            let window = after
+                .as_bytes()
+                .get(..=TOKEN_LEN)
+                .unwrap_or(after.as_bytes());
+            let end = window
+                .iter()
+                .position(|b| matches!(b, b'@' | b'>' | b' ' | b',' | b';'))
+                .unwrap_or(window.len());
+            let candidate = after
+                .get(..end)
+                .map_or(ReturnPathEvidence::Malformed, parse_token);
+            if candidate == ReturnPathEvidence::Malformed
+                || first.as_ref().is_some_and(|f| *f != candidate)
+            {
+                return ReturnPathEvidence::Malformed;
+            }
+            first = Some(candidate);
+            rest = &after[end..];
         }
     }
-    match found.as_slice() {
-        [] => ReturnPathEvidence::Absent,
-        [first, others @ ..] if others.iter().all(|o| o == first) => first.clone(),
-        _ => ReturnPathEvidence::Malformed,
-    }
+    first.unwrap_or(ReturnPathEvidence::Absent)
 }
 
 fn parse_token(token: &str) -> ReturnPathEvidence {
-    let parsed = (token.len() == 36 + 1 + 16)
-        .then(|| token.split_at(36))
-        .and_then(|(id, tag)| {
-            let tag = tag.strip_prefix('-')?;
-            let id = uuid::Uuid::parse_str(id).ok()?;
-            Some(ReturnPathEvidence::Signed {
-                id: EmailId::from(id),
-                tag: tag.to_owned(),
-            })
-        });
+    if !token.is_ascii() || token.len() != TOKEN_LEN {
+        return ReturnPathEvidence::Malformed;
+    }
+    let (id, tag) = token.split_at(36);
+    let parsed = tag.strip_prefix('-').and_then(|tag| {
+        let id = uuid::Uuid::parse_str(id).ok()?;
+        Some(ReturnPathEvidence::Signed {
+            id: EmailId::from(id),
+            tag: tag.to_owned(),
+        })
+    });
     parsed.unwrap_or(ReturnPathEvidence::Malformed)
 }
 
 fn recipient_address(value: &str) -> String {
     let value = value.rsplit(';').next().unwrap_or(value).trim();
     bare_address(value).to_owned()
+}
+
+/// One per-recipient DSN block; `None` when it is not a failure or delay notification.
+fn dsn_item(group: &[(String, String)]) -> Option<ReportItem> {
+    // Original-Recipient is what Catapulte addressed; Final-Recipient may be after aliasing.
+    let recipient = recipient_address(
+        field(group, "original-recipient").or_else(|| field(group, "final-recipient"))?,
+    );
+    let action = field(group, "action")?.to_ascii_lowercase();
+    let status = field(group, "status")?;
+    let class = status.chars().next();
+    let valid_status = status.split('.').count() == 3 && matches!(class, Some('4' | '5'));
+    if recipient.is_empty() || !(action == "failed" || action == "delayed") || !valid_status {
+        return None;
+    }
+    Some(ReportItem {
+        kind: ReportKind::Bounce {
+            hard: action == "failed" && class == Some('5'),
+            diagnostic_code: field(group, "diagnostic-code").map(str::to_owned),
+        },
+        recipient,
+    })
 }
 
 /// # Errors
@@ -162,30 +212,17 @@ pub fn parse_report(raw: &[u8]) -> Result<FeedbackReport, NotAReport> {
             .map(|(_, v)| v.as_str())
     };
 
-    let (kind, recipient) = match report_type.as_str() {
+    let items = match report_type.as_str() {
         "delivery-status" => {
             let part = status_part("delivery-status").ok_or(NotAReport("no delivery status"))?;
-            let groups = blocks(&part_text(part));
-            let group = groups
+            let items: Vec<ReportItem> = blocks(&part_text(part))
                 .iter()
-                .find(|g| field(g, "final-recipient").is_some())
-                .ok_or(NotAReport("no Final-Recipient"))?;
-            let action = field(group, "action")
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let status = field(group, "status").unwrap_or_default();
-            let class = status.chars().next();
-            let valid_status = status.split('.').count() == 3 && matches!(class, Some('4' | '5'));
-            if !(action == "failed" || action == "delayed") || !valid_status {
-                return Err(NotAReport("not a failure or delay notification"));
+                .filter_map(|group| dsn_item(group))
+                .collect();
+            if items.is_empty() {
+                return Err(NotAReport("no failure or delay notification"));
             }
-            (
-                ReportKind::Bounce {
-                    hard: action == "failed" && class == Some('5'),
-                    diagnostic_code: field(group, "diagnostic-code").map(str::to_owned),
-                },
-                recipient_address(field(group, "final-recipient").unwrap_or_default()),
-            )
+            items
         }
         "feedback-report" => {
             let part = status_part("feedback-report").ok_or(NotAReport("no feedback report"))?;
@@ -200,14 +237,15 @@ pub fn parse_report(raw: &[u8]) -> Result<FeedbackReport, NotAReport> {
             let recipient = field(group, "original-rcpt-to")
                 .or_else(|| original_value("to"))
                 .map(recipient_address)
+                .filter(|r| !r.is_empty())
                 .ok_or(NotAReport("no reported recipient"))?;
-            (ReportKind::Complaint, recipient)
+            vec![ReportItem {
+                kind: ReportKind::Complaint,
+                recipient,
+            }]
         }
         _ => return Err(NotAReport("unsupported report type")),
     };
-    if recipient.is_empty() {
-        return Err(NotAReport("no reported recipient"));
-    }
 
     let outer: Vec<&str> = message
         .headers_raw()
@@ -226,8 +264,7 @@ pub fn parse_report(raw: &[u8]) -> Result<FeedbackReport, NotAReport> {
         .chain(original_value("return-path"))
         .collect();
     Ok(FeedbackReport {
-        kind,
-        recipient,
+        items,
         return_path: return_path_evidence(&outer),
         original_message_id: original_value("message-id").and_then(email_id_from_message_id),
     })
@@ -292,9 +329,10 @@ mod tests {
     fn hard_bounce_is_read_with_its_signed_return_path() {
         let report = parse_report(dsn("failed", "5.1.1", VERP).as_bytes()).unwrap();
 
-        assert_eq!(report.recipient, "Alice@Example.org");
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].recipient, "Alice@Example.org");
         assert_eq!(
-            report.kind,
+            report.items[0].kind,
             ReportKind::Bounce {
                 hard: true,
                 diagnostic_code: Some(
@@ -318,7 +356,7 @@ mod tests {
         for (action, status) in [("delayed", "4.4.1"), ("failed", "4.2.2")] {
             let report = parse_report(dsn(action, status, VERP).as_bytes()).unwrap();
             assert!(
-                matches!(report.kind, ReportKind::Bounce { hard: false, .. }),
+                matches!(report.items[0].kind, ReportKind::Bounce { hard: false, .. }),
                 "{action} {status}"
             );
         }
@@ -378,8 +416,8 @@ mod tests {
 
         let report = parse_report(raw.as_bytes()).unwrap();
 
-        assert_eq!(report.kind, ReportKind::Complaint);
-        assert_eq!(report.recipient, "bob@example.org");
+        assert_eq!(report.items[0].kind, ReportKind::Complaint);
+        assert_eq!(report.items[0].recipient, "bob@example.org");
         assert_eq!(report.return_path, ReturnPathEvidence::Absent);
         assert_eq!(report.original_message_id, Some(id()));
     }
@@ -416,5 +454,82 @@ mod tests {
             "report-type=disposition-notification",
         );
         assert!(parse_report(wrong_type.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn a_multibyte_character_at_the_split_point_is_malformed_not_a_panic() {
+        let token = format!("{}é{}", "a".repeat(35), "b".repeat(16));
+        assert_eq!(token.len(), 53, "right length, with byte 36 inside the é");
+        let header = format!("bounces+{token}@bounces.example.com");
+
+        assert_eq!(
+            return_path_evidence(&[&header]),
+            ReturnPathEvidence::Malformed
+        );
+        let raw = dsn("failed", "5.1.1", &header);
+        assert_eq!(
+            parse_report(raw.as_bytes()).unwrap().return_path,
+            ReturnPathEvidence::Malformed
+        );
+    }
+
+    #[test]
+    fn a_megabyte_of_markers_is_parsed_in_linear_time() {
+        let hostile = "bounces+".repeat(131_072);
+        assert_eq!(hostile.len(), 1024 * 1024);
+        let started = std::time::Instant::now();
+
+        let evidence = return_path_evidence(&[&hostile]);
+        let raw = dsn("failed", "5.1.1", &hostile);
+        let parsed = parse_report(raw.as_bytes());
+
+        let elapsed = started.elapsed();
+        eprintln!("hostile VERP scan took {elapsed:?}");
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+        assert_eq!(evidence, ReturnPathEvidence::Malformed);
+        assert!(parsed.map_or(true, |r| r.return_path == ReturnPathEvidence::Malformed));
+    }
+
+    #[test]
+    fn more_than_sixteen_candidates_or_conflicting_ones_are_malformed() {
+        let valid = format!("bounces+{ID}-t6hpvmqrhhcbxr7n@b.example");
+        let many = vec![valid.as_str(); 17].join(" ");
+        assert_eq!(
+            return_path_evidence(&[&many]),
+            ReturnPathEvidence::Malformed
+        );
+        let sixteen = vec![valid.as_str(); 16].join(" ");
+        assert!(matches!(
+            return_path_evidence(&[&sixteen]),
+            ReturnPathEvidence::Signed { .. }
+        ));
+        let other = format!("bounces+{ID}-aaaaaaaaaaaaaaaa@b.example");
+        assert_eq!(
+            return_path_evidence(&[&format!("{valid} {other}")]),
+            ReturnPathEvidence::Malformed
+        );
+    }
+
+    #[test]
+    fn every_recipient_block_is_read_and_original_recipient_wins() {
+        let raw = dsn("failed", "5.1.1", VERP).replace(
+            "Final-Recipient: rfc822; Alice@Example.org\r\n",
+            "Final-Recipient: rfc822; alias@remote.example\r\nOriginal-Recipient: rfc822; Alice@Example.org\r\n",
+        );
+        let second =
+            "\r\nFinal-Recipient: rfc822; bob@example.org\r\nAction: delayed\r\nStatus: 4.2.2\r\n";
+        let raw = raw.replace(
+            "\r\n--BOUND\r\nContent-Type: message/rfc822",
+            &format!("{second}\r\n--BOUND\r\nContent-Type: message/rfc822"),
+        );
+
+        let report = parse_report(raw.as_bytes()).unwrap();
+
+        let recipients: Vec<_> = report.items.iter().map(|i| i.recipient.as_str()).collect();
+        assert_eq!(recipients, ["Alice@Example.org", "bob@example.org"]);
+        assert!(matches!(
+            report.items[1].kind,
+            ReportKind::Bounce { hard: false, .. }
+        ));
     }
 }

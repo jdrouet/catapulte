@@ -18,10 +18,14 @@ pub async fn ingest_feedback<S: HttpServerState>(
     State(state): State<S>,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    let report = parse_report(&body).map_err(|e| {
-        tracing::info!(reason = %e, "feedback report rejected");
-        AppError::Rejected
-    })?;
+    // Parsing untrusted mail is CPU-bound, so it stays off the async workers.
+    let report = tokio::task::spawn_blocking(move || parse_report(&body))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::Error::new(e)))?
+        .map_err(|e| {
+            tracing::info!(reason = %e, "feedback report rejected");
+            AppError::Rejected
+        })?;
     match state.ingest_feedback().execute(report).await {
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(e) if e.is_rejection() => {

@@ -6,8 +6,7 @@ use crate::entity::lifecycle_event::EventContext;
 /// What feedback ingestion needs to know about a sent email.
 #[derive(Clone, Debug)]
 pub struct EmailSummary {
-    pub owner: String,
-    /// The final envelope recipients: To, Cc and Bcc.
+    /// The recipients stored at submission: To, Cc and Bcc.
     pub recipients: Vec<(RecipientKind, String)>,
     pub context: EventContext,
 }

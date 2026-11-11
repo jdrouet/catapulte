@@ -33,6 +33,8 @@ pub enum AppError {
     ManageSuppressions(#[from] ManageSuppressionsError),
     #[error(transparent)]
     Feedback(#[from] IngestFeedbackError),
+    #[error("internal error")]
+    Internal(#[source] anyhow::Error),
     #[error("feedback report rejected")]
     Rejected,
     #[error("admin key required")]
@@ -90,7 +92,8 @@ impl IntoResponse for AppError {
             | Self::ListEvents(_)
             | Self::ListSenders(_)
             | Self::ManageSuppressions(_)
-            | Self::Feedback(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+            | Self::Feedback(_)
+            | Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
         };
         tracing::error!(error = ?self, status = %status.as_u16(), "request failed");
         (status, Json(ErrorBody { error: message })).into_response()

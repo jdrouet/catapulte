@@ -33,12 +33,18 @@ pub enum ReturnPathEvidence {
     },
 }
 
+/// One recipient a report speaks about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReportItem {
+    pub kind: ReportKind,
+    pub recipient: String,
+}
+
 /// A parsed bounce or complaint. Every field comes from untrusted mail.
 #[derive(Clone, Debug)]
 pub struct FeedbackReport {
-    pub kind: ReportKind,
-    /// The recipient the report is about.
-    pub recipient: String,
+    /// One item per recipient block (a DSN can report several recipients).
+    pub items: Vec<ReportItem>,
     pub return_path: ReturnPathEvidence,
     /// Email id taken from the `Message-ID` of the embedded original; never authentication.
     pub original_message_id: Option<EmailId>,
@@ -131,10 +137,16 @@ where
                 }
                 (*id, true)
             }
-            ReturnPathEvidence::Absent => match (&report.kind, report.original_message_id) {
-                (ReportKind::Complaint, Some(id)) => (id, false),
-                _ => return Err(IngestFeedbackError::Uncorrelated),
-            },
+            ReturnPathEvidence::Absent => {
+                let all_complaints = report
+                    .items
+                    .iter()
+                    .all(|item| item.kind == ReportKind::Complaint);
+                match report.original_message_id {
+                    Some(id) if all_complaints => (id, false),
+                    _ => return Err(IngestFeedbackError::Uncorrelated),
+                }
+            }
         };
 
         let summary = self
@@ -142,54 +154,69 @@ where
             .find(id)
             .await?
             .ok_or(IngestFeedbackError::UnknownEmail)?;
-        let recipient = suppression_key(&report.recipient);
         let on_email: HashSet<String> = summary
             .recipients
             .iter()
             .map(|(_, address)| suppression_key(address))
             .collect();
-        if !on_email.contains(&recipient) {
+        // Counted as stored: entries, not distinct addresses. The stored list can only be a
+        // superset of what was sent, so a miscount skips a suppression and never adds one.
+        let single_recipient = summary.recipients.len() == 1;
+        // One item per recipient, so repeated blocks cannot amplify events.
+        let mut seen = HashSet::new();
+        let items: Vec<ReportItem> = report
+            .items
+            .into_iter()
+            .filter(|item| {
+                let key = suppression_key(&item.recipient);
+                on_email.contains(&key) && seen.insert(key)
+            })
+            .collect();
+        if items.is_empty() {
             return Err(IngestFeedbackError::RecipientNotOnEmail);
         }
 
         // The signed tag binds the email, not a recipient: on a multi-recipient email a
         // co-recipient could name someone else, so only a single-recipient email suppresses.
-        let may_suppress = verified && on_email.len() == 1;
-        let (reason, event) = match report.kind {
-            ReportKind::Bounce {
-                hard,
-                diagnostic_code,
-            } => (
-                (hard && may_suppress).then_some(SuppressionReason::Bounce),
-                LifecycleEvent::Bounced {
-                    id,
+        let may_suppress = verified && single_recipient;
+        for item in items {
+            let recipient = suppression_key(&item.recipient);
+            let (reason, event) = match item.kind {
+                ReportKind::Bounce {
                     hard,
-                    recipient: recipient.clone(),
                     diagnostic_code,
-                    context: summary.context,
-                },
-            ),
-            ReportKind::Complaint => (
-                may_suppress.then_some(SuppressionReason::Complaint),
-                LifecycleEvent::Complained {
-                    id,
-                    recipient: recipient.clone(),
-                    verified,
-                    context: summary.context,
-                },
-            ),
-        };
-        if let Some(reason) = reason {
-            self.suppressions
-                .add(&[Suppression {
-                    address: recipient,
-                    reason,
-                    created_at_ms: self.clock.now_ms(),
-                    source_email_id: Some(id),
-                }])
-                .await?;
+                } => (
+                    (hard && may_suppress).then_some(SuppressionReason::Bounce),
+                    LifecycleEvent::Bounced {
+                        id,
+                        hard,
+                        recipient: recipient.clone(),
+                        diagnostic_code,
+                        context: summary.context.clone(),
+                    },
+                ),
+                ReportKind::Complaint => (
+                    may_suppress.then_some(SuppressionReason::Complaint),
+                    LifecycleEvent::Complained {
+                        id,
+                        recipient: recipient.clone(),
+                        verified,
+                        context: summary.context.clone(),
+                    },
+                ),
+            };
+            if let Some(reason) = reason {
+                self.suppressions
+                    .add(&[Suppression {
+                        address: recipient,
+                        reason,
+                        created_at_ms: self.clock.now_ms(),
+                        source_email_id: Some(id),
+                    }])
+                    .await?;
+            }
+            self.publisher.publish(&event).await?;
         }
-        self.publisher.publish(&event).await?;
         Ok(())
     }
 }
@@ -281,7 +308,6 @@ mod tests {
 
     fn summary(recipients: &[&str]) -> EmailSummary {
         EmailSummary {
-            owner: String::new(),
             recipients: recipients
                 .iter()
                 .map(|a| (RecipientKind::To, (*a).to_owned()))
@@ -319,8 +345,10 @@ mod tests {
         return_path: ReturnPathEvidence,
     ) -> FeedbackReport {
         FeedbackReport {
-            kind,
-            recipient: recipient.to_owned(),
+            items: vec![ReportItem {
+                kind,
+                recipient: recipient.to_owned(),
+            }],
             return_path,
             original_message_id: None,
         }
@@ -479,5 +507,84 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, IngestFeedbackError::InvalidReturnPath));
+    }
+
+    #[tokio::test]
+    async fn stored_entries_are_counted_as_they_are_not_deduplicated() {
+        let recorder = Recorder::default();
+
+        service(Some(&["Alice@example.org", "alice@example.org"]), &recorder)
+            .ingest(report(
+                hard(),
+                "alice@example.org",
+                signed(EmailId::default()),
+            ))
+            .await
+            .unwrap();
+
+        assert!(recorder.added.lock().unwrap().is_empty());
+        assert_eq!(recorder.events.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn every_matching_block_gets_an_event_and_foreign_ones_are_skipped() {
+        let recorder = Recorder::default();
+        let mut multi = report(hard(), "a@x.com", signed(EmailId::default()));
+        multi.items.push(ReportItem {
+            kind: hard(),
+            recipient: "B@x.com".to_owned(),
+        });
+        multi.items.push(ReportItem {
+            kind: hard(),
+            recipient: "stranger@x.com".to_owned(),
+        });
+
+        service(Some(&["a@x.com", "b@x.com"]), &recorder)
+            .ingest(multi)
+            .await
+            .unwrap();
+
+        let events = recorder.events.lock().unwrap();
+        let named: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                LifecycleEvent::Bounced { recipient, .. } => Some(recipient.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(named, ["a@x.com", "b@x.com"]);
+        assert!(recorder.added.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn repeated_blocks_for_one_recipient_produce_one_event() {
+        let recorder = Recorder::default();
+        let mut repeated = report(hard(), "a@x.com", signed(EmailId::default()));
+        for _ in 0..3 {
+            repeated.items.push(ReportItem {
+                kind: hard(),
+                recipient: "A@x.com".to_owned(),
+            });
+        }
+
+        service(Some(&["a@x.com"]), &recorder)
+            .ingest(repeated)
+            .await
+            .unwrap();
+
+        assert_eq!(recorder.events.lock().unwrap().len(), 1);
+        assert_eq!(recorder.added.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_report_whose_blocks_all_name_strangers_is_rejected() {
+        let recorder = Recorder::default();
+
+        let err = service(Some(&["a@x.com"]), &recorder)
+            .ingest(report(hard(), "stranger@x.com", signed(EmailId::default())))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, IngestFeedbackError::RecipientNotOnEmail));
     }
 }

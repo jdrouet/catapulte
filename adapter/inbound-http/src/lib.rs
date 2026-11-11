@@ -189,6 +189,12 @@ impl InboundHttpConfig {
             .context("loading API keys")?
             .map(Arc::new);
         let feedback_secret = feedback_secret_from_env()?;
+        if let (Some(secret), Some(auth)) = (&feedback_secret, &auth) {
+            anyhow::ensure!(
+                !auth.has_secret(secret),
+                "CATAPULTE_BOUNCE_INGEST_SECRET must differ from every API key secret"
+            );
+        }
         let timeout_key = format!("{prefix}_REQUEST_TIMEOUT_SECS");
         let request_timeout_secs: u64 = match std::env::var(&timeout_key) {
             Err(std::env::VarError::NotPresent) => 30,
@@ -387,6 +393,14 @@ mod tests {
                 .unwrap(),
             "ops|true"
         );
+    }
+
+    #[test]
+    fn has_secret_finds_legacy_and_named_secrets_only() {
+        let keys = two_keys().unwrap();
+        assert!(keys.has_secret("secret-a") && keys.has_secret("secret-ops"));
+        assert!(!keys.has_secret("secret-b"));
+        assert!(legacy("legacy").unwrap().has_secret("legacy"));
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@ impl EmailLookup for PostgresAdapter {
     async fn find(&self, id: EmailId) -> Result<Option<EmailSummary>, EmailLookupError> {
         let storage = |source| EmailLookupError::Storage { source };
         let row = sqlx::query(
-            "SELECT api_key, correlation_id, recipients, tags, extras FROM emails WHERE id = $1",
+            "SELECT correlation_id, recipients, tags, extras FROM emails WHERE id = $1",
         )
         .bind(id.as_uuid())
         .fetch_optional(self.pool())
@@ -29,7 +29,6 @@ impl EmailLookup for PostgresAdapter {
             let extras: Option<sqlx::types::Json<EnvelopeExtrasDto>> =
                 row.try_get("extras").context("reading extras")?;
             Ok(EmailSummary {
-                owner: row.try_get("api_key").context("reading api_key")?,
                 recipients: recipients_from_dto(recipients.0),
                 context: EventContext {
                     correlation_id: row
@@ -101,7 +100,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_returns_recipients_owner_and_context() {
+    async fn find_returns_recipients_and_context() {
         let adapter = fresh_adapter().await;
         let id = EmailId::default();
         let mut envelope = Envelope::new(
@@ -112,7 +111,6 @@ mod tests {
             ],
             BodySource::Plain(Plain::try_new(Some("hi".to_owned()), None).unwrap()),
         );
-        envelope.owner = "ci".to_owned();
         envelope.correlation_id = Some("corr".to_owned());
         envelope.tags = vec!["welcome".to_owned()];
         envelope
@@ -122,7 +120,6 @@ mod tests {
 
         let found = adapter.find(id).await.unwrap().unwrap();
 
-        assert_eq!(found.owner, "ci");
         assert_eq!(found.recipients.len(), 2);
         assert_eq!(found.context.correlation_id.as_deref(), Some("corr"));
         assert_eq!(found.context.tags, vec!["welcome".to_owned()]);

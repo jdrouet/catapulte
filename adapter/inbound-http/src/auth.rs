@@ -189,6 +189,14 @@ impl AuthConfig {
         Self::new(legacy, named)
     }
 
+    /// True when `candidate` is the secret of any key, compared in constant time.
+    #[must_use]
+    pub fn has_secret(&self, candidate: &str) -> bool {
+        self.keys.iter().fold(false, |found, key| {
+            constant_time_eq(candidate.as_bytes(), key.secret.as_bytes()) | found
+        })
+    }
+
     /// Compares the token to every secret, with no early exit.
     pub(crate) fn authenticate(&self, token: &str) -> Option<&ApiKeyIdentity> {
         let mut found = None;
