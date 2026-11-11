@@ -1296,6 +1296,26 @@ async fn start_app_with_render(
     render: catapulte::render_sandbox::RenderSandboxConfig,
     db_dir: &tempfile::TempDir,
 ) -> String {
+    Box::pin(start_app_with_sandbox(
+        auth,
+        feedback_secret,
+        bounce,
+        resolver,
+        render,
+        db_dir,
+    ))
+    .await
+    .0
+}
+
+async fn start_app_with_sandbox(
+    auth: Option<AuthConfig>,
+    feedback_secret: Option<&str>,
+    bounce: Option<catapulte_domain::entity::return_path::BounceConfig>,
+    resolver: TemplateResolverConfig,
+    render: catapulte::render_sandbox::RenderSandboxConfig,
+    db_dir: &tempfile::TempDir,
+) -> (String, catapulte::render_sandbox::RenderSandbox) {
     let http_port = free_port();
     let config = AppConfig {
         storage: StorageBackendConfig::Sqlite(SqliteConfig {
@@ -1326,6 +1346,7 @@ async fn start_app_with_render(
         bounce,
     };
     let app = config.build().await.expect("failed to build app");
+    let sandbox = app.render_sandbox().clone();
     tokio::spawn(async move {
         let _ = app.run().await;
     });
@@ -1336,7 +1357,7 @@ async fn start_app_with_render(
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    base
+    (base, sandbox)
 }
 
 async fn submit_as(
@@ -2703,26 +2724,51 @@ async fn a_broken_render_program_is_a_503_for_templates_and_a_retry_for_sends() 
 
 #[tokio::test]
 async fn previews_and_sends_share_one_admission_limit() {
-    let (_files, resolver) = templates_dir_with("hostile", &hostile_body());
+    let (_files, resolver) = templates_dir_with("filed", STATIC_MJML);
+    let gate = catapulte::render_sandbox::HoldGate::new();
     let render = catapulte::render_sandbox::RenderSandboxConfig {
         concurrency: 1,
+        hooks: catapulte::render_sandbox::TestHooks {
+            hold_gate: Some(std::sync::Arc::clone(&gate)),
+            ..Default::default()
+        },
         ..base_render()
     };
     let db_dir = tempfile::tempdir().unwrap();
-    let base =
-        start_app_with_render(suppression_auth(), None, None, resolver, render, &db_dir).await;
+    let (base, sandbox) = Box::pin(start_app_with_sandbox(
+        suppression_auth(),
+        None,
+        None,
+        resolver,
+        render,
+        &db_dir,
+    ))
+    .await;
 
-    let hostile_base = base.clone();
-    let hostile = tokio::spawn(async move { preview(&hostile_base, "hostile").await.status() });
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // Only the preview's first render job is held; the send's jobs are free to run.
+    gate.arm();
+    let preview_base = base.clone();
+    let previewed = tokio::spawn(async move { preview(&preview_base, "filed").await.status() });
+    while sandbox.in_flight() == 0 {
+        assert!(
+            !previewed.is_finished(),
+            "the preview ended without taking a slot"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let id = submit_mjml(&base, STATIC_MJML).await;
-    tokio::time::sleep(Duration::from_millis(900)).await;
 
-    let during = event_types(&base, &id).await;
-    assert!(
-        !during.contains(&"delivery.succeeded".to_owned()),
-        "{during:?}"
-    );
-    assert_eq!(hostile.await.unwrap(), 400);
+    for _ in 0..10 {
+        let types = event_types(&base, &id).await;
+        assert!(
+            !types.contains(&"delivery.succeeded".to_owned()),
+            "{types:?}"
+        );
+        assert!(!previewed.is_finished());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    gate.release();
+
+    assert_eq!(previewed.await.unwrap(), 200);
     wait_for_event(&base, &id, "delivery.succeeded").await;
 }

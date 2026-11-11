@@ -90,8 +90,9 @@ cheaply. The final rendered output, literal text included, is bounded to 1 MiB p
   timeout is clamped to half the render timeout; several fetches can still exhaust the
   stage deadline, which is a permanent deadline hit.
 - **Cancellation and shutdown.** A task owned by the sandbox, not the caller, runs each job.
-  Dropping the caller cancels it; the owner kills and reaps the child and releases the
-  permit, and never launches a child after the caller is gone. Owner tasks are tracked, and
+  Dropping the caller cancels it, including while the owner waits for a child to exit after its
+  output closed; the owner kills and reaps the child and releases the permit. It never
+  launches a child after the caller is gone or after the job's deadline. Owner tasks are tracked, and
   the application's shutdown drain cancels and waits for them. During orderly operation and
   shutdown every child is awaited. After a crash or a runtime abort, the parent-death signal
   and `kill_on_drop` are the fallback.
@@ -126,8 +127,11 @@ reliably does this costs three failed children, not a worker.
 ### Memory envelope
 
 The worst case is the parent baseline plus, per permit, the child's address-space limit
-plus a 4 MiB request, a 16 MiB response and about 16 MiB decoded. "The worker survives"
-holds only with that headroom; `oom_score_adj` is a preference, not a guarantee, and the
+plus a 4 MiB request, a 16 MiB response and about 16 MiB decoded. The request is serialized
+only after a job holds a slot, so waiting jobs hold nothing beyond their own inputs. A child
+that cannot be reaped, for example one stuck in uninterruptible I/O, keeps its slot until it
+really exits; the caller is answered at once and the tracked owner keeps waiting, and shutdown
+waits for it. "The worker survives" holds only with that headroom; `oom_score_adj` is a preference, not a guarantee, and the
 address-space limit is virtual, not resident.
 
 ## Consequences

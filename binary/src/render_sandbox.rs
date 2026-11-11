@@ -97,6 +97,24 @@ enum Job<'a> {
 }
 
 impl Job<'_> {
+    /// Copies borrowed inputs so the job can move into the owner task.
+    fn into_owned(self) -> Job<'static> {
+        match self {
+            Self::Interpolate { body, variables } => Job::Interpolate {
+                body,
+                variables: Cow::Owned(variables.into_owned()),
+            },
+            Self::Validate { source, variables } => Job::Validate {
+                source: Cow::Owned(source.into_owned()),
+                variables: Cow::Owned(variables.into_owned()),
+            },
+            Self::Render { body, include } => Job::Render {
+                body,
+                include: Cow::Owned(include.into_owned()),
+            },
+        }
+    }
+
     const fn kind(&self) -> &'static str {
         match self {
             Self::Interpolate { .. } => "interpolate",
@@ -344,6 +362,119 @@ pub struct RenderSandboxConfig {
     /// Test hook: lowers the response cap.
     #[doc(hidden)]
     pub max_response_bytes: usize,
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub hooks: TestHooks,
+}
+
+/// Test-only knobs that make lifecycle races deterministic. Compiled only with the
+/// `test-hooks` feature; defaults change nothing.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+#[derive(Clone, Debug, Default)]
+pub struct TestHooks {
+    /// Delay before an owner task first asks for a slot.
+    pub admission_delay: Duration,
+    /// Delay after serialization, before the child would be spawned.
+    pub pre_spawn_delay: Duration,
+    /// Delay between spawning the child and watching it.
+    pub post_spawn_stall: Duration,
+    /// Holds the first job that starts a child once armed, with its slot, until released.
+    pub hold_gate: Option<Arc<HoldGate>>,
+    /// Keeps a finished job's slot and tracked owner alive until notified, as a slow reap would.
+    pub reap_gate: Option<Arc<tokio::sync::Notify>>,
+}
+
+/// A one-shot barrier: once armed, the next job to start a child waits until it is released.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct HoldGate {
+    armed: std::sync::atomic::AtomicBool,
+    released: tokio::sync::watch::Sender<bool>,
+}
+
+#[cfg(feature = "test-hooks")]
+impl HoldGate {
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            armed: std::sync::atomic::AtomicBool::new(false),
+            released: tokio::sync::watch::channel(true).0,
+        })
+    }
+
+    pub fn arm(&self) {
+        self.released.send_replace(false);
+        self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn release(&self) {
+        self.released.send_replace(true);
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl TestHooks {
+    async fn admission(&self) {
+        if !self.admission_delay.is_zero() {
+            tokio::time::sleep(self.admission_delay).await;
+        }
+    }
+
+    async fn pre_spawn(&self) {
+        if !self.pre_spawn_delay.is_zero() {
+            tokio::time::sleep(self.pre_spawn_delay).await;
+        }
+    }
+
+    async fn hold(&self) {
+        let Some(gate) = &self.hold_gate else { return };
+        if gate.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let _ = gate.released.subscribe().wait_for(|r| *r).await;
+        }
+    }
+
+    /// Keeps driving `io` for the stall, returning its result if it finished meanwhile.
+    async fn stall<F: std::future::Future + Unpin>(&self, io: &mut F) -> Option<F::Output> {
+        if self.post_spawn_stall.is_zero() {
+            return None;
+        }
+        let stall = tokio::time::sleep(self.post_spawn_stall);
+        tokio::pin!(stall);
+        let mut early = None;
+        loop {
+            tokio::select! {
+                result = &mut *io, if early.is_none() => early = Some(result),
+                () = &mut stall => return early,
+            }
+        }
+    }
+
+    fn reap_gate(&self) -> Option<Arc<tokio::sync::Notify>> {
+        self.reap_gate.clone()
+    }
+}
+
+/// Without the `test-hooks` feature every hook is a no-op.
+#[cfg(not(feature = "test-hooks"))]
+struct TestHooks;
+
+#[cfg(not(feature = "test-hooks"))]
+impl TestHooks {
+    async fn admission(&self) {}
+
+    async fn pre_spawn(&self) {}
+
+    async fn hold(&self) {}
+
+    async fn stall<F: std::future::Future + Unpin>(&self, _io: &mut F) -> Option<F::Output> {
+        None
+    }
+
+    fn reap_gate(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
 }
 
 fn parse_positive(
@@ -371,6 +502,8 @@ impl RenderSandboxConfig {
             max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
             concurrency: default_concurrency(),
             max_response_bytes: MAX_RESPONSE_BYTES,
+            #[cfg(feature = "test-hooks")]
+            hooks: TestHooks::default(),
         }
     }
 
@@ -664,15 +797,23 @@ impl RenderSandbox {
         self.tracker.wait().await;
     }
 
+    /// Slots currently held by running or still-reaping children.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn in_flight(&self) -> usize {
+        self.config.concurrency - self.permits.available_permits()
+    }
+
     async fn run(&self, job: Job<'_>) -> Result<Outcome, SandboxError> {
         let deadline = Instant::now() + self.config.timeout;
-        let mut request = CappedVec(Vec::new());
-        serde_json::to_writer(&mut request, &job)
-            .map_err(|e| infra(format!("serializing the render request: {e}")))?;
+        let kind = job.kind();
+        // Owned copies of inputs the caller already holds; the request itself is only
+        // serialized once the owner holds a slot, so waiters hold no extra buffer.
+        let job = job.into_owned();
 
         let span = tracing::info_span!(
             "template.sandbox",
-            job = job.kind(),
+            job = kind,
             outcome = tracing::field::Empty,
             limit = tracing::field::Empty,
         );
@@ -683,7 +824,7 @@ impl RenderSandbox {
         let owner_span = span.clone();
         self.tracker.spawn(
             async move {
-                let result = this.drive(request.0, deadline, &cancel).await;
+                let (result, held) = this.drive(&job, deadline, &cancel).await;
                 match &result {
                     Ok(_) => owner_span.record("outcome", "ok"),
                     Err(SandboxError::Budget(limit)) => {
@@ -699,6 +840,15 @@ impl RenderSandbox {
                     Err(SandboxError::Cancelled) => owner_span.record("outcome", "cancelled"),
                 };
                 let _ = tx.send(result);
+                if let Some(mut held) = held {
+                    // The caller has its answer. The slot stays taken, and shutdown keeps
+                    // waiting, until the kernel really reaps the child.
+                    let _ = held.child.start_kill();
+                    let _ = held.child.wait().await;
+                    if let Some(gate) = held.gate {
+                        gate.notified().await;
+                    }
+                }
             }
             .instrument(span),
         );
@@ -709,16 +859,28 @@ impl RenderSandbox {
         result
     }
 
-    async fn drive(
+    #[cfg(feature = "test-hooks")]
+    fn hooks(&self) -> &TestHooks {
+        &self.config.hooks
+    }
+
+    #[cfg(not(feature = "test-hooks"))]
+    #[allow(clippy::unused_self)]
+    fn hooks(&self) -> &'static TestHooks {
+        &TestHooks
+    }
+
+    /// Waits for a slot until the deadline; a job whose deadline passed never gets to spawn.
+    async fn admit(
         &self,
-        request: Vec<u8>,
         deadline: Instant,
         cancel: &CancellationToken,
-    ) -> Result<Outcome, SandboxError> {
-        let _permit = tokio::select! {
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, SandboxError> {
+        self.hooks().admission().await;
+        let permit = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(SandboxError::Cancelled),
-            acquired = tokio::time::timeout_at(deadline, self.permits.acquire()) => match acquired {
+            acquired = tokio::time::timeout_at(deadline, Arc::clone(&self.permits).acquire_owned()) => match acquired {
                 Ok(Ok(permit)) => permit,
                 Ok(Err(_)) => return Err(infra("the render admission queue is closed")),
                 Err(_) => return Err(infra("timed out waiting for a render slot")),
@@ -727,39 +889,95 @@ impl RenderSandbox {
         if cancel.is_cancelled() {
             return Err(SandboxError::Cancelled);
         }
+        // `timeout_at` polls the acquisition before its timer, so a late owner can win a slot
+        // after its deadline; such a job must not start a child.
+        if Instant::now() >= deadline {
+            return Err(infra("timed out waiting for a render slot"));
+        }
+        Ok(permit)
+    }
 
-        let mut child = self.spawn()?;
+    /// Serializes the request and starts the child, unless the job was cancelled or its
+    /// deadline passed meanwhile.
+    async fn launch(
+        &self,
+        job: &Job<'_>,
+        deadline: Instant,
+        cancel: &CancellationToken,
+    ) -> Result<(tokio::process::Child, CappedVec), SandboxError> {
+        let mut request = CappedVec(Vec::new());
+        serde_json::to_writer(&mut request, job)
+            .map_err(|e| infra(format!("serializing the render request: {e}")))?;
+        self.hooks().pre_spawn().await;
+        // Serialization can be slow; a job whose slot or deadline expired meanwhile must not
+        // start a child, because only a deadline that fires after the start is a budget hit.
+        if cancel.is_cancelled() {
+            return Err(SandboxError::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(infra("the deadline passed before the render child started"));
+        }
+        Ok((self.spawn()?, request))
+    }
+
+    /// Runs one job. The second value is a child that outlived its reap grace: the caller keeps
+    /// the slot and the child until it is reaped.
+    async fn drive(
+        &self,
+        job: &Job<'_>,
+        deadline: Instant,
+        cancel: &CancellationToken,
+    ) -> (Result<Outcome, SandboxError>, Option<Held>) {
+        let permit = match self.admit(deadline, cancel).await {
+            Ok(permit) => permit,
+            Err(e) => return (Err(e), None),
+        };
+        let (mut child, request) = match self.launch(job, deadline, cancel).await {
+            Ok(started) => started,
+            Err(e) => return (Err(e), None),
+        };
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-            return Err(infra("the render child has no pipes"));
+            return (Err(infra("the render child has no pipes")), None);
         };
         let mut io = std::pin::pin!(exchange(
             stdin,
             stdout,
-            &request,
+            &request.0,
             self.config.max_response_bytes
         ));
+        self.hooks().hold().await;
+        // Test hook: keep exchanging past the deadline so completion and the deadline can be
+        // made ready together.
+        let early = self.hooks().stall(&mut io).await;
 
-        let step = tokio::select! {
-            biased;
-            () = cancel.cancelled() => Step::Cancelled,
-            result = &mut io => Step::Io(result),
-            () = tokio::time::sleep_until(deadline) => Step::Deadline,
+        let step = if let Some(result) = early {
+            Step::Io(result)
+        } else {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => Step::Cancelled,
+                result = &mut io => Step::Io(result),
+                () = tokio::time::sleep_until(deadline) => Step::Deadline,
+            }
         };
 
         let mut observed = Observed::default();
         // None: the child is still running and must be killed before it is reaped.
         let mut natural_exit = None;
+        let mut cancelled = false;
         match step {
-            Step::Cancelled => {
-                kill_and_reap(&mut child).await;
-                return Err(SandboxError::Cancelled);
-            }
+            Step::Cancelled => cancelled = true,
             Step::Io(Ok(response)) => {
                 observed.response = Some(response);
-                match tokio::time::timeout_at(deadline, child.wait()).await {
-                    Ok(Ok(status)) => natural_exit = Some(exit_of(status)),
-                    Ok(Err(e)) => observed.io_error = Some(e),
-                    Err(_) => observed.deadline_kill = true,
+                // The child closed stdout; let it exit, but stay cancellable and bounded.
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => cancelled = true,
+                    waited = tokio::time::timeout_at(deadline, child.wait()) => match waited {
+                        Ok(Ok(status)) => natural_exit = Some(exit_of(status)),
+                        Ok(Err(e)) => observed.io_error = Some(e),
+                        Err(_) => observed.deadline_kill = true,
+                    },
                 }
             }
             Step::Io(Err(IoFailure::Overflow)) => observed.overflow = true,
@@ -782,7 +1000,19 @@ impl RenderSandbox {
             Some(exit) => Some(exit),
             None => kill_and_reap(&mut child).await,
         };
-        classify(observed)
+        let reap_gate = self.hooks().reap_gate();
+        let reaped = observed.exit.is_some() && reap_gate.is_none();
+        let result = if cancelled {
+            Err(SandboxError::Cancelled)
+        } else {
+            classify(observed)
+        };
+        let held = (!reaped).then_some(Held {
+            child,
+            gate: reap_gate,
+            _permit: permit,
+        });
+        (result, held)
     }
 
     fn spawn(&self) -> Result<tokio::process::Child, SandboxError> {
@@ -805,7 +1035,16 @@ impl RenderSandbox {
     }
 }
 
-/// Kills the child if it still runs, then waits for it so it is never left as a zombie.
+/// A child that was killed but not yet reaped, with the slot it occupies. A child stuck in
+/// uninterruptible I/O therefore keeps its slot until it really exits.
+struct Held {
+    child: tokio::process::Child,
+    gate: Option<Arc<tokio::sync::Notify>>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// Kills the child if it still runs, then waits up to the reap grace for it. `None` means it is still
+/// not reaped; the caller must keep waiting.
 async fn kill_and_reap(child: &mut tokio::process::Child) -> Option<Exit> {
     if matches!(child.try_wait(), Ok(None)) {
         let _ = child.start_kill();

@@ -420,7 +420,7 @@ Every template render (send, validation and preview) runs in a short-lived child
 
 A send renders in up to two stages (interpolate, then MJML) and an upload or preview in two, so startup refuses to run unless `2 x (CATAPULTE_RENDER_TIMEOUT_MS + 1 s) + 5 s` is at most the smaller of `CATAPULTE_HTTP_REQUEST_TIMEOUT_SECS` and the 30 s shutdown drain. With the default that is 21 s. This bounds the time spent rendering, not the whole request, which also includes storage and SMTP. The HTTP include timeout is lowered to half of `CATAPULTE_RENDER_TIMEOUT_MS` when it is longer, and a warning is logged.
 
-Memory use in the worst case is the process itself plus, for every slot, `CATAPULTE_RENDER_MAX_MEMORY_BYTES` and about 36 MiB of request and response buffers. Size the container for `CATAPULTE_RENDER_CONCURRENCY` times that. The memory limit is on address space, so it is a ceiling and not the resident size.
+Memory use in the worst case is the process itself plus, for every slot, `CATAPULTE_RENDER_MAX_MEMORY_BYTES` and about 36 MiB of request and response buffers. Size the container for `CATAPULTE_RENDER_CONCURRENCY` times that. Renders waiting for a slot hold only their own inputs; the request is built once a slot is free. A child that cannot be reaped (for example one stuck in uninterruptible I/O) keeps its slot until it exits. The memory limit is on address space, so it is a ceiling and not the resident size.
 
 ### Attachments
 

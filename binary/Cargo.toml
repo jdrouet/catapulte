@@ -9,6 +9,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Lifecycle hooks for the integration tests; never enabled in a release build.
+test-hooks = []
+
 [dependencies]
 anyhow = { workspace = true }
 opentelemetry = { workspace = true }
@@ -40,6 +44,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+catapulte = { path = ".", features = ["test-hooks"] }
 async-nats = "0.52"
 base64 = { version = "0.23" }
 futures-util = "0.3"

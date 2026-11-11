@@ -398,6 +398,13 @@ pub struct Application {
 }
 
 impl Application {
+    /// The shared render sandbox, for tests that need to observe admission.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn render_sandbox(&self) -> &RenderSandbox {
+        &self.sandbox
+    }
+
     /// Configures whether the metrics sampler should run and at what interval.
     #[must_use]
     pub fn with_metrics(mut self, enabled: bool, interval: Duration) -> Self {

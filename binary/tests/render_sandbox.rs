@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use catapulte::render_sandbox::{RenderSandbox, RenderSandboxConfig};
+use catapulte::render_sandbox::{RenderSandbox, RenderSandboxConfig, TestHooks};
 use catapulte_domain::entity::body::{InterpolatedBody, Plain, ResolvedBody};
 use catapulte_domain::port::template_interpolator::{InterpolateError, TemplateInterpolator};
 use catapulte_domain::port::template_renderer::{RenderError, TemplateRenderer};
@@ -440,14 +440,171 @@ async fn a_child_that_outlives_the_deadline_is_killed_and_the_job_is_permanent()
     wait_for_no_children().await;
 }
 
+fn stalled(child: &Script, timeout: Duration, stall: Duration) -> RenderSandbox {
+    sandbox_with(RenderSandboxConfig {
+        timeout,
+        hooks: TestHooks {
+            post_spawn_stall: stall,
+            ..TestHooks::default()
+        },
+        ..RenderSandboxConfig::new(child.path.clone())
+    })
+}
+
+/// The stall keeps the exchange running past the deadline, so the child has completed and the
+/// deadline has passed by the time the parent decides.
 #[tokio::test]
 #[serial]
-async fn a_child_that_answers_and_exits_just_before_the_deadline_is_judged_by_its_result() {
-    let child = script("cat >/dev/null\nprintf '{\"Validated\":\"on time\"}'");
+async fn when_completion_and_the_deadline_are_ready_together_the_childs_own_result_decides() {
+    let (timeout, stall) = (Duration::from_millis(300), Duration::from_millis(700));
+    let ok = script("cat >/dev/null\nprintf '{\"Validated\":\"won\"}'");
+    let bad_exit = script("cat >/dev/null\nprintf '{\"Validated\":\"x\"}'\nexit 3");
+    let cpu = script("cat >/dev/null\nkill -XCPU $$");
+    let running = script("cat >/dev/null\nsleep 30");
 
-    let result = validate(&scripted(&child, Duration::from_millis(1500)), "x").await;
+    let succeeded = validate(&stalled(&ok, timeout, stall), "x").await;
+    let failed = validate(&stalled(&bad_exit, timeout, stall), "x").await;
+    let cpu_limit = validate(&stalled(&cpu, timeout, stall), "x").await;
+    let killed = validate(&stalled(&running, timeout, stall), "x").await;
 
-    assert_eq!(result.unwrap(), "on time");
+    assert_eq!(succeeded.unwrap(), "won");
+    assert!(is_infra(&failed), "{failed:?}");
+    assert!(is_budget(&cpu_limit), "{cpu_limit:?}");
+    assert!(is_budget(&killed), "{killed:?}");
+    wait_for_no_children().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_job_that_wins_a_slot_after_its_deadline_never_spawns() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("spawned");
+    let child = script(&format!(
+        "touch {}\ncat >/dev/null\nprintf '{{\"Validated\":\"x\"}}'",
+        marker.display()
+    ));
+    let sandbox = sandbox_with(RenderSandboxConfig {
+        timeout: Duration::from_millis(100),
+        hooks: TestHooks {
+            admission_delay: Duration::from_millis(400),
+            ..TestHooks::default()
+        },
+        ..RenderSandboxConfig::new(child.path.clone())
+    });
+
+    let result = validate(&sandbox, "x").await;
+
+    let Err(InterpolateError::Infrastructure { source }) = result else {
+        panic!("expected infrastructure, got {result:?}");
+    };
+    assert!(source.to_string().contains("slot"), "{source}");
+    assert!(!marker.exists(), "a child was spawned after the deadline");
+    assert_eq!(sandbox.in_flight(), 0);
+}
+
+#[tokio::test]
+#[serial]
+async fn a_waiter_serializes_its_request_only_after_it_is_admitted() {
+    let variables = vars(&[("pad", Value::String("x".repeat(5 * 1024 * 1024)))]);
+    let sandbox = sandbox_with(RenderSandboxConfig {
+        timeout: Duration::from_millis(100),
+        program: PathBuf::from("/nonexistent/render-child"),
+        hooks: TestHooks {
+            admission_delay: Duration::from_millis(400),
+            ..TestHooks::default()
+        },
+        ..config()
+    });
+
+    let result = sandbox.validate("x", &variables).await;
+
+    let Err(InterpolateError::Infrastructure { source }) = result else {
+        panic!("expected infrastructure, got {result:?}");
+    };
+    assert!(
+        source.to_string().contains("slot"),
+        "the oversized request was serialized before admission: {source}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn cancelling_while_waiting_for_the_exit_after_stdout_closed_stops_promptly() {
+    let child = script("cat >/dev/null\nprintf '{\"Validated\":\"x\"}'\nexec >&-\nsleep 30");
+    let sandbox = scripted(&child, Duration::from_secs(20));
+    let running = sandbox.clone();
+    let job = tokio::spawn(async move { validate(&running, "x").await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let started = Instant::now();
+    sandbox.shutdown().await;
+
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(is_infra(&job.await.unwrap()));
+    assert_eq!(sandbox.in_flight(), 0);
+    wait_for_no_children().await;
+}
+
+/// The reap is held pending after the real exit, as a stuck reap would be: the caller still
+/// gets its answer, but the slot and the tracked owner stay until the reap completes.
+#[tokio::test]
+#[serial]
+async fn a_delayed_reap_keeps_the_slot_and_shutdown_waiting_but_not_the_caller() {
+    let child = script("cat >/dev/null\nsleep 30");
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let sandbox = sandbox_with(RenderSandboxConfig {
+        timeout: Duration::from_millis(300),
+        concurrency: 1,
+        hooks: TestHooks {
+            reap_gate: Some(std::sync::Arc::clone(&gate)),
+            ..TestHooks::default()
+        },
+        ..RenderSandboxConfig::new(child.path.clone())
+    });
+
+    let result = validate(&sandbox, "x").await;
+
+    assert!(is_budget(&result), "{result:?}");
+    assert_eq!(sandbox.in_flight(), 1);
+    let pending = tokio::time::timeout(Duration::from_millis(200), sandbox.shutdown()).await;
+    assert!(
+        pending.is_err(),
+        "shutdown finished while the reap was pending"
+    );
+    assert_eq!(sandbox.in_flight(), 1);
+    gate.notify_one();
+    sandbox.shutdown().await;
+    assert_eq!(sandbox.in_flight(), 0);
+    assert!(children().is_empty(), "{:?}", children());
+}
+
+#[tokio::test]
+#[serial]
+async fn slow_serialization_that_crosses_the_deadline_never_spawns() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("spawned");
+    let child = script(&format!(
+        "touch {}\ncat >/dev/null\nprintf '{{\"Validated\":\"x\"}}'",
+        marker.display()
+    ));
+    let sandbox = sandbox_with(RenderSandboxConfig {
+        timeout: Duration::from_millis(100),
+        hooks: TestHooks {
+            pre_spawn_delay: Duration::from_millis(300),
+            ..TestHooks::default()
+        },
+        ..RenderSandboxConfig::new(child.path.clone())
+    });
+
+    let result = validate(&sandbox, "x").await;
+
+    assert!(is_infra(&result), "{result:?}");
+    assert!(!marker.exists(), "a child was spawned after the deadline");
+    assert_eq!(sandbox.in_flight(), 0);
 }
 
 #[tokio::test]
@@ -480,12 +637,8 @@ fn run_child_directly(args: &[&str], stdin: &str) -> (Option<i32>, String) {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
+    // A child that fails its setup may exit before reading its request.
+    let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
     let output = child.wait_with_output().unwrap();
     (
         output.status.code(),
