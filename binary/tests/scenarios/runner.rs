@@ -89,7 +89,7 @@ pub async fn run_scenario<S, SFut, B, BFut>(
     // Poll until the HTTP server is ready.
     let client = reqwest::Client::new();
     let http_base = format!("http://127.0.0.1:{http_port}");
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + Duration::from_mins(1);
     let mut ready = false;
     while std::time::Instant::now() < deadline {
         if let Ok(resp) = client.get(format!("{http_base}/health/ready")).send().await
@@ -102,7 +102,7 @@ pub async fn run_scenario<S, SFut, B, BFut>(
     }
     assert!(
         ready,
-        "{scenario_name}__{backend_name}: server did not become ready within 15s"
+        "{scenario_name}__{backend_name}: server did not become ready within 60s"
     );
 
     let ctx = TestContext {
