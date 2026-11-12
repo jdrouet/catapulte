@@ -254,8 +254,9 @@ empty claims complete in under 100 ms.
 
 ## More Information
 
-Decision (c), Cancel, is amended by "Scheduled sends on the NATS and memory queues"
-(202611121500): its commit rule is relaxed and a delivery fence is added.
+Decision (a), which deployments support scheduling, and decision (c), Cancel, are amended by
+"Scheduled sends on the NATS and memory queues" (202611121500). NATS and memory now support
+scheduling, the cancel commit rule is relaxed, and a delivery fence is added.
 
 The design answers the concerns raised against earlier drafts.
 
