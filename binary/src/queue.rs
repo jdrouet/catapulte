@@ -30,6 +30,18 @@ impl QueueAdapter {
         }
     }
 
+    /// The furthest ahead an email may be scheduled on this queue, or `None` when the queue
+    /// cannot hold scheduled emails. `configured` is lowered to any limit the queue imposes.
+    pub(crate) fn schedule_horizon(&self, configured: Duration) -> Option<Duration> {
+        match self {
+            Self::Sqlite(_) | Self::Postgres(_) | Self::Memory(_) => Some(configured),
+            Self::Nats(a) if a.supports_scheduling() => {
+                Some(a.schedule_limit().map_or(configured, |l| configured.min(l)))
+            }
+            Self::Nats(_) => None,
+        }
+    }
+
     /// Returns the number of pending queue entries, or `None` on error.
     pub(crate) async fn pending(&self) -> Option<u64> {
         match self {

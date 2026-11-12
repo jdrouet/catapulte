@@ -385,13 +385,17 @@ where
             return Err(SubmitEmailError::SchedulingUnavailable);
         };
         let now = self.clock.now_ms();
-        let horizon_ms = i64::try_from(horizon.as_millis()).unwrap_or(i64::MAX);
         if send_at < now.saturating_sub(SEND_AT_PAST_TOLERANCE_MS)
-            || send_at > now.saturating_add(horizon_ms)
+            || self.beyond_horizon(send_at, horizon)
         {
             return Err(SubmitEmailError::SendAtOutOfRange);
         }
         Ok(())
+    }
+
+    fn beyond_horizon(&self, send_at_ms: i64, horizon: Duration) -> bool {
+        let horizon_ms = i64::try_from(horizon.as_millis()).unwrap_or(i64::MAX);
+        send_at_ms > self.clock.now_ms().saturating_add(horizon_ms)
     }
 
     /// Handles a submission whose idempotency key already exists. A recovery republish is
@@ -408,11 +412,16 @@ where
         }
         if let Some(envelope) = recovery {
             self.check_sender_allowed(&envelope.sender, caller_domains)?;
-            // An overdue time is enqueued as is; a future one needs a queue that can delay it.
-            if self.limits.max_schedule_ahead.is_none()
-                && envelope.send_at_ms.is_some_and(|t| t > self.clock.now_ms())
-            {
-                return Err(SubmitEmailError::SchedulingUnavailable);
+            // An overdue time is enqueued as is; a future one needs a queue that can delay it,
+            // that far ahead.
+            if let Some(send_at) = envelope.send_at_ms.filter(|t| *t > self.clock.now_ms()) {
+                let horizon = self
+                    .limits
+                    .max_schedule_ahead
+                    .ok_or(SubmitEmailError::SchedulingUnavailable)?;
+                if self.beyond_horizon(send_at, horizon) {
+                    return Err(SubmitEmailError::SendAtOutOfRange);
+                }
             }
             let outcome = self.queue.enqueue(id, &envelope).await?;
             self.announce_enqueue(outcome, id, &envelope).await;
@@ -3095,5 +3104,47 @@ mod tests {
         let id = later.execute(scheduled_input("k", None)).await.unwrap();
         assert_eq!(id, repo.rows.lock().unwrap()[0].id);
         assert_eq!(repo.states(), vec![RowState::Enqueued]);
+    }
+
+    #[tokio::test]
+    async fn a_stored_time_beyond_the_horizon_is_not_recovered() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[true]),
+            FakeEventPublisher::new(),
+        );
+        scheduled_service(&repo, &queue, &events, NOW, Some(HOUR * 2))
+            .execute(scheduled_input("k", Some(NOW + 7_200_000)))
+            .await
+            .unwrap_err();
+        let narrower = scheduled_service(&repo, &queue, &events, NOW, Some(HOUR));
+
+        let err = narrower
+            .execute(scheduled_input("k", None))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SubmitEmailError::SendAtOutOfRange));
+        assert_eq!(queue.calls.lock().unwrap().len(), 1, "nothing enqueued");
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+    }
+
+    #[tokio::test]
+    async fn a_stored_time_within_the_horizon_is_recovered_with_its_send_at() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[true]),
+            FakeEventPublisher::new(),
+        );
+        let service = scheduled_service(&repo, &queue, &events, NOW, Some(HOUR));
+        service
+            .execute(scheduled_input("k", Some(NOW + 1_800_000)))
+            .await
+            .unwrap_err();
+
+        service.execute(scheduled_input("k", None)).await.unwrap();
+
+        assert_eq!(queue.calls.lock().unwrap().len(), 2);
+        assert_eq!(scheduled_events(&events), vec![NOW + 1_800_000]);
     }
 }
