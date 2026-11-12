@@ -196,6 +196,9 @@ The publish acknowledgement is not used to detect duplicates. Mapping a duplicat
   window, can deliver twice. This is the existing at-least-once behavior.
 - The cluster version check reads one node.
 - A failed state write on an unkeyed submit loses the `queued` or `scheduled` event.
+- The announcement can still arrive after a worker's terminal event if the submitter pauses
+  between the enqueue-state write and publishing the event. The same window exists on the
+  storage queue. Status is unaffected, because terminal events take precedence.
 - The cancel commit rule on the storage queue is weaker than before. The fence now carries the
   guarantee that the queue row carried alone.
 
