@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 use catapulte::AppConfig;
 use catapulte::attachment_store::AttachmentStoreBackendConfig;
@@ -18,7 +19,7 @@ use catapulte_outbound_smtp::transport::{SmtpConfig, SmtpTls};
 use catapulte_outbound_sqlite::SqliteConfig;
 use testcontainers::GenericImage;
 use testcontainers::ImageExt;
-use testcontainers::core::{IntoContainerPort, WaitFor};
+use testcontainers::core::{IntoContainerPort, Mount, WaitFor};
 use testcontainers::runners::AsyncRunner;
 
 pub struct BackendBundle {
@@ -70,20 +71,72 @@ fn base_attachment_fetcher() -> HttpAttachmentFetcherConfig {
     HttpAttachmentFetcherConfig::default()
 }
 
-async fn start_postgres() -> testcontainers::ContainerAsync<GenericImage> {
-    crate::support::labelled(
-        GenericImage::new("postgres", "16-alpine")
-            .with_exposed_port(5432.tcp())
-            .with_wait_for(WaitFor::message_on_stderr(
-                "database system is ready to accept connections",
-            ))
-            .with_env_var("POSTGRES_USER", "catapulte")
-            .with_env_var("POSTGRES_PASSWORD", "catapulte")
-            .with_env_var("POSTGRES_DB", "catapulte"),
-    )
-    .start()
-    .await
-    .expect("failed to start postgres container; ensure Docker is running")
+static POSTGRES: OnceLock<(String, u16)> = OnceLock::new();
+
+// The container lives on its own thread and runtime so it outlives the test that started it.
+fn postgres() -> &'static (String, u16) {
+    POSTGRES.get_or_init(|| {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("postgres-container".to_owned())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("building the container runtime");
+                runtime.block_on(async move {
+                    let container = crate::support::labelled(
+                        GenericImage::new("postgres", "16-alpine")
+                            .with_exposed_port(5432.tcp())
+                            .with_wait_for(WaitFor::message_on_stderr(
+                                "database system is ready to accept connections",
+                            ))
+                            .with_env_var("POSTGRES_USER", "catapulte")
+                            .with_env_var("POSTGRES_PASSWORD", "catapulte")
+                            .with_env_var("POSTGRES_DB", "catapulte")
+                            .with_mount(Mount::tmpfs_mount("/var/lib/postgresql/data"))
+                            .with_cmd(["postgres", "-c", "max_connections=500", "-c", "fsync=off"]),
+                    )
+                    .start()
+                    .await
+                    .expect("failed to start postgres container; ensure Docker is running");
+                    let port = container.get_host_port_ipv4(5432).await.unwrap();
+                    wait_for_tcp(port, std::time::Duration::from_secs(30)).await;
+                    sender.send((container.id().to_owned(), port)).unwrap();
+                    // Keeps the container alive for the whole process.
+                    std::future::pending::<()>().await;
+                });
+            })
+            .expect("spawning the container thread");
+        receiver
+            .recv()
+            .expect("the container thread reported no server")
+    })
+}
+
+fn fresh_database_url() -> String {
+    let (id, port) = postgres();
+    let name = format!("test_{}", uuid::Uuid::now_v7().simple());
+    let output = std::process::Command::new("docker")
+        .args([
+            "exec",
+            id,
+            "psql",
+            "-U",
+            "catapulte",
+            "-d",
+            "catapulte",
+            "-c",
+        ])
+        .arg(format!("CREATE DATABASE {name}"))
+        .output()
+        .expect("failed to run docker exec");
+    assert!(
+        output.status.success(),
+        "CREATE DATABASE failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    format!("postgres://catapulte:catapulte@127.0.0.1:{port}/{name}")
 }
 
 async fn start_nats() -> testcontainers::ContainerAsync<GenericImage> {
@@ -250,14 +303,11 @@ pub async fn sqlite_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
 }
 
 pub async fn postgres_storage(smtp_port: u16, http_port: u16) -> BackendBundle {
-    let pg = start_postgres().await;
-    let pg_port = pg.get_host_port_ipv4(5432).await.unwrap();
-    wait_for_tcp(pg_port, std::time::Duration::from_secs(15)).await;
     let attachment_dir_path =
         std::env::temp_dir().join(format!("catapulte_scenarios_pg_{http_port}"));
     let config = AppConfig {
         storage: StorageBackendConfig::Postgres(PostgresConfig {
-            url: format!("postgres://catapulte:catapulte@127.0.0.1:{pg_port}/catapulte"),
+            url: fresh_database_url(),
             max_connections: 10,
             acquire_timeout: std::time::Duration::from_secs(30),
         }),
@@ -290,19 +340,16 @@ pub async fn postgres_storage(smtp_port: u16, http_port: u16) -> BackendBundle {
     };
     BackendBundle {
         config,
-        drop_guards: vec![Box::new(pg)],
+        drop_guards: vec![],
     }
 }
 
 pub async fn postgres_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
-    let pg = start_postgres().await;
-    let pg_port = pg.get_host_port_ipv4(5432).await.unwrap();
-    wait_for_tcp(pg_port, std::time::Duration::from_secs(15)).await;
     let attachment_dir_path =
         std::env::temp_dir().join(format!("catapulte_scenarios_pgmem_{http_port}"));
     let config = AppConfig {
         storage: StorageBackendConfig::Postgres(PostgresConfig {
-            url: format!("postgres://catapulte:catapulte@127.0.0.1:{pg_port}/catapulte"),
+            url: fresh_database_url(),
             max_connections: 10,
             acquire_timeout: std::time::Duration::from_secs(30),
         }),
@@ -335,22 +382,19 @@ pub async fn postgres_memory(smtp_port: u16, http_port: u16) -> BackendBundle {
     };
     BackendBundle {
         config,
-        drop_guards: vec![Box::new(pg)],
+        drop_guards: vec![],
     }
 }
 
 pub async fn postgres_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
-    let pg = start_postgres().await;
     let nats_container = start_nats().await;
-    let pg_port = pg.get_host_port_ipv4(5432).await.unwrap();
     let nats_port = nats_container.get_host_port_ipv4(4222).await.unwrap();
-    wait_for_tcp(pg_port, std::time::Duration::from_secs(15)).await;
     wait_for_tcp(nats_port, std::time::Duration::from_secs(15)).await;
     let attachment_dir_path =
         std::env::temp_dir().join(format!("catapulte_scenarios_pgnats_{http_port}"));
     let config = AppConfig {
         storage: StorageBackendConfig::Postgres(PostgresConfig {
-            url: format!("postgres://catapulte:catapulte@127.0.0.1:{pg_port}/catapulte"),
+            url: fresh_database_url(),
             max_connections: 10,
             acquire_timeout: std::time::Duration::from_secs(30),
         }),
@@ -386,6 +430,6 @@ pub async fn postgres_nats(smtp_port: u16, http_port: u16) -> BackendBundle {
     };
     BackendBundle {
         config,
-        drop_guards: vec![Box::new(pg), Box::new(nats_container)],
+        drop_guards: vec![Box::new(nats_container)],
     }
 }
