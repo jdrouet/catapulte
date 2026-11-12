@@ -13,7 +13,7 @@ workspace = true
 anyhow = { workspace = true }
 bytes = "1"
 data-encoding = "2"
-hmac = "0.12"
+hmac = "0.13"
 idna = "1"
 sha2 = "0.10"
 serde_json = { workspace = true }
