@@ -27,52 +27,23 @@ fn sql_list(types: &[&str]) -> String {
         .join(", ")
 }
 
-#[allow(clippy::too_many_lines)]
 fn list_query(prefix: &str, params: ListEmailsParams) -> QueryBuilder<sqlx::Postgres> {
+    let now = crate::email_queue::now_ms();
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(format!(
-        "{prefix}WITH latest AS (\
-                SELECT \
-                    e.id, \
-                    e.api_key, \
-                    e.idempotency_key, \
-                    e.subject, \
-                    e.sender, \
-                    e.recipients, \
-                    e.tags, \
-                    e.extras, \
-                    e.created_at, \
-                    e.send_at_ms, \
-                    e.cancelled_at_ms, \
-                    COALESCE(\
-                        (SELECT le.event_type \
-                         FROM lifecycle_events le \
-                         WHERE le.email_id = e.id \
-                           AND le.event_type IN ({terminal}) \
-                         ORDER BY le.created_at DESC, le.id DESC \
-                         LIMIT 1),\
-                        ''\
-                    ) AS latest_terminal_event_type \
-                FROM emails e\
-            ), \
-            email_status AS (\
-                SELECT latest.*, \
-                    CASE \
-                        WHEN cancelled_at_ms IS NOT NULL THEN 'cancelled' \
-                        WHEN latest_terminal_event_type = 'delivery.succeeded' THEN 'sent' \
-                        WHEN latest_terminal_event_type = 'delivery.failed' THEN 'failed' \
-                        WHEN send_at_ms > ",
-        terminal = sql_list(TERMINAL_EVENT_TYPES),
+        "{prefix}SELECT id, idempotency_key, subject, sender, recipients, tags, extras, \
+                created_at, send_at_ms, \
+                CASE \
+                    WHEN cancelled_at_ms IS NOT NULL THEN 'cancelled' \
+                    WHEN terminal_event_type = 'delivery.succeeded' THEN 'sent' \
+                    WHEN terminal_event_type = 'delivery.failed' THEN 'failed' \
+                    WHEN send_at_ms > "
     ));
-    qb.push_bind(crate::email_queue::now_ms());
+    qb.push_bind(now);
     qb.push(
         " THEN 'scheduled' \
-                        ELSE 'queued' \
-                    END AS status \
-                FROM latest\
-            ) \
-            SELECT id, idempotency_key, subject, sender, recipients, tags, extras, created_at, \
-                   send_at_ms, status \
-            FROM email_status \
+                    ELSE 'queued' \
+                END AS status \
+            FROM emails \
             WHERE 1=1",
     );
 
@@ -109,15 +80,31 @@ fn list_query(prefix: &str, params: ListEmailsParams) -> QueryBuilder<sqlx::Post
         qb.push_bind(template);
         qb.push(")");
     }
-    if let Some(status) = params.status {
-        qb.push(" AND status = ");
-        qb.push_bind(match status {
-            EmailStatus::Sent => "sent",
-            EmailStatus::Failed => "failed",
-            EmailStatus::Queued => "queued",
-            EmailStatus::Scheduled => "scheduled",
-            EmailStatus::Cancelled => "cancelled",
-        });
+    // Queued and scheduled scan the non-terminal, non-cancelled range in creation order and
+    // filter on send_at_ms, so cost follows in-flight and pending emails, not history.
+    match params.status {
+        None => {}
+        Some(EmailStatus::Sent) => {
+            qb.push(" AND terminal_event_type = 'delivery.succeeded' AND cancelled_at_ms IS NULL");
+        }
+        Some(EmailStatus::Failed) => {
+            qb.push(" AND terminal_event_type = 'delivery.failed' AND cancelled_at_ms IS NULL");
+        }
+        Some(EmailStatus::Cancelled) => {
+            qb.push(" AND cancelled_at_ms IS NOT NULL");
+        }
+        Some(EmailStatus::Scheduled) => {
+            qb.push(" AND terminal_event_type = '' AND cancelled_at_ms IS NULL AND send_at_ms > ");
+            qb.push_bind(now);
+        }
+        Some(EmailStatus::Queued) => {
+            qb.push(
+                " AND terminal_event_type = '' AND cancelled_at_ms IS NULL \
+                 AND (send_at_ms IS NULL OR send_at_ms <= ",
+            );
+            qb.push_bind(now);
+            qb.push(")");
+        }
     }
 
     qb.push(" ORDER BY created_at DESC, id DESC LIMIT ");
@@ -1929,6 +1916,374 @@ mod tests {
         let adapter = fresh_adapter().await;
         let id = race(&adapter, (SUCCEEDED, 10, 1), (FAILED, 5, 2), false).await;
         assert_eq!(terminal_of(&adapter, id).await, FAILED);
+    }
+
+    async fn explain_json(
+        adapter: &PostgresAdapter,
+        prefix: &str,
+        params: ListEmailsParams,
+    ) -> serde_json::Value {
+        super::list_query(prefix, params)
+            .build_query_scalar()
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    fn plan_nodes(plan: &serde_json::Value) -> Vec<&serde_json::Value> {
+        let mut nodes = Vec::new();
+        let mut stack = vec![&plan[0]["Plan"]];
+        while let Some(node) = stack.pop() {
+            nodes.push(node);
+            stack.extend(node["Plans"].as_array().into_iter().flatten());
+        }
+        nodes
+    }
+
+    async fn explain(adapter: &PostgresAdapter, params: ListEmailsParams) -> serde_json::Value {
+        explain_json(adapter, "EXPLAIN (FORMAT JSON) ", params).await
+    }
+
+    fn assert_flat(plan: &serde_json::Value) {
+        let text = plan.to_string();
+        assert!(!text.contains("lifecycle_events"), "{text}");
+        assert!(
+            plan_nodes(plan)
+                .iter()
+                .all(|n| !n["Node Type"].as_str().unwrap().contains("Sort")),
+            "{text}"
+        );
+    }
+
+    fn assert_plan(plan: &serde_json::Value, index: &str) {
+        assert_flat(plan);
+        assert!(
+            plan_nodes(plan).iter().any(|n| n["Index Name"] == index),
+            "{plan}"
+        );
+    }
+
+    fn listing(owner: Option<&str>, status: Option<EmailStatus>, offset: u32) -> ListEmailsParams {
+        ListEmailsParams {
+            owner: owner.map(str::to_owned),
+            status,
+            offset,
+            ..default_list_params()
+        }
+    }
+
+    async fn seed_terminal_states(adapter: &PostgresAdapter, rows: i64) {
+        let future = crate::email_queue::now_ms() + 3_600_000;
+        sqlx::query(
+            "INSERT INTO emails (id, api_key, sender, recipients, body, variables, created_at, \
+                                 terminal_event_type, cancelled_at_ms, send_at_ms) \
+             SELECT gen_random_uuid(), CASE WHEN n % 3 = 0 THEN 'key-a' ELSE 'key-big' END, \
+                    'a@b.c', '[]', '{}', '{}', (n * 7919 % $2 + 1)::bigint, \
+                    CASE WHEN n % 97 = 0 THEN '' WHEN n % 10 = 0 THEN 'delivery.failed' \
+                         WHEN n % 10 <= 7 THEN 'delivery.succeeded' ELSE '' END, \
+                    CASE WHEN n % 97 = 0 THEN n::bigint END, \
+                    CASE WHEN n % 5 = 0 THEN $1::bigint END \
+             FROM generate_series(1, $2) n",
+        )
+        .bind(future)
+        .bind(rows)
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+        sqlx::query("ANALYZE emails")
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_emails_status_filters_use_the_terminal_indexes() {
+        let adapter = fresh_adapter().await;
+        seed_terminal_states(&adapter, 20_000).await;
+
+        // Sent is ~70% of the rows, so scanning the owner index and filtering is as cheap and
+        // the planner may take it; only the absence of a sort and of events is stable.
+        let sent = explain(&adapter, listing(Some("key-a"), Some(EmailStatus::Sent), 0)).await;
+        assert_flat(&sent);
+        for status in [
+            EmailStatus::Failed,
+            EmailStatus::Queued,
+            EmailStatus::Scheduled,
+        ] {
+            let plan = explain(&adapter, listing(Some("key-a"), Some(status), 0)).await;
+            assert_plan(&plan, "emails_api_key_terminal_created_at");
+        }
+        let cancelled = explain(
+            &adapter,
+            listing(Some("key-a"), Some(EmailStatus::Cancelled), 0),
+        )
+        .await;
+        assert_plan(&cancelled, "emails_api_key_cancelled_created_at");
+        let failed = explain(&adapter, listing(None, Some(EmailStatus::Failed), 0)).await;
+        assert_plan(&failed, "emails_terminal_created_at");
+        let cancelled = explain(&adapter, listing(None, Some(EmailStatus::Cancelled), 0)).await;
+        assert_plan(&cancelled, "emails_cancelled_created_at");
+    }
+
+    #[tokio::test]
+    async fn list_emails_deep_page_does_not_touch_events() {
+        let adapter = fresh_adapter().await;
+        seed_terminal_states(&adapter, 20_000).await;
+
+        let plan = explain(&adapter, listing(Some("key-big"), None, 5000)).await;
+        assert_plan(&plan, "emails_api_key_created_at");
+    }
+
+    #[tokio::test]
+    async fn list_emails_owner_less_deep_page_with_tied_timestamps_does_not_sort() {
+        let adapter = fresh_adapter().await;
+        sqlx::query(
+            "INSERT INTO emails (id, api_key, sender, recipients, body, variables, created_at) \
+             SELECT gen_random_uuid(), CASE WHEN n % 2 = 0 THEN 'key-a' ELSE 'key-b' END, \
+                    'a@b.c', '[]', '{}', '{}', (n / 1000)::bigint \
+             FROM generate_series(1, 20000) n",
+        )
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+        sqlx::query("ANALYZE emails")
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        let plan = explain(&adapter, listing(None, None, 5000)).await;
+        assert_plan(&plan, "emails_created_at_id");
+    }
+
+    #[tokio::test]
+    async fn list_emails_pages_tied_timestamps_in_a_stable_order() {
+        let adapter = fresh_adapter().await;
+        sqlx::query(
+            "INSERT INTO emails (id, api_key, sender, recipients, body, variables, created_at) \
+             SELECT gen_random_uuid(), 'key-a', 'a@b.c', '[]', '{}', '{}', (n / 10)::bigint \
+             FROM generate_series(1, 30) n",
+        )
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+        let expected: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT id FROM emails ORDER BY created_at DESC, id DESC")
+                .fetch_all(adapter.pool())
+                .await
+                .unwrap();
+
+        let mut paged = Vec::new();
+        for offset in (0..30).step_by(7) {
+            let params = ListEmailsParams {
+                limit: 7,
+                offset,
+                ..default_list_params()
+            };
+            paged.extend(
+                adapter
+                    .list_emails(params)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| r.id.as_uuid()),
+            );
+        }
+        assert_eq!(paged, expected);
+    }
+
+    #[tokio::test]
+    async fn list_emails_failed_deep_page_reads_only_offset_plus_limit() {
+        let adapter = fresh_adapter().await;
+        seed_terminal_states(&adapter, 60_000).await;
+
+        let params = ListEmailsParams {
+            limit: 20,
+            ..listing(Some("key-big"), Some(EmailStatus::Failed), 1000)
+        };
+        let plan = explain_json(&adapter, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ", params).await;
+        let nodes = plan_nodes(&plan);
+        let node = nodes
+            .iter()
+            .find(|n| n["Index Name"] == "emails_api_key_terminal_created_at")
+            .unwrap_or_else(|| panic!("{plan}"));
+        assert_eq!(node["Actual Rows"], 1020, "{plan}");
+        let removed = node["Rows Removed by Filter"].as_i64().unwrap_or(0);
+        assert!(removed <= 20, "{plan}");
+    }
+
+    #[tokio::test]
+    async fn queued_page_skips_cancelled_history() {
+        let adapter = fresh_adapter().await;
+        sqlx::query(
+            "INSERT INTO emails (id, api_key, sender, recipients, body, variables, created_at, \
+                                 cancelled_at_ms) \
+             SELECT gen_random_uuid(), 'key-a', 'a@b.c', '[]', '{}', '{}', n::bigint, \
+                    CASE WHEN n > 20 THEN n::bigint END \
+             FROM generate_series(1, 20000) n",
+        )
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO emails (id, api_key, sender, recipients, body, variables, created_at) \
+             SELECT gen_random_uuid(), 'key-b', 'a@b.c', '[]', '{}', '{}', 20000 + n::bigint \
+             FROM generate_series(1, 5000) n",
+        )
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+        sqlx::query("ANALYZE emails")
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        let params = listing(Some("key-a"), Some(EmailStatus::Queued), 0);
+        let plan = explain_json(&adapter, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ", params).await;
+        assert_plan(&plan, "emails_api_key_terminal_created_at");
+        let nodes = plan_nodes(&plan);
+        let node = nodes
+            .iter()
+            .find(|n| n["Index Name"] == "emails_api_key_terminal_created_at")
+            .unwrap();
+        assert!(node["Actual Rows"].as_i64().unwrap() <= 25, "{plan}");
+        // Actual Rows counts survivors; rows removed by the filter would be cancelled rows scanned.
+        let removed = node["Rows Removed by Filter"].as_i64().unwrap_or(0);
+        assert_eq!(removed, 0, "{plan}");
+
+        let queued = adapter
+            .list_emails(listing(Some("key-a"), Some(EmailStatus::Queued), 0))
+            .await
+            .unwrap();
+        assert_eq!(queued.len(), 20);
+        assert!(queued.iter().all(|r| r.created_at_ms <= 20));
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn list_emails_status_filters_partition_and_match_the_old_derivation() {
+        let adapter = fresh_adapter().await;
+        let now = crate::email_queue::now_ms();
+        let future = Some(now + 3_600_000);
+        let past = Some(now - 3_600_000);
+        let uid = uuid::Uuid::from_u128;
+
+        let mut ids = Vec::new();
+        for send_at in [
+            None, future, past, future, None, None, None, None, None, None, None,
+        ] {
+            ids.push(save_with_send_at(&adapter, send_at).await);
+        }
+        let [
+            _plain,
+            _scheduled,
+            _queued_past,
+            failed_future,
+            flip,
+            tie,
+            informational,
+            cancelled,
+            sent,
+            failed_a,
+            failed_b,
+        ] = ids[..]
+        else {
+            unreachable!()
+        };
+        add_event_at(&adapter, sent, "delivery.succeeded", 5).await;
+        add_event_at(&adapter, failed_future, "delivery.failed", 5).await;
+        add_event_at(&adapter, flip, "delivery.failed", 1).await;
+        add_event_at(&adapter, flip, "delivery.succeeded", 2).await;
+        add_event_with_id(&adapter, tie, "delivery.succeeded", 7, uid(1)).await;
+        add_event_with_id(&adapter, tie, "delivery.failed", 7, uid(2)).await;
+        add_event_at(&adapter, informational, "delivery.succeeded", 5).await;
+        add_event_at(&adapter, informational, "sending", 6).await;
+        add_event_at(&adapter, cancelled, "delivery.failed", 5).await;
+        add_event_at(&adapter, failed_a, "delivery.failed", 3).await;
+        add_event_at(&adapter, failed_b, "delivery.failed", 4).await;
+        sqlx::query("UPDATE emails SET cancelled_at_ms = 1 WHERE id = $1")
+            .bind(cancelled.as_uuid())
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        let expected = |id: EmailId| {
+            let adapter = &adapter;
+            async move {
+                let (cancelled, send_at): (Option<i64>, Option<i64>) =
+                    sqlx::query_as("SELECT cancelled_at_ms, send_at_ms FROM emails WHERE id = $1")
+                        .bind(id.as_uuid())
+                        .fetch_one(adapter.pool())
+                        .await
+                        .unwrap();
+                let latest: Option<String> = sqlx::query_scalar(
+                    "SELECT event_type FROM lifecycle_events WHERE email_id = $1 \
+                     AND event_type IN ('delivery.succeeded', 'delivery.failed') \
+                     ORDER BY created_at DESC, id DESC LIMIT 1",
+                )
+                .bind(id.as_uuid())
+                .fetch_optional(adapter.pool())
+                .await
+                .unwrap();
+                if cancelled.is_some() {
+                    EmailStatus::Cancelled
+                } else if latest.as_deref() == Some("delivery.succeeded") {
+                    EmailStatus::Sent
+                } else if latest.as_deref() == Some("delivery.failed") {
+                    EmailStatus::Failed
+                } else if send_at.is_some_and(|s| s > now) {
+                    EmailStatus::Scheduled
+                } else {
+                    EmailStatus::Queued
+                }
+            }
+        };
+
+        let all = adapter.list_emails(listing(None, None, 0)).await.unwrap();
+        assert_eq!(all.len(), 11);
+        for record in &all {
+            assert_eq!(record.status, expected(record.id).await, "{:?}", record.id);
+        }
+
+        let mut union = Vec::new();
+        for status in [
+            EmailStatus::Sent,
+            EmailStatus::Failed,
+            EmailStatus::Queued,
+            EmailStatus::Scheduled,
+            EmailStatus::Cancelled,
+        ] {
+            let rows = adapter
+                .list_emails(listing(None, Some(status), 0))
+                .await
+                .unwrap();
+            assert!(!rows.is_empty(), "{status:?}");
+            assert!(rows.iter().all(|r| r.status == status));
+            union.extend(rows.into_iter().map(|r| r.id));
+        }
+        let mut union_sorted = union.clone();
+        union_sorted.sort_by_key(EmailId::as_uuid);
+        union_sorted.dedup();
+        assert_eq!(union_sorted.len(), union.len());
+        let mut all_ids: Vec<_> = all.iter().map(|r| r.id).collect();
+        all_ids.sort_by_key(EmailId::as_uuid);
+        assert_eq!(union_sorted, all_ids);
+
+        let failed = adapter
+            .list_emails(listing(None, Some(EmailStatus::Failed), 0))
+            .await
+            .unwrap();
+        let mut paged = Vec::new();
+        for offset in [0, 2, 4] {
+            let params = ListEmailsParams {
+                limit: 2,
+                ..listing(None, Some(EmailStatus::Failed), offset)
+            };
+            paged.extend(adapter.list_emails(params).await.unwrap());
+        }
+        assert_eq!(
+            paged.iter().map(|r| r.id).collect::<Vec<_>>(),
+            failed.iter().map(|r| r.id).collect::<Vec<_>>()
+        );
     }
 
     fn owned_envelope(owner: &str, key: &str) -> Envelope {
