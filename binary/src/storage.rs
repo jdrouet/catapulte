@@ -91,6 +91,16 @@ impl catapulte_domain::port::email_repository::EmailCancellation for StorageAdap
             Self::Postgres(a) => a.cancel(id, owner).await,
         }
     }
+
+    async fn start_delivery(
+        &self,
+        id: EmailId,
+    ) -> Result<catapulte_domain::port::email_repository::DeliveryStart, EmailRepositoryError> {
+        match self {
+            Self::Sqlite(a) => a.start_delivery(id).await,
+            Self::Postgres(a) => a.start_delivery(id).await,
+        }
+    }
 }
 
 impl EventPublisher for StorageAdapter {

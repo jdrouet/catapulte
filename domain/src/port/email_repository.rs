@@ -158,6 +158,15 @@ pub enum CancelOutcome {
     NotFound,
 }
 
+/// Result of [`EmailCancellation::start_delivery`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryStart {
+    /// The worker may send; cancel can no longer succeed.
+    Proceed,
+    /// The email was cancelled; drop the message.
+    Cancelled,
+}
+
 pub trait EmailCancellation: Send + Sync + 'static {
     /// Cancels a scheduled email that no worker has touched. After `Cancelled` no queue row
     /// remains and none can be added. `owner` of `None` matches any email.
@@ -170,4 +179,15 @@ pub trait EmailCancellation: Send + Sync + 'static {
         id: EmailId,
         owner: Option<&str>,
     ) -> impl std::future::Future<Output = Result<CancelOutcome, EmailRepositoryError>> + Send;
+
+    /// Records that a worker picked the email up, so a later cancel fails. Returns
+    /// `Cancelled` if a cancel won first; a missing email proceeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmailRepositoryError::Storage` when the update fails.
+    fn start_delivery(
+        &self,
+        id: EmailId,
+    ) -> impl std::future::Future<Output = Result<DeliveryStart, EmailRepositoryError>> + Send;
 }

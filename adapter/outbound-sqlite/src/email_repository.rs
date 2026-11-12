@@ -6,7 +6,7 @@ use catapulte_domain::entity::lifecycle_event::{
     EventContext, PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES,
 };
 use catapulte_domain::port::email_repository::{
-    CancelOutcome, DuplicateState, EmailCancellation, EmailRecord, EmailRepository,
+    CancelOutcome, DeliveryStart, DuplicateState, EmailCancellation, EmailRecord, EmailRepository,
     EmailRepositoryError, EmailStatus, EnqueueState, ListEmailsParams, SaveResult,
 };
 use sqlx::QueryBuilder;
@@ -369,7 +369,8 @@ impl EmailCancellation for SqliteAdapter {
         let cancelled = sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE emails SET cancelled_at_ms = ?1 \
              WHERE id = ?2 AND (?3 IS NULL OR api_key = ?3) \
-               AND cancelled_at_ms IS NULL AND send_at_ms IS NOT NULL \
+               AND cancelled_at_ms IS NULL AND delivery_started_at_ms IS NULL \
+               AND send_at_ms IS NOT NULL \
                AND enqueue_state = 'enqueued' \
                AND NOT EXISTS (SELECT 1 FROM lifecycle_events \
                                WHERE email_id = emails.id AND event_type IN ({worker})) \
@@ -442,6 +443,36 @@ impl EmailCancellation for SqliteAdapter {
             },
         })
     }
+
+    async fn start_delivery(&self, id: EmailId) -> Result<DeliveryStart, EmailRepositoryError> {
+        let storage = |source| EmailRepositoryError::Storage { source };
+        let started = sqlx::query(
+            "UPDATE emails SET delivery_started_at_ms = COALESCE(delivery_started_at_ms, ?1) \
+             WHERE id = ?2 AND cancelled_at_ms IS NULL",
+        )
+        .bind(crate::email_queue::now_ms())
+        .bind(id.as_uuid().as_bytes().to_vec())
+        .execute(self.pool())
+        .await
+        .context("recording the delivery start")
+        .map_err(storage)?
+        .rows_affected();
+        if started == 1 {
+            return Ok(DeliveryStart::Proceed);
+        }
+        let cancelled: Option<bool> =
+            sqlx::query_scalar("SELECT cancelled_at_ms IS NOT NULL FROM emails WHERE id = ?1")
+                .bind(id.as_uuid().as_bytes().to_vec())
+                .fetch_optional(self.pool())
+                .await
+                .context("classifying the delivery start")
+                .map_err(storage)?;
+        Ok(if cancelled == Some(true) {
+            DeliveryStart::Cancelled
+        } else {
+            DeliveryStart::Proceed
+        })
+    }
 }
 
 impl SqliteAdapter {
@@ -505,7 +536,8 @@ impl SqliteAdapter {
 
         let row = sqlx::query(
             "SELECT id, enqueue_state, api_key, idempotency_key, correlation_id, subject, sender, \
-                    recipients, body, variables, extras, tags, send_at_ms, cancelled_at_ms \
+                    recipients, body, variables, extras, tags, send_at_ms, cancelled_at_ms, \
+                    delivery_started_at_ms \
              FROM emails WHERE api_key = ? AND idempotency_key = ?",
         )
         .bind(owner)
@@ -527,6 +559,9 @@ impl SqliteAdapter {
 
         let cancelled: Option<i64> = row
             .try_get("cancelled_at_ms")
+            .map_err(|e| storage(e.into()))?;
+        let delivery_started: Option<i64> = row
+            .try_get("delivery_started_at_ms")
             .map_err(|e| storage(e.into()))?;
         // A cancelled email is final: nothing to replay, whatever its enqueue state.
         let (state, recovery) = if cancelled.is_some() {
@@ -551,7 +586,7 @@ impl SqliteAdapter {
                         .await
                         .context("checking worker evidence")
                         .map_err(storage)?;
-                    if has_evidence {
+                    if has_evidence || delivery_started.is_some() {
                         sqlx::query(
                             "UPDATE emails SET enqueue_state = 'enqueued' WHERE id = ? AND api_key = ?",
                         )

@@ -1452,4 +1452,147 @@ mod tests {
         .await
         .expect("test timed out");
     }
+
+    async fn bare_scheduled_email(adapter: &PostgresAdapter, key: Option<&str>) -> EmailId {
+        let id = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.send_at_ms = Some(in_an_hour());
+        envelope.idempotency_key = key.map(str::to_owned);
+        adapter.save(id, &envelope).await.unwrap();
+        adapter
+            .set_enqueue_state(id, "", EnqueueState::Enqueued)
+            .await
+            .unwrap();
+        id
+    }
+
+    async fn delivery_started_at(adapter: &PostgresAdapter, id: EmailId) -> Option<i64> {
+        sqlx::query_scalar("SELECT delivery_started_at_ms FROM emails WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn start_delivery_is_repeatable_and_keeps_the_first_timestamp() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+        let id = bare_scheduled_email(&adapter, None).await;
+
+        assert_eq!(
+            adapter.start_delivery(id).await.unwrap(),
+            DeliveryStart::Proceed
+        );
+        let first = delivery_started_at(&adapter, id).await;
+        assert!(first.is_some());
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        assert_eq!(
+            adapter.start_delivery(id).await.unwrap(),
+            DeliveryStart::Proceed
+        );
+
+        assert_eq!(delivery_started_at(&adapter, id).await, first);
+    }
+
+    #[tokio::test]
+    async fn start_delivery_proceeds_for_a_missing_email() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+
+        assert_eq!(
+            adapter.start_delivery(EmailId::default()).await.unwrap(),
+            DeliveryStart::Proceed
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_and_delivery_start_race_has_exactly_one_winner() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+        let (mut cancels, mut starts) = (0, 0);
+        for i in 0..50 {
+            let id = scheduled_email(&adapter, "", in_an_hour()).await;
+            let cancel = |adapter: PostgresAdapter| {
+                tokio::spawn(async move { adapter.cancel(id, Some("")).await })
+            };
+            let start = |adapter: PostgresAdapter| {
+                tokio::spawn(async move { adapter.start_delivery(id).await })
+            };
+            let (cancel_task, start_task) = if i % 2 == 0 {
+                let c = cancel(adapter.clone());
+                (c, start(adapter.clone()))
+            } else {
+                let s = start(adapter.clone());
+                (cancel(adapter.clone()), s)
+            };
+            let cancelled = matches!(
+                cancel_task.await.unwrap().unwrap(),
+                CancelOutcome::Cancelled { .. }
+            );
+            let proceeded = start_task.await.unwrap().unwrap() == DeliveryStart::Proceed;
+            assert_ne!(cancelled, proceeded, "exactly one side must win");
+            if cancelled {
+                cancels += 1;
+                assert_eq!(delivery_started_at(&adapter, id).await, None);
+            } else {
+                starts += 1;
+                assert_eq!(cancelled_at(&adapter, id).await, None);
+            }
+        }
+        eprintln!("race results: cancel won {cancels}, delivery start won {starts}");
+    }
+
+    #[tokio::test]
+    async fn a_delivery_fence_is_worker_evidence_for_a_publishable_duplicate() {
+        use catapulte_domain::port::email_repository::EmailCancellation;
+        let adapter = fresh_adapter().await;
+        let id = bare_scheduled_email(&adapter, Some("k")).await;
+        adapter
+            .set_enqueue_state(id, "", EnqueueState::Publishable)
+            .await
+            .unwrap();
+        adapter.start_delivery(id).await.unwrap();
+        let mut envelope = sample_envelope();
+        envelope.idempotency_key = Some("k".to_owned());
+
+        let result = adapter.save(EmailId::default(), &envelope).await.unwrap();
+
+        let SaveResult::Duplicate {
+            id: existing,
+            state,
+            recovery,
+        } = result
+        else {
+            panic!("expected a duplicate");
+        };
+        assert_eq!(existing, id);
+        assert_eq!(state, DuplicateState::Complete);
+        assert!(recovery.is_none());
+        let stored: String = sqlx::query_scalar("SELECT enqueue_state FROM emails WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+        assert_eq!(stored, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn a_publishable_duplicate_without_a_fence_recovers_with_its_send_at() {
+        let adapter = fresh_adapter().await;
+        let id = bare_scheduled_email(&adapter, Some("k")).await;
+        adapter
+            .set_enqueue_state(id, "", EnqueueState::Publishable)
+            .await
+            .unwrap();
+        let mut envelope = sample_envelope();
+        envelope.idempotency_key = Some("k".to_owned());
+
+        let result = adapter.save(EmailId::default(), &envelope).await.unwrap();
+
+        let SaveResult::Duplicate { recovery, .. } = result else {
+            panic!("expected a duplicate");
+        };
+        assert!(recovery.unwrap().send_at_ms.is_some());
+    }
 }
