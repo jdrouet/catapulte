@@ -3,6 +3,8 @@
 //! deterministically. The test drives the dequeue itself instead of running a worker.
 //! Delivery stays at least once; nothing here claims exactly-once.
 
+mod support;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -147,14 +149,16 @@ struct Harness {
 }
 
 async fn harness() -> Harness {
-    let nats = GenericImage::new("nats", "2-alpine")
-        .with_exposed_port(4222.tcp())
-        .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
-        .with_wait_for(WaitFor::millis(200))
-        .with_cmd(["nats-server".to_owned(), "--js".to_owned()])
-        .start()
-        .await
-        .expect("failed to start NATS container; ensure Docker is running");
+    let nats = crate::support::labelled(
+        GenericImage::new("nats", "2-alpine")
+            .with_exposed_port(4222.tcp())
+            .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
+            .with_wait_for(WaitFor::millis(200))
+            .with_cmd(["nats-server".to_owned(), "--js".to_owned()]),
+    )
+    .start()
+    .await
+    .expect("failed to start NATS container; ensure Docker is running");
     let port = nats.get_host_port_ipv4(4222).await.unwrap();
     let url = format!("nats://127.0.0.1:{port}");
 
