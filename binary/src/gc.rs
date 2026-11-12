@@ -204,4 +204,63 @@ mod tests {
             "orphaned blob should be gone from disk"
         );
     }
+
+    #[tokio::test]
+    async fn a_scheduled_email_keeps_its_blobs_until_it_is_cancelled() {
+        use catapulte_domain::port::email_queue::EmailQueue;
+        use catapulte_domain::port::email_repository::EmailCancellation;
+
+        let (storage, _storage_dir) = fresh_sqlite().await;
+        let StorageAdapter::Sqlite(sqlite) = storage.clone() else {
+            unreachable!("fresh_sqlite builds a sqlite adapter")
+        };
+        let store_dir = tempfile::tempdir().expect("store dir");
+        let fs_store = FsAttachmentStore::new(store_dir.path().to_path_buf())
+            .await
+            .expect("fs store");
+        let blob = fs_store
+            .put(Box::pin(Cursor::new(b"scheduled".to_vec())))
+            .await
+            .expect("put blob");
+        let envelope = Envelope {
+            send_at_ms: Some(i64::MAX / 2),
+            ..sample_envelope(vec![])
+        };
+        let id = EmailId::default();
+        storage.save(id, &envelope).await.expect("save");
+        storage
+            .set_attachments(
+                id,
+                &[AttachmentRef {
+                    content_id: None,
+                    filename: "a.txt".into(),
+                    content_type: "text/plain".into(),
+                    size_bytes: 9,
+                    blob: blob.blob.clone(),
+                }],
+            )
+            .await
+            .expect("set_attachments");
+        sqlite.enqueue(id, &envelope).await.expect("enqueue");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let gc = AttachmentGc::new(
+            storage.clone(),
+            AttachmentStoreAdapter::Fs(fs_store.clone()),
+            std::time::Duration::from_hours(1),
+            std::time::Duration::ZERO,
+        );
+
+        gc.sweep_once(&cancel).await.expect("first sweep");
+        assert!(
+            fs_store.get(&blob.blob).await.is_ok(),
+            "a scheduled email's blob is live"
+        );
+
+        storage.cancel(id, None).await.expect("cancel");
+        gc.sweep_once(&cancel).await.expect("second sweep");
+        assert!(
+            fs_store.get(&blob.blob).await.is_err(),
+            "a cancelled email's blob is swept"
+        );
+    }
 }

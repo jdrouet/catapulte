@@ -240,6 +240,7 @@ impl TryFrom<QueuedEmailPayload> for (EmailId, Envelope) {
                 .transpose()?,
             tags: payload.envelope.tags,
             metadata: payload.envelope.metadata,
+            send_at_ms: None,
         };
         Ok((EmailId::from(payload.id), envelope))
     }

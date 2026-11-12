@@ -3,11 +3,11 @@ use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::entity::lifecycle_event::{
-    PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES,
+    EventContext, PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES,
 };
 use catapulte_domain::port::email_repository::{
-    DuplicateState, EmailRecord, EmailRepository, EmailRepositoryError, EmailStatus, EnqueueState,
-    ListEmailsParams, SaveResult,
+    CancelOutcome, DuplicateState, EmailCancellation, EmailRecord, EmailRepository,
+    EmailRepositoryError, EmailStatus, EnqueueState, ListEmailsParams, SaveResult,
 };
 use sqlx::QueryBuilder;
 use sqlx::Row;
@@ -55,8 +55,8 @@ impl EmailRepository for SqliteAdapter {
         };
 
         let result = sqlx::query(
-            "INSERT OR IGNORE INTO emails (id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, tags, enqueue_state) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved')",
+            "INSERT OR IGNORE INTO emails (id, api_key, idempotency_key, correlation_id, subject, sender, recipients, body, variables, extras, tags, send_at_ms, enqueue_state) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved')",
         )
         .bind(&id_bytes)
         .bind(&envelope.owner)
@@ -69,6 +69,7 @@ impl EmailRepository for SqliteAdapter {
         .bind(Json(&envelope.variables))
         .bind(Json(&extras_dto))
         .bind(Json(&envelope.tags))
+        .bind(envelope.send_at_ms)
         .execute(self.pool())
         .await
         .context("inserting email")
@@ -95,12 +96,13 @@ impl EmailRepository for SqliteAdapter {
         self.resolve_duplicate(&envelope.owner, key).await
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn list_emails(
         &self,
         params: ListEmailsParams,
     ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
         let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(format!(
-            "WITH email_status AS (\
+            "WITH latest AS (\
                 SELECT \
                     e.id, \
                     e.api_key, \
@@ -111,6 +113,8 @@ impl EmailRepository for SqliteAdapter {
                     e.tags, \
                     e.extras, \
                     e.created_at_ms, \
+                    e.send_at_ms, \
+                    e.cancelled_at_ms, \
                     COALESCE(\
                         (SELECT le.event_type \
                          FROM lifecycle_events le \
@@ -118,15 +122,31 @@ impl EmailRepository for SqliteAdapter {
                            AND le.event_type IN ({terminal}) \
                          ORDER BY le.created_at DESC, le.id DESC \
                          LIMIT 1),\
-                        'queued'\
+                        ''\
                     ) AS latest_terminal_event_type \
                 FROM emails e\
-            ) \
-            SELECT id, idempotency_key, subject, sender, recipients, tags, extras, created_at_ms, latest_terminal_event_type \
-            FROM email_status \
-            WHERE 1=1",
+            ), \
+            email_status AS (\
+                SELECT latest.*, \
+                    CASE \
+                        WHEN cancelled_at_ms IS NOT NULL THEN 'cancelled' \
+                        WHEN latest_terminal_event_type = 'delivery.succeeded' THEN 'sent' \
+                        WHEN latest_terminal_event_type = 'delivery.failed' THEN 'failed' \
+                        WHEN send_at_ms > ",
             terminal = sql_list(TERMINAL_EVENT_TYPES),
         ));
+        qb.push_bind(crate::email_queue::now_ms());
+        qb.push(
+            " THEN 'scheduled' \
+                        ELSE 'queued' \
+                    END AS status \
+                FROM latest\
+            ) \
+            SELECT id, idempotency_key, subject, sender, recipients, tags, extras, created_at_ms, \
+                   send_at_ms, status \
+            FROM email_status \
+            WHERE 1=1",
+        );
 
         if let Some(id) = params.id {
             qb.push(" AND id = ");
@@ -161,22 +181,15 @@ impl EmailRepository for SqliteAdapter {
             qb.push_bind(template);
             qb.push(")");
         }
-        match params.status {
-            Some(EmailStatus::Sent) => {
-                qb.push(" AND latest_terminal_event_type = ");
-                qb.push_bind("delivery.succeeded");
-            }
-            Some(EmailStatus::Failed) => {
-                qb.push(" AND latest_terminal_event_type = ");
-                qb.push_bind("delivery.failed");
-            }
-            Some(EmailStatus::Queued) => {
-                qb.push(format!(
-                    " AND latest_terminal_event_type NOT IN ({})",
-                    sql_list(TERMINAL_EVENT_TYPES)
-                ));
-            }
-            None => {}
+        if let Some(status) = params.status {
+            qb.push(" AND status = ");
+            qb.push_bind(match status {
+                EmailStatus::Sent => "sent",
+                EmailStatus::Failed => "failed",
+                EmailStatus::Queued => "queued",
+                EmailStatus::Scheduled => "scheduled",
+                EmailStatus::Cancelled => "cancelled",
+            });
         }
 
         qb.push(" ORDER BY created_at_ms DESC, id DESC LIMIT ");
@@ -308,7 +321,7 @@ impl EmailRepository for SqliteAdapter {
                      ORDER BY le.created_at DESC, le.id DESC LIMIT 1),\
                     'queued'\
                 ) AS latest_event_type \
-                FROM emails e\
+                FROM emails e WHERE e.cancelled_at_ms IS NULL\
             ) \
             SELECT body FROM email_status \
             WHERE latest_event_type NOT IN ({terminal})",
@@ -337,6 +350,100 @@ impl EmailRepository for SqliteAdapter {
     }
 }
 
+impl EmailCancellation for SqliteAdapter {
+    async fn cancel(
+        &self,
+        id: EmailId,
+        owner: Option<&str>,
+    ) -> Result<CancelOutcome, EmailRepositoryError> {
+        let storage = |source| EmailRepositoryError::Storage { source };
+        let id_bytes = id.as_uuid().as_bytes().to_vec();
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .context("starting cancel transaction")
+            .map_err(storage)?;
+
+        // The first statement is a write, so the transaction holds the writer lock throughout.
+        let cancelled = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE emails SET cancelled_at_ms = ?1 \
+             WHERE id = ?2 AND (?3 IS NULL OR api_key = ?3) \
+               AND cancelled_at_ms IS NULL AND send_at_ms IS NOT NULL \
+               AND enqueue_state = 'enqueued' \
+               AND NOT EXISTS (SELECT 1 FROM lifecycle_events \
+                               WHERE email_id = emails.id AND event_type IN ({worker})) \
+             RETURNING correlation_id, tags, extras",
+            worker = sql_list(WORKER_EVENT_TYPES),
+        )))
+        .bind(crate::email_queue::now_ms())
+        .bind(&id_bytes)
+        .bind(owner)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("marking the email cancelled")
+        .map_err(storage)?;
+
+        let Some(row) = cancelled else {
+            let existing: Option<Option<i64>> = sqlx::query_scalar(
+                "SELECT cancelled_at_ms FROM emails WHERE id = ?1 AND (?2 IS NULL OR api_key = ?2)",
+            )
+            .bind(&id_bytes)
+            .bind(owner)
+            .fetch_optional(&mut *tx)
+            .await
+            .context("classifying the cancel")
+            .map_err(storage)?;
+            return Ok(match existing {
+                None => CancelOutcome::NotFound,
+                Some(Some(_)) => CancelOutcome::AlreadyCancelled,
+                Some(None) => CancelOutcome::NotCancellable,
+            });
+        };
+        let correlation_id: Option<String> = row
+            .try_get("correlation_id")
+            .map_err(|e| storage(e.into()))?;
+        let tags: Option<Json<Vec<String>>> = row.try_get("tags").map_err(|e| storage(e.into()))?;
+        let extras: Option<Json<EnvelopeExtrasDto>> =
+            row.try_get("extras").map_err(|e| storage(e.into()))?;
+
+        let removed =
+            sqlx::query("DELETE FROM email_queue WHERE email_id = ? AND attempt_count = 0")
+                .bind(&id_bytes)
+                .execute(&mut *tx)
+                .await
+                .context("removing the queue row")
+                .map_err(storage)?
+                .rows_affected();
+        let remaining: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM email_queue WHERE email_id = ?)")
+                .bind(&id_bytes)
+                .fetch_one(&mut *tx)
+                .await
+                .context("checking for remaining queue rows")
+                .map_err(storage)?;
+        // Anything but exactly one untouched row means a worker may hold the email.
+        if removed != 1 || remaining {
+            tx.rollback()
+                .await
+                .context("rolling back the cancel")
+                .map_err(storage)?;
+            return Ok(CancelOutcome::NotCancellable);
+        }
+        tx.commit()
+            .await
+            .context("committing the cancel")
+            .map_err(storage)?;
+        Ok(CancelOutcome::Cancelled {
+            context: EventContext {
+                correlation_id,
+                tags: tags.map(|j| j.0).unwrap_or_default(),
+                metadata: extras.map(|j| j.0.metadata).unwrap_or_default(),
+            },
+        })
+    }
+}
+
 impl SqliteAdapter {
     fn row_to_email_record(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<EmailRecord> {
         let id_bytes: Vec<u8> = row.try_get("id").context("reading id")?;
@@ -351,17 +458,19 @@ impl SqliteAdapter {
         let created_at_ms: i64 = row
             .try_get("created_at_ms")
             .context("reading created_at_ms")?;
-        let latest_terminal_event_type: String = row
-            .try_get("latest_terminal_event_type")
-            .context("reading latest_terminal_event_type")?;
+        let status: String = row.try_get("status").context("reading status")?;
+        let send_at_ms: Option<i64> = row.try_get("send_at_ms").context("reading send_at_ms")?;
         let tags: Option<sqlx::types::Json<Vec<String>>> =
             row.try_get("tags").context("reading tags")?;
         let extras: Option<sqlx::types::Json<crate::dto::EnvelopeExtrasDto>> =
             row.try_get("extras").context("reading extras")?;
-        let status = match latest_terminal_event_type.as_str() {
-            "delivery.succeeded" => EmailStatus::Sent,
-            "delivery.failed" => EmailStatus::Failed,
-            _ => EmailStatus::Queued,
+        let status = match status.as_str() {
+            "sent" => EmailStatus::Sent,
+            "failed" => EmailStatus::Failed,
+            "scheduled" => EmailStatus::Scheduled,
+            "cancelled" => EmailStatus::Cancelled,
+            "queued" => EmailStatus::Queued,
+            other => anyhow::bail!("unknown email status {other:?}"),
         };
         Ok(EmailRecord {
             id: EmailId::from(id),
@@ -373,6 +482,7 @@ impl SqliteAdapter {
             status,
             tags: tags.map(|j| j.0).unwrap_or_default(),
             metadata: extras.map(|j| j.0.metadata).unwrap_or_default(),
+            send_at_ms,
         })
     }
 }
@@ -395,7 +505,7 @@ impl SqliteAdapter {
 
         let row = sqlx::query(
             "SELECT id, enqueue_state, api_key, idempotency_key, correlation_id, subject, sender, \
-                    recipients, body, variables, extras, tags \
+                    recipients, body, variables, extras, tags, send_at_ms, cancelled_at_ms \
              FROM emails WHERE api_key = ? AND idempotency_key = ?",
         )
         .bind(owner)
@@ -415,43 +525,51 @@ impl SqliteAdapter {
             .try_get("enqueue_state")
             .map_err(|e| storage(e.into()))?;
 
-        let (state, recovery) = match state.as_str() {
-            "reserved" => (DuplicateState::Reserved, None),
-            "enqueued" => (DuplicateState::Complete, None),
-            "publishable" => {
-                let mut evidence = QueryBuilder::<Sqlite>::new(
-                    "SELECT EXISTS(SELECT 1 FROM lifecycle_events WHERE email_id = ",
-                );
-                evidence.push_bind(&id_bytes).push(" AND event_type IN (");
-                let mut types = evidence.separated(", ");
-                for t in WORKER_EVENT_TYPES {
-                    types.push_bind(*t);
+        let cancelled: Option<i64> = row
+            .try_get("cancelled_at_ms")
+            .map_err(|e| storage(e.into()))?;
+        // A cancelled email is final: nothing to replay, whatever its enqueue state.
+        let (state, recovery) = if cancelled.is_some() {
+            (DuplicateState::Complete, None)
+        } else {
+            match state.as_str() {
+                "reserved" => (DuplicateState::Reserved, None),
+                "enqueued" => (DuplicateState::Complete, None),
+                "publishable" => {
+                    let mut evidence = QueryBuilder::<Sqlite>::new(
+                        "SELECT EXISTS(SELECT 1 FROM lifecycle_events WHERE email_id = ",
+                    );
+                    evidence.push_bind(&id_bytes).push(" AND event_type IN (");
+                    let mut types = evidence.separated(", ");
+                    for t in WORKER_EVENT_TYPES {
+                        types.push_bind(*t);
+                    }
+                    evidence.push("))");
+                    let has_evidence: bool = evidence
+                        .build_query_scalar()
+                        .fetch_one(&mut *tx)
+                        .await
+                        .context("checking worker evidence")
+                        .map_err(storage)?;
+                    if has_evidence {
+                        sqlx::query(
+                            "UPDATE emails SET enqueue_state = 'enqueued' WHERE id = ? AND api_key = ?",
+                        )
+                        .bind(&id_bytes)
+                        .bind(owner)
+                        .execute(&mut *tx)
+                        .await
+                        .context("promoting enqueue_state")
+                        .map_err(storage)?;
+                        (DuplicateState::Complete, None)
+                    } else {
+                        let envelope = crate::email_queue::parse_envelope(&row).map_err(storage)?;
+                        (DuplicateState::Complete, Some(envelope))
+                    }
                 }
-                evidence.push("))");
-                let has_evidence: bool = evidence
-                    .build_query_scalar()
-                    .fetch_one(&mut *tx)
-                    .await
-                    .context("checking worker evidence")
-                    .map_err(storage)?;
-                if has_evidence {
-                    sqlx::query(
-                        "UPDATE emails SET enqueue_state = 'enqueued' WHERE id = ? AND api_key = ?",
-                    )
-                    .bind(&id_bytes)
-                    .bind(owner)
-                    .execute(&mut *tx)
-                    .await
-                    .context("promoting enqueue_state")
-                    .map_err(storage)?;
-                    (DuplicateState::Complete, None)
-                } else {
-                    let envelope = crate::email_queue::parse_envelope(&row).map_err(storage)?;
-                    (DuplicateState::Complete, Some(envelope))
+                other => {
+                    return Err(storage(anyhow::anyhow!("unknown enqueue_state {other:?}")));
                 }
-            }
-            other => {
-                return Err(storage(anyhow::anyhow!("unknown enqueue_state {other:?}")));
             }
         };
 
@@ -736,6 +854,151 @@ mod tests {
             limit: 20,
             offset: 0,
         }
+    }
+
+    async fn save_with_send_at(adapter: &SqliteAdapter, send_at_ms: Option<i64>) -> EmailId {
+        let id = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.send_at_ms = send_at_ms;
+        adapter.save(id, &envelope).await.unwrap();
+        id
+    }
+
+    async fn statuses(
+        adapter: &SqliteAdapter,
+    ) -> std::collections::HashMap<EmailId, catapulte_domain::port::email_repository::EmailRecord>
+    {
+        adapter
+            .list_emails(default_list_params())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.id, r))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn status_is_scheduled_until_send_at_passes_then_queued() {
+        let adapter = fresh_adapter().await;
+        let now = crate::email_queue::now_ms();
+        let future = save_with_send_at(&adapter, Some(now + 3_600_000)).await;
+        let past = save_with_send_at(&adapter, Some(now - 3_600_000)).await;
+        let plain = save_with_send_at(&adapter, None).await;
+
+        let all = statuses(&adapter).await;
+
+        assert_eq!(all[&future].status, EmailStatus::Scheduled);
+        assert_eq!(all[&future].send_at_ms, Some(now + 3_600_000));
+        assert_eq!(all[&past].status, EmailStatus::Queued);
+        assert_eq!(all[&past].send_at_ms, Some(now - 3_600_000));
+        assert_eq!(all[&plain].status, EmailStatus::Queued);
+        assert_eq!(all[&plain].send_at_ms, None);
+    }
+
+    #[tokio::test]
+    async fn a_terminal_event_beats_a_future_send_at() {
+        let adapter = fresh_adapter().await;
+        let future = crate::email_queue::now_ms() + 3_600_000;
+        let sent = save_with_send_at(&adapter, Some(future)).await;
+        let failed = save_with_send_at(&adapter, Some(future)).await;
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id: sent,
+                sender_name: SenderName::new("test"),
+                context: EventContext::with_correlation(None),
+                smtp_response: None,
+                message_id: "<m@example.com>".to_owned(),
+            })
+            .await
+            .unwrap();
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id: failed,
+                attempt: 1,
+                reason: "r".to_owned(),
+                error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
+                sender_name: None,
+                context: EventContext::with_correlation(None),
+            })
+            .await
+            .unwrap();
+
+        let all = statuses(&adapter).await;
+
+        assert_eq!(all[&sent].status, EmailStatus::Sent);
+        assert_eq!(all[&failed].status, EmailStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn queued_and_scheduled_filters_are_disjoint() {
+        let adapter = fresh_adapter().await;
+        let now = crate::email_queue::now_ms();
+        let scheduled = save_with_send_at(&adapter, Some(now + 3_600_000)).await;
+        let queued = save_with_send_at(&adapter, None).await;
+        let ids_with = |status: EmailStatus| {
+            let adapter = adapter.clone();
+            async move {
+                adapter
+                    .list_emails(ListEmailsParams {
+                        status: Some(status),
+                        ..default_list_params()
+                    })
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        assert_eq!(ids_with(EmailStatus::Scheduled).await, vec![scheduled]);
+        assert_eq!(ids_with(EmailStatus::Queued).await, vec![queued]);
+    }
+
+    #[tokio::test]
+    async fn a_row_turns_from_scheduled_to_queued_when_send_at_passes() {
+        let adapter = fresh_adapter().await;
+        let id = save_with_send_at(&adapter, Some(crate::email_queue::now_ms() + 1_500)).await;
+        assert_eq!(statuses(&adapter).await[&id].status, EmailStatus::Scheduled);
+
+        tokio::time::sleep(std::time::Duration::from_millis(1_800)).await;
+
+        assert_eq!(statuses(&adapter).await[&id].status, EmailStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn scheduled_filter_combines_with_owner_and_tag() {
+        let adapter = fresh_adapter().await;
+        let future = crate::email_queue::now_ms() + 3_600_000;
+        let save = |owner: &'static str, tags: Vec<String>, send_at_ms: Option<i64>| {
+            let adapter = adapter.clone();
+            async move {
+                let id = EmailId::default();
+                let mut envelope = sample_envelope();
+                envelope.owner = owner.to_owned();
+                envelope.tags = tags;
+                envelope.send_at_ms = send_at_ms;
+                adapter.save(id, &envelope).await.unwrap();
+                id
+            }
+        };
+        let wanted = save("a", vec!["t".to_owned()], Some(future)).await;
+        save("a", vec![], Some(future)).await;
+        save("b", vec!["t".to_owned()], Some(future)).await;
+        save("a", vec!["t".to_owned()], None).await;
+
+        let found = adapter
+            .list_emails(ListEmailsParams {
+                owner: Some("a".to_owned()),
+                tag: Some("t".to_owned()),
+                status: Some(EmailStatus::Scheduled),
+                ..default_list_params()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, wanted);
     }
 
     #[tokio::test]

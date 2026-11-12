@@ -6,7 +6,7 @@ use std::time::Duration;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::port::email_queue::{
-    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, TraceCarrier,
+    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, TraceCarrier,
 };
 
 type QueueItem = (EmailId, Envelope, u32, TraceCarrier);
@@ -49,7 +49,11 @@ impl Default for MemoryQueue {
 }
 
 impl EmailQueue for MemoryQueue {
-    async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
+    async fn enqueue(
+        &self,
+        id: EmailId,
+        envelope: &Envelope,
+    ) -> Result<EnqueueOutcome, EmailQueueError> {
         let pairs = catapulte_telemetry::propagation::inject_current();
         let trace = TraceCarrier::new(pairs);
         // Increment before the send: a concurrent dequeue can only observe the
@@ -63,7 +67,7 @@ impl EmailQueue for MemoryQueue {
                 source: anyhow::anyhow!("memory queue channel closed"),
             });
         }
-        Ok(())
+        Ok(EnqueueOutcome::Inserted)
     }
 
     async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {

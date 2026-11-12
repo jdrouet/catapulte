@@ -105,6 +105,7 @@ All configuration is done via environment variables.
 | `CATAPULTE_BOUNCE_DOMAIN` | Domain of the signed return path (`bounces+{id}-{tag}@domain`) used as the SMTP `MAIL FROM`, so bounces can be tied to an email. Set together with `CATAPULTE_BOUNCE_SECRET`; setting only one stops startup. See [Bounce return path](#bounce-return-path) | unset (the sender address is used) |
 | `CATAPULTE_BOUNCE_INGEST_SECRET` | Enables `POST /inbound/feedback` and is its bearer secret, at least 32 bytes (`openssl rand -base64 48`). Unset leaves the route out (404). API keys never work on that route. See [Bounce and complaint ingestion](#bounce-and-complaint-ingestion) | unset |
 | `CATAPULTE_BOUNCE_SECRET` | Key that signs the return paths, at least 32 bytes; generate one with `openssl rand -base64 48`. Keep it stable: rotating it makes bounces for mail already sent unverifiable | unset |
+| `CATAPULTE_MAX_SCHEDULE_AHEAD_SECS` | Furthest `send_at_ms` accepted, in seconds, a positive integer. Applies only to the storage queue (SQLite or PostgreSQL); other queues refuse scheduled sends with `422`. See [Storage queue](#storage-queue) | `2592000` (30 days) |
 | `CATAPULTE_ALLOWED_SENDER_DOMAINS` | Comma-separated sender domains the API accepts. Matching is exact (no subdomains), case-insensitive, and IDN domains are compared in punycode. Unset accepts any domain; set but empty denies every sender. An entry that is not a valid domain stops startup | unset |
 
 ### Storage Backend
@@ -290,6 +291,14 @@ side channel in private-key operations). Some receivers do not yet verify Ed2551
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CATAPULTE_QUEUE_BACKEND` | `storage`, `memory`, or `nats` | `storage` |
+
+#### Storage queue
+
+Each queue row carries the time from which it can be claimed. Workers claim the row with the earliest availability time first (earliest-availability ordering, not strict arrival order; ties are unspecified). Rows that are due immediately keep their order, and a retried row is now ordered by its retry time.
+
+Scheduled sends (`send_at_ms`) are held in this queue until their time. Availability, validation and claims use the clock of the node that handles them, so keep instance clocks in sync (NTP). Upgrade every instance before clients use `send_at_ms`: an older instance would not honour the delay. The object-store expiry for attachments must be longer than the schedule horizon, because the blobs are written at submit time.
+
+Upgrading to this version runs a migration that locks `email_queue` while it rewrites rows with a NULL availability time, so apply it in a maintenance window. The queue is normally small, so the lock is short. Afterwards a NULL availability time cannot be stored: PostgreSQL rejects it, and on SQLite a trigger fills it in, so older writers cannot strand a row.
 
 #### NATS Queue (if backend is `nats`)
 Enqueue waits for the JetStream publish acknowledgement before it succeeds.
@@ -487,10 +496,6 @@ Emitted gauges:
 | `catapulte.queue.pending` | `backend` (sqlite, postgres, memory, nats) | Number of email queue entries eligible to be claimed |
 | `catapulte.sender.sent_in_range` | `sender` | Emails sent by this sender within its quota window |
 | `catapulte.sender.quota_limit` | `sender` | Configured quota count for the sender (omitted when no quota is set) |
-
-## Out of scope (for now)
-
-Scheduled sends. Listed so they aren't mistaken for missing stories.
 
 ## License
 

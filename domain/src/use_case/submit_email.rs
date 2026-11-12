@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 use crate::entity::attachment::AttachmentRef;
@@ -7,7 +9,8 @@ use crate::entity::lifecycle_event::LifecycleEvent;
 use crate::entity::suppression::suppression_key;
 use crate::port::attachment_fetcher::AttachmentFetcher;
 use crate::port::attachment_store::{AttachmentReader, AttachmentStore};
-use crate::port::email_queue::{EmailQueue, EmailQueueError};
+use crate::port::clock::{Clock, SystemClock};
+use crate::port::email_queue::{EmailQueue, EmailQueueError, EnqueueOutcome};
 use crate::port::email_repository::{
     DuplicateState, EmailRepository, EmailRepositoryError, EnqueueState, SaveResult,
 };
@@ -56,7 +59,12 @@ pub struct SubmitEmailInput {
     pub unsubscribe: Option<crate::entity::envelope::Unsubscribe>,
     pub tags: Vec<String>,
     pub metadata: std::collections::BTreeMap<String, String>,
+    /// Earliest delivery time in epoch milliseconds; `None` sends as soon as possible.
+    pub send_at_ms: Option<i64>,
 }
+
+/// How far in the past a `send_at_ms` may be; such an email is sent immediately.
+pub const SEND_AT_PAST_TOLERANCE_MS: i64 = 60_000;
 
 #[derive(Debug, Error)]
 pub enum SubmitEmailError {
@@ -84,6 +92,10 @@ pub enum SubmitEmailError {
     AllRecipientsSuppressed,
     #[error(transparent)]
     Suppression(#[from] SuppressionRepositoryError),
+    #[error("send_at_ms is in the past or beyond the maximum schedule horizon")]
+    SendAtOutOfRange,
+    #[error("scheduled sends are not available on this queue backend")]
+    SchedulingUnavailable,
 }
 
 impl SubmitEmailError {
@@ -105,6 +117,8 @@ impl SubmitEmailError {
             | Self::MessageTooLarge { .. }
             | Self::SenderDomainNotAllowed { .. }
             | Self::AllRecipientsSuppressed
+            | Self::SendAtOutOfRange
+            | Self::SchedulingUnavailable
             | Self::ReservationIncomplete { .. } => false,
         }
     }
@@ -122,6 +136,9 @@ pub trait SubmitEmailUseCase: Send + Sync + 'static {
     /// submission that never completed.
     /// Returns `SubmitEmailError::AllRecipientsSuppressed` when no recipient is left after
     /// removing suppressed ones.
+    /// Returns `SubmitEmailError::SendAtOutOfRange` when `send_at_ms` is too far in the past or
+    /// beyond the schedule horizon.
+    /// Returns `SubmitEmailError::SchedulingUnavailable` when the queue cannot delay delivery.
     fn execute(
         &self,
         input: SubmitEmailInput,
@@ -137,6 +154,9 @@ pub struct SubmitLimits {
     /// Early-rejection threshold for the estimated wire size; the SMTP adapter enforces the
     /// final size on the rendered message.
     pub max_message_bytes: u64,
+    /// Furthest `send_at_ms` accepted. `None` means the queue cannot delay delivery, so
+    /// scheduled sends are refused.
+    pub max_schedule_ahead: Option<Duration>,
 }
 
 impl Default for SubmitLimits {
@@ -144,6 +164,7 @@ impl Default for SubmitLimits {
         Self {
             max_message_bytes: 25 * 1024 * 1024,
             allowed_sender_domains: None,
+            max_schedule_ahead: None,
         }
     }
 }
@@ -217,7 +238,7 @@ fn estimate_message_bytes(
     u64::try_from(total * 4 / 3).unwrap_or(u64::MAX)
 }
 
-pub struct SubmitEmailService<R, Q, P, A, F, X = NoopSuppressionList> {
+pub struct SubmitEmailService<R, Q, P, A, F, X = NoopSuppressionList, C = SystemClock> {
     repository: R,
     queue: Q,
     event_publisher: P,
@@ -225,6 +246,7 @@ pub struct SubmitEmailService<R, Q, P, A, F, X = NoopSuppressionList> {
     attachment_fetcher: F,
     suppressions: X,
     limits: SubmitLimits,
+    clock: C,
 }
 
 impl<R, Q, P, A, F> SubmitEmailService<R, Q, P, A, F, NoopSuppressionList> {
@@ -244,14 +266,18 @@ impl<R, Q, P, A, F> SubmitEmailService<R, Q, P, A, F, NoopSuppressionList> {
             attachment_fetcher,
             suppressions: NoopSuppressionList,
             limits: SubmitLimits::default(),
+            clock: SystemClock,
         }
     }
 }
 
-impl<R, Q, P, A, F, X> SubmitEmailService<R, Q, P, A, F, X> {
+impl<R, Q, P, A, F, X, C> SubmitEmailService<R, Q, P, A, F, X, C> {
     /// Drops suppressed recipients at submit time.
     #[must_use]
-    pub fn with_suppression_list<Y>(self, suppressions: Y) -> SubmitEmailService<R, Q, P, A, F, Y> {
+    pub fn with_suppression_list<Y>(
+        self,
+        suppressions: Y,
+    ) -> SubmitEmailService<R, Q, P, A, F, Y, C> {
         SubmitEmailService {
             repository: self.repository,
             queue: self.queue,
@@ -260,6 +286,22 @@ impl<R, Q, P, A, F, X> SubmitEmailService<R, Q, P, A, F, X> {
             attachment_fetcher: self.attachment_fetcher,
             suppressions,
             limits: self.limits,
+            clock: self.clock,
+        }
+    }
+
+    /// Replaces the clock used to validate and announce scheduled sends.
+    #[must_use]
+    pub fn with_clock<D>(self, clock: D) -> SubmitEmailService<R, Q, P, A, F, X, D> {
+        SubmitEmailService {
+            repository: self.repository,
+            queue: self.queue,
+            event_publisher: self.event_publisher,
+            attachment_store: self.attachment_store,
+            attachment_fetcher: self.attachment_fetcher,
+            suppressions: self.suppressions,
+            limits: self.limits,
+            clock,
         }
     }
 
@@ -270,7 +312,7 @@ impl<R, Q, P, A, F, X> SubmitEmailService<R, Q, P, A, F, X> {
     }
 }
 
-impl<R, Q, P, A, F, X> SubmitEmailService<R, Q, P, A, F, X>
+impl<R, Q, P, A, F, X, C> SubmitEmailService<R, Q, P, A, F, X, C>
 where
     R: EmailRepository,
     Q: EmailQueue,
@@ -278,6 +320,7 @@ where
     A: AttachmentStore,
     F: AttachmentFetcher,
     X: SuppressionRepository,
+    C: Clock,
 {
     /// Removes the stored blobs and the reserved row, and returns the error to report.
     ///
@@ -333,6 +376,24 @@ where
         }
     }
 
+    /// Rejects a `send_at_ms` that the queue cannot delay, or that is outside the accepted window.
+    fn check_send_at(&self, send_at_ms: Option<i64>) -> Result<(), SubmitEmailError> {
+        let Some(send_at) = send_at_ms else {
+            return Ok(());
+        };
+        let Some(horizon) = self.limits.max_schedule_ahead else {
+            return Err(SubmitEmailError::SchedulingUnavailable);
+        };
+        let now = self.clock.now_ms();
+        let horizon_ms = i64::try_from(horizon.as_millis()).unwrap_or(i64::MAX);
+        if send_at < now.saturating_sub(SEND_AT_PAST_TOLERANCE_MS)
+            || send_at > now.saturating_add(horizon_ms)
+        {
+            return Err(SubmitEmailError::SendAtOutOfRange);
+        }
+        Ok(())
+    }
+
     /// Handles a submission whose idempotency key already exists. A recovery republish is
     /// checked against the stored sender; a plain duplicate only returns the existing id.
     async fn resolve_duplicate(
@@ -347,13 +408,20 @@ where
         }
         if let Some(envelope) = recovery {
             self.check_sender_allowed(&envelope.sender, caller_domains)?;
-            self.queue.enqueue(id, &envelope).await?;
-            self.mark_enqueued_and_announce(id, &envelope).await;
+            // An overdue time is enqueued as is; a future one needs a queue that can delay it.
+            if self.limits.max_schedule_ahead.is_none()
+                && envelope.send_at_ms.is_some_and(|t| t > self.clock.now_ms())
+            {
+                return Err(SubmitEmailError::SchedulingUnavailable);
+            }
+            if self.queue.enqueue(id, &envelope).await? == EnqueueOutcome::Inserted {
+                self.mark_enqueued_and_announce(id, &envelope).await;
+            }
         }
         Ok(id)
     }
 
-    /// Records the confirmed publish and emits `queued`. A failed state write is only
+    /// Records the confirmed publish and emits `queued` (or `scheduled` for a future send time). A failed state write is only
     /// logged: the row stays `publishable` and a same-key retry republishes, deduplicated
     /// by the queue.
     async fn mark_enqueued_and_announce(&self, id: EmailId, envelope: &Envelope) {
@@ -368,15 +436,22 @@ where
                 "failed to record enqueued state"
             );
         }
-        if let Err(e) = self
-            .event_publisher
-            .publish(&LifecycleEvent::Queued {
+        let context = envelope.event_context();
+        let event = match envelope.send_at_ms {
+            Some(send_at_ms) if send_at_ms > self.clock.now_ms() => LifecycleEvent::Scheduled {
                 id,
-                context: envelope.event_context(),
-            })
-            .await
-        {
-            tracing::warn!(error = %e, email_id = %id.as_uuid(), "failed to publish queued event");
+                send_at_ms,
+                context,
+            },
+            _ => LifecycleEvent::Queued { id, context },
+        };
+        if let Err(e) = self.event_publisher.publish(&event).await {
+            tracing::warn!(
+                error = %e,
+                email_id = %id.as_uuid(),
+                event = event.event_type(),
+                "failed to publish queued or scheduled event"
+            );
         }
     }
 
@@ -410,6 +485,7 @@ where
     #[tracing::instrument(skip_all, name = "submit_email", fields(email_id = tracing::field::Empty, correlation_id = tracing::field::Empty))]
     pub async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
         self.check_sender_allowed(&input.sender, input.sender_domains.as_ref())?;
+        self.check_send_at(input.send_at_ms)?;
         let id = EmailId::default();
         if let Some(ref cid) = input.correlation_id {
             tracing::Span::current().record("correlation_id", cid.as_str());
@@ -459,6 +535,7 @@ where
             unsubscribe: input.unsubscribe.clone(),
             tags: input.tags.clone(),
             metadata: input.metadata.clone(),
+            send_at_ms: input.send_at_ms,
         };
 
         let result = self.repository.save(id, &envelope_for_reservation).await?;
@@ -501,6 +578,7 @@ where
             unsubscribe,
             tags,
             metadata,
+            send_at_ms,
         } = input;
 
         let mut written_refs: Vec<AttachmentRef> = Vec::with_capacity(attachments.len());
@@ -587,6 +665,7 @@ where
             unsubscribe,
             tags,
             metadata,
+            send_at_ms,
         };
 
         if let Err(e) = self
@@ -604,8 +683,10 @@ where
         }
 
         match self.queue.enqueue(id, &envelope).await {
-            Ok(()) => {
-                self.mark_enqueued_and_announce(id, &envelope).await;
+            Ok(outcome) => {
+                if outcome == EnqueueOutcome::Inserted {
+                    self.mark_enqueued_and_announce(id, &envelope).await;
+                }
                 self.announce_suppressed(id, &envelope, dropped).await;
             }
             // The message may be queued: keep the row and blobs so a retry can republish it.
@@ -626,7 +707,7 @@ where
     }
 }
 
-impl<R, Q, P, A, F, X> SubmitEmailUseCase for SubmitEmailService<R, Q, P, A, F, X>
+impl<R, Q, P, A, F, X, C> SubmitEmailUseCase for SubmitEmailService<R, Q, P, A, F, X, C>
 where
     R: EmailRepository + Send + Sync + 'static,
     Q: EmailQueue + Send + Sync + 'static,
@@ -634,6 +715,7 @@ where
     A: AttachmentStore + Send + Sync + 'static,
     F: AttachmentFetcher + Send + Sync + 'static,
     X: SuppressionRepository,
+    C: Clock,
 {
     fn execute(
         &self,
@@ -658,7 +740,7 @@ mod tests {
     use crate::port::attachment_store::{
         AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
     };
-    use crate::port::email_queue::{EmailQueue, EmailQueueError};
+    use crate::port::email_queue::{EmailQueue, EmailQueueError, EnqueueOutcome};
     use crate::port::email_repository::{
         DuplicateState, EmailRepository, EmailRepositoryError, EnqueueState, SaveResult,
     };
@@ -687,6 +769,7 @@ mod tests {
             unsubscribe: None,
             tags: vec![],
             metadata: std::collections::BTreeMap::new(),
+            send_at_ms: None,
         }
     }
 
@@ -882,9 +965,13 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for FakeQueue {
-        async fn enqueue(&self, id: EmailId, _envelope: &Envelope) -> Result<(), EmailQueueError> {
+        async fn enqueue(
+            &self,
+            id: EmailId,
+            _envelope: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
             self.enqueued.lock().unwrap().push(id);
-            Ok(())
+            Ok(EnqueueOutcome::Inserted)
         }
 
         async fn dequeue(
@@ -913,7 +1000,11 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for FailingQueue {
-        async fn enqueue(&self, _id: EmailId, _envelope: &Envelope) -> Result<(), EmailQueueError> {
+        async fn enqueue(
+            &self,
+            _id: EmailId,
+            _envelope: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
             Err(EmailQueueError::Storage {
                 source: anyhow::anyhow!("queue down"),
             })
@@ -1551,6 +1642,7 @@ mod tests {
     struct ScriptedQueue {
         calls: QueueCalls,
         script: Arc<Mutex<std::collections::VecDeque<bool>>>,
+        already_enqueued: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl ScriptedQueue {
@@ -1559,19 +1651,30 @@ mod tests {
             Self {
                 calls: Arc::new(Mutex::new(Vec::new())),
                 script: Arc::new(Mutex::new(script.iter().copied().collect())),
+                already_enqueued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }
         }
     }
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for ScriptedQueue {
-        async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
+        async fn enqueue(
+            &self,
+            id: EmailId,
+            envelope: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
             self.calls
                 .lock()
                 .unwrap()
                 .push((id, envelope.attachments.clone()));
             match self.script.lock().unwrap().pop_front() {
-                None => Ok(()),
+                None if self
+                    .already_enqueued
+                    .load(std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    Ok(EnqueueOutcome::AlreadyEnqueued)
+                }
+                None => Ok(EnqueueOutcome::Inserted),
                 Some(true) => Err(EmailQueueError::Uncertain {
                     source: anyhow::anyhow!("ack lost"),
                 }),
@@ -1748,6 +1851,43 @@ mod tests {
         assert_eq!(queued_count(&events), 1);
         assert_eq!(repo.states(), vec![RowState::Enqueued]);
         assert_eq!(store.outstanding_blobs(), 1);
+    }
+
+    #[tokio::test]
+    async fn already_enqueued_recovery_skips_state_write_and_queued_event() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[true]);
+        let events = FakeEventPublisher::new();
+        let store = FakeAttachmentStore::new();
+        let service = service_with(&repo, &queue, &events, &store);
+        service.execute(keyed_input("k", 10)).await.unwrap_err();
+        queue
+            .already_enqueued
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let id = service.execute(keyed_input("k", 10)).await.unwrap();
+
+        assert_eq!(queue.calls.lock().unwrap().len(), 2);
+        assert_eq!(queue.calls.lock().unwrap()[1].0, id);
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+        assert_eq!(queued_count(&events), 0);
+    }
+
+    #[tokio::test]
+    async fn already_enqueued_submit_returns_the_id_without_announcing() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[]);
+        queue
+            .already_enqueued
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let events = FakeEventPublisher::new();
+        let store = FakeAttachmentStore::new();
+        let service = service_with(&repo, &queue, &events, &store);
+
+        service.execute(keyed_input("k", 10)).await.unwrap();
+
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+        assert_eq!(queued_count(&events), 0);
     }
 
     #[tokio::test]
@@ -2554,5 +2694,280 @@ mod tests {
             0,
             "attachment store put must not be called for a duplicate submission"
         );
+    }
+
+    struct FixedClock(i64);
+
+    impl crate::port::clock::Clock for FixedClock {
+        fn now_ms(&self) -> i64 {
+            self.0
+        }
+    }
+
+    const NOW: i64 = 1_000_000_000;
+    const HOUR: std::time::Duration = std::time::Duration::from_hours(1);
+
+    type ScheduledService = SubmitEmailService<
+        KeyedRepository,
+        ScriptedQueue,
+        FakeEventPublisher,
+        FakeAttachmentStore,
+        FakeFetcher,
+        crate::port::suppression_repository::NoopSuppressionList,
+        FixedClock,
+    >;
+
+    fn scheduled_service(
+        repo: &KeyedRepository,
+        queue: &ScriptedQueue,
+        events: &FakeEventPublisher,
+        now: i64,
+        horizon: Option<std::time::Duration>,
+    ) -> ScheduledService {
+        service_with(repo, queue, events, &FakeAttachmentStore::new())
+            .with_limits(SubmitLimits {
+                max_schedule_ahead: horizon,
+                ..SubmitLimits::default()
+            })
+            .with_clock(FixedClock(now))
+    }
+
+    fn scheduled_input(key: &str, send_at_ms: Option<i64>) -> SubmitEmailInput {
+        let mut input = keyed_input(key, 10);
+        input.send_at_ms = send_at_ms;
+        input
+    }
+
+    fn scheduled_events(events: &FakeEventPublisher) -> Vec<i64> {
+        events
+            .published
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                LifecycleEvent::Scheduled { send_at_ms, .. } => Some(*send_at_ms),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn send_at_older_than_the_tolerance_is_rejected_and_nothing_is_saved() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[]),
+            FakeEventPublisher::new(),
+        );
+        let service = scheduled_service(&repo, &queue, &events, NOW, Some(HOUR));
+
+        let err = service
+            .execute(scheduled_input("k", Some(NOW - 60_001)))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SubmitEmailError::SendAtOutOfRange));
+        assert!(!err.is_transient());
+        assert!(repo.rows.lock().unwrap().is_empty());
+        assert!(queue.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_at_within_the_tolerance_is_sent_immediately_with_a_queued_event() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[]),
+            FakeEventPublisher::new(),
+        );
+        let service = scheduled_service(&repo, &queue, &events, NOW, Some(HOUR));
+
+        service
+            .execute(scheduled_input("k", Some(NOW - 60_000)))
+            .await
+            .unwrap();
+
+        assert_eq!(queued_count(&events), 1);
+        assert!(scheduled_events(&events).is_empty());
+        assert_eq!(queue.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_future_send_at_is_stored_and_announced_as_scheduled() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[]),
+            FakeEventPublisher::new(),
+        );
+        let service = scheduled_service(&repo, &queue, &events, NOW, Some(HOUR));
+
+        service
+            .execute(scheduled_input("k", Some(NOW + 10_000)))
+            .await
+            .unwrap();
+
+        assert_eq!(scheduled_events(&events), vec![NOW + 10_000]);
+        assert_eq!(queued_count(&events), 0);
+        assert_eq!(
+            repo.rows.lock().unwrap()[0].envelope.send_at_ms,
+            Some(NOW + 10_000)
+        );
+        assert_eq!(repo.states(), vec![RowState::Enqueued]);
+    }
+
+    #[tokio::test]
+    async fn send_at_beyond_the_horizon_is_rejected_but_the_horizon_itself_is_accepted() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[]),
+            FakeEventPublisher::new(),
+        );
+        let service = scheduled_service(&repo, &queue, &events, NOW, Some(HOUR));
+
+        let err = service
+            .execute(scheduled_input("a", Some(NOW + 3_600_001)))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SubmitEmailError::SendAtOutOfRange));
+        assert!(repo.rows.lock().unwrap().is_empty());
+
+        service
+            .execute(scheduled_input("b", Some(NOW + 3_600_000)))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_at_without_scheduling_support_is_refused_before_anything_is_saved() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[]),
+            FakeEventPublisher::new(),
+        );
+        let service = scheduled_service(&repo, &queue, &events, NOW, None);
+
+        let err = service
+            .execute(scheduled_input("k", Some(NOW + 10_000)))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SubmitEmailError::SchedulingUnavailable));
+        assert!(!err.is_transient());
+        assert!(repo.rows.lock().unwrap().is_empty());
+        service.execute(scheduled_input("k", None)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn horizon_arithmetic_saturates() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[]),
+            FakeEventPublisher::new(),
+        );
+        let service = scheduled_service(
+            &repo,
+            &queue,
+            &events,
+            i64::MAX - 10,
+            Some(std::time::Duration::MAX),
+        );
+
+        service
+            .execute(scheduled_input("k", Some(i64::MAX)))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_retry_replays_the_stored_time_and_announces_scheduled() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[true]),
+            FakeEventPublisher::new(),
+        );
+        let service = scheduled_service(&repo, &queue, &events, NOW, Some(HOUR));
+        service
+            .execute(scheduled_input("k", Some(NOW + 10_000)))
+            .await
+            .unwrap_err();
+        assert!(scheduled_events(&events).is_empty());
+
+        service.execute(scheduled_input("k", None)).await.unwrap();
+
+        assert_eq!(scheduled_events(&events), vec![NOW + 10_000]);
+        assert_eq!(repo.states(), vec![RowState::Enqueued]);
+    }
+
+    #[tokio::test]
+    async fn a_retry_of_a_future_row_on_a_queue_without_scheduling_writes_nothing() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[true]),
+            FakeEventPublisher::new(),
+        );
+        scheduled_service(&repo, &queue, &events, NOW, Some(HOUR))
+            .execute(scheduled_input("k", Some(NOW + 10_000)))
+            .await
+            .unwrap_err();
+        let unsupported = scheduled_service(&repo, &queue, &events, NOW, None);
+
+        let err = unsupported
+            .execute(scheduled_input("k", None))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SubmitEmailError::SchedulingUnavailable));
+        assert_eq!(
+            queue.calls.lock().unwrap().len(),
+            1,
+            "enqueue never retried"
+        );
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+        assert_eq!(queued_count(&events) + scheduled_events(&events).len(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_overdue_stored_row_is_enqueued_without_revalidation() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[true]),
+            FakeEventPublisher::new(),
+        );
+        scheduled_service(&repo, &queue, &events, NOW, Some(HOUR))
+            .execute(scheduled_input("k", Some(NOW + 10_000)))
+            .await
+            .unwrap_err();
+        // Long after the tolerance window, on a queue that cannot schedule.
+        let later = scheduled_service(&repo, &queue, &events, NOW + 10_000_000, None);
+
+        later.execute(scheduled_input("k", None)).await.unwrap();
+
+        assert_eq!(queue.calls.lock().unwrap().len(), 2);
+        assert_eq!(repo.states(), vec![RowState::Enqueued]);
+        assert_eq!(queued_count(&events), 1);
+    }
+
+    #[tokio::test]
+    async fn a_retry_repeating_a_long_past_send_at_is_rejected_before_the_lookup() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[true]),
+            FakeEventPublisher::new(),
+        );
+        scheduled_service(&repo, &queue, &events, NOW, Some(HOUR))
+            .execute(scheduled_input("k", Some(NOW + 10_000)))
+            .await
+            .unwrap_err();
+        let later = scheduled_service(&repo, &queue, &events, NOW + 100_000, Some(HOUR));
+
+        let err = later
+            .execute(scheduled_input("k", Some(NOW + 10_000)))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SubmitEmailError::SendAtOutOfRange));
+        assert_eq!(queue.calls.lock().unwrap().len(), 1);
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+
+        let id = later.execute(scheduled_input("k", None)).await.unwrap();
+        assert_eq!(id, repo.rows.lock().unwrap()[0].id);
+        assert_eq!(repo.states(), vec![RowState::Enqueued]);
     }
 }

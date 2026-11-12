@@ -6,7 +6,7 @@ use async_nats::{HeaderMap, header};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::port::email_queue::{
-    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, TraceCarrier,
+    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, TraceCarrier,
 };
 use futures_util::StreamExt;
 
@@ -136,7 +136,11 @@ fn nak_payload(delay: std::time::Duration) -> String {
 }
 
 impl EmailQueue for NatsAdapter {
-    async fn enqueue(&self, id: EmailId, envelope: &Envelope) -> Result<(), EmailQueueError> {
+    async fn enqueue(
+        &self,
+        id: EmailId,
+        envelope: &Envelope,
+    ) -> Result<EnqueueOutcome, EmailQueueError> {
         let payload = QueuedEmailPayload::from((&id, envelope));
         let bytes = serde_json::to_vec(&payload)
             .context("serializing envelope")
@@ -150,7 +154,7 @@ impl EmailQueue for NatsAdapter {
             .map_err(|e| publish_failure(PublishStage::Send, e))?;
         ack.await
             .map_err(|e| publish_failure(PublishStage::Ack, e))?;
-        Ok(())
+        Ok(EnqueueOutcome::Inserted)
     }
 
     async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {

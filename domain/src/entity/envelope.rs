@@ -83,6 +83,8 @@ pub struct Envelope {
     pub tags: Vec<String>,
     /// Validated free-form key/value pairs, echoed in every event.
     pub metadata: BTreeMap<String, String>,
+    /// Earliest delivery time in epoch milliseconds; `None` sends as soon as possible.
+    pub send_at_ms: Option<i64>,
 }
 
 impl Envelope {
@@ -119,6 +121,7 @@ impl Envelope {
             unsubscribe: None,
             tags: vec![],
             metadata: BTreeMap::new(),
+            send_at_ms: None,
         }
     }
 }

@@ -635,6 +635,9 @@ pub struct EnvelopeCoreDto {
     pub tags: Vec<String>,
     #[serde(default)]
     pub metadata: std::collections::BTreeMap<String, String>,
+    /// Earliest delivery time in epoch milliseconds.
+    #[serde(default)]
+    pub send_at_ms: Option<i64>,
 }
 
 fn json_contains_nul(value: &serde_json::Value) -> bool {
@@ -811,6 +814,7 @@ impl EnvelopeCoreDto {
             unsubscribe,
             tags: self.tags,
             metadata: self.metadata,
+            send_at_ms: self.send_at_ms,
         })
     }
 }
@@ -883,6 +887,7 @@ mod tests {
             tags: vec![],
             metadata: std::collections::BTreeMap::new(),
             headers: std::collections::BTreeMap::new(),
+            send_at_ms: None,
         }
     }
 
@@ -951,6 +956,16 @@ mod tests {
             "variables": { "k": "a\nb" }
         }));
         assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn send_at_ms_is_forwarded_and_defaults_to_none() {
+        let with = convert_with(serde_json::json!({"send_at_ms": 1_900_000_000_000_i64})).unwrap();
+        assert_eq!(with.send_at_ms, Some(1_900_000_000_000));
+        assert_eq!(
+            convert_with(serde_json::json!({})).unwrap().send_at_ms,
+            None
+        );
     }
 
     #[test]
@@ -1996,6 +2011,8 @@ pub struct ListEventsResponse {
 #[serde(rename_all = "snake_case")]
 pub enum EmailStatusDto {
     Queued,
+    Scheduled,
+    Cancelled,
     Sent,
     Failed,
 }
@@ -2004,6 +2021,8 @@ impl From<EmailStatusDto> for catapulte_domain::port::email_repository::EmailSta
     fn from(s: EmailStatusDto) -> Self {
         match s {
             EmailStatusDto::Queued => Self::Queued,
+            EmailStatusDto::Scheduled => Self::Scheduled,
+            EmailStatusDto::Cancelled => Self::Cancelled,
             EmailStatusDto::Sent => Self::Sent,
             EmailStatusDto::Failed => Self::Failed,
         }
@@ -2054,6 +2073,8 @@ pub struct EmailRecordDto {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub metadata: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_at_ms: Option<i64>,
 }
 
 impl From<catapulte_domain::port::email_repository::EmailRecord> for EmailRecordDto {
@@ -2062,6 +2083,8 @@ impl From<catapulte_domain::port::email_repository::EmailRecord> for EmailRecord
         use catapulte_domain::port::email_repository::EmailStatus;
         let status = match r.status {
             EmailStatus::Queued => "queued",
+            EmailStatus::Scheduled => "scheduled",
+            EmailStatus::Cancelled => "cancelled",
             EmailStatus::Sent => "sent",
             EmailStatus::Failed => "failed",
         };
@@ -2087,6 +2110,7 @@ impl From<catapulte_domain::port::email_repository::EmailRecord> for EmailRecord
             status: status.to_owned(),
             tags: r.tags,
             metadata: r.metadata,
+            send_at_ms: r.send_at_ms,
         }
     }
 }

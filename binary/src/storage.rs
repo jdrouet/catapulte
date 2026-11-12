@@ -80,6 +80,19 @@ impl EmailRepository for StorageAdapter {
     }
 }
 
+impl catapulte_domain::port::email_repository::EmailCancellation for StorageAdapter {
+    async fn cancel(
+        &self,
+        id: EmailId,
+        owner: Option<&str>,
+    ) -> Result<catapulte_domain::port::email_repository::CancelOutcome, EmailRepositoryError> {
+        match self {
+            Self::Sqlite(a) => a.cancel(id, owner).await,
+            Self::Postgres(a) => a.cancel(id, owner).await,
+        }
+    }
+}
+
 impl EventPublisher for StorageAdapter {
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
         match self {

@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+use catapulte_domain::use_case::cancel_email::CancelEmailError;
 use catapulte_domain::use_case::ingest_feedback::IngestFeedbackError;
 use catapulte_domain::use_case::list_emails::ListEmailsError;
 use catapulte_domain::use_case::list_events::ListEventsError;
@@ -24,6 +25,8 @@ pub enum AppError {
     JsonBody(#[from] axum::extract::rejection::JsonRejection),
     #[error(transparent)]
     Submit(#[from] SubmitEmailError),
+    #[error(transparent)]
+    CancelEmail(#[from] CancelEmailError),
     #[error(transparent)]
     ListEmails(#[from] ListEmailsError),
     #[error(transparent)]
@@ -48,6 +51,8 @@ pub enum AppError {
     InvalidEmailId,
     #[error("invalid error_class value")]
     InvalidErrorClass,
+    #[error("email can no longer be cancelled")]
+    NotCancellable,
 }
 
 #[derive(Serialize)]
@@ -75,6 +80,14 @@ impl IntoResponse for AppError {
             | Self::Submit(
                 SubmitEmailError::AttachmentFetch { .. } | SubmitEmailError::MessageTooLarge { .. },
             ) => (StatusCode::BAD_REQUEST, "invalid request"),
+            Self::Submit(SubmitEmailError::SendAtOutOfRange) => (
+                StatusCode::BAD_REQUEST,
+                "send_at_ms is in the past or beyond the maximum schedule horizon",
+            ),
+            Self::Submit(SubmitEmailError::SchedulingUnavailable) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "scheduled sends are not available on this queue backend",
+            ),
             Self::Submit(SubmitEmailError::SenderDomainNotAllowed { .. }) => {
                 (StatusCode::FORBIDDEN, "sender domain is not allowed")
             }
@@ -89,6 +102,7 @@ impl IntoResponse for AppError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "template rendering is unavailable",
             ),
+            Self::NotCancellable => (StatusCode::CONFLICT, "email can no longer be cancelled"),
             Self::Rejected => (StatusCode::UNPROCESSABLE_ENTITY, "report not accepted"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "admin key required"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
@@ -106,6 +120,7 @@ impl IntoResponse for AppError {
                 | SubmitEmailError::AttachmentStore { .. }
                 | SubmitEmailError::Suppression(_),
             )
+            | Self::CancelEmail(_)
             | Self::ListEmails(_)
             | Self::ListEvents(_)
             | Self::ListSenders(_)
@@ -145,5 +160,22 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE
         );
         assert_eq!(invalid.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn scheduling_errors_map_to_400_and_422() {
+        use catapulte_domain::use_case::submit_email::SubmitEmailError;
+
+        let out_of_range = AppError::Submit(SubmitEmailError::SendAtOutOfRange);
+        let unavailable = AppError::Submit(SubmitEmailError::SchedulingUnavailable);
+
+        assert_eq!(
+            out_of_range.into_response().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            unavailable.into_response().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 }

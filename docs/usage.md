@@ -73,6 +73,7 @@ addresses with an IP-literal domain or a quoted local part, which the SMTP libra
 | `unsubscribe` | object `{ url?, mailto? }` | `List-Unsubscribe` and one-click unsubscribe (see [Unsubscribe](#unsubscribe)) |
 | `tags` | array of strings | labels for filtering (`GET /emails?tag=`); up to 5, each 1-64 characters from `a-z`, `0-9`, `_`, `.` and `-` |
 | `metadata` | object of string to string | free-form pairs echoed in every lifecycle event; up to 10 keys, keys 1-64 bytes, values up to 1024 bytes |
+| `send_at_ms` | integer | earliest delivery time in epoch milliseconds (see [Scheduled sends](#scheduled-sends)) |
 
 ### Reply-To and custom headers
 
@@ -238,6 +239,54 @@ If the earlier submission with that key never completed (still in progress, or i
 cleanup failed), Catapulte returns `409` with `submission with this idempotency key is
 incomplete; retry later`. In a batch that item is `rejected`.
 
+### Scheduled sends
+
+Set `send_at_ms` (epoch milliseconds) to hold an email until that time. Catapulte
+publishes a `scheduled` event instead of `queued`, and no instance sends the email
+before `send_at_ms` on the clock of the node that claims it. Delivery can be later than
+`send_at_ms`, as with any queued email.
+
+- A time up to 60 seconds in the past is accepted and the email is sent immediately,
+  with a `queued` event. An older time returns `400`.
+- A time further ahead than `CATAPULTE_MAX_SCHEDULE_AHEAD_SECS` (default 30 days)
+  returns `400`. In a batch the item is `rejected`.
+- Scheduling needs a storage-backed queue (SQLite or PostgreSQL). With the NATS or
+  in-memory queue the request returns `422` with `scheduled sends are not available on
+  this queue backend`. Over NATS inbound, both errors are acknowledged and discarded.
+- The sender allow-list is checked at submit (and again when a retry recovers the email),
+  not by the worker. Suppressions are checked at submit and again at send time. The
+  template and sender quotas are evaluated at send time. Attachments are stored at submit
+  time, so the attachment store must keep them for longer than the delay.
+- Reuse of an idempotency key while the email is scheduled returns the original id; the
+  first `send_at_ms` wins. A retry that repeats the original `send_at_ms` more than 60
+  seconds after that time has passed is rejected with `400`, because the time is validated
+  before the key is looked up. A retry that omits `send_at_ms` recovers the stored email
+  and returns the original id.
+- All instances must run this version before clients use `send_at_ms`. Timestamps rely
+  on synchronised clocks (NTP) across instances.
+
+#### Cancelling a scheduled email
+
+`POST /emails/{id}/cancel` withdraws a scheduled email. After a `204`, no worker has
+claimed the email and none will: nothing is sent. Only emails submitted with `send_at_ms`
+can be cancelled, and only until a worker claims them (including once the time has come
+and a worker picks it up). The call is scoped like the list routes: you can cancel your own
+emails, and an admin key can cancel any email.
+
+| Status | When |
+|--------|------|
+| `204` | the email is cancelled, or was already cancelled (no second event) |
+| `404` | no such email, or it belongs to another key |
+| `409` | `email can no longer be cancelled`: a worker already handled it, or it has no `send_at_ms` |
+| `400` | the id is not a UUID |
+
+A cancel publishes a `cancelled` event, best effort like the other lifecycle events, and the
+email's status becomes `cancelled` (`GET /emails?status=cancelled`). Resubmitting with the idempotency key of a cancelled email
+returns the original id with status `cancelled`; use a new key to send again. The attachments of a
+cancelled email are deleted by the garbage collector on the first sweep after their age
+exceeds the grace period (`CATAPULTE_GC_GRACE_PERIOD_SECS`), not on the next sweep
+unconditionally.
+
 ## Submitting a batch
 
 `POST /emails/batch` accepts up to **100** emails and reports per-email outcomes
@@ -273,7 +322,7 @@ with `500`. Batch items use the inline/remote attachment form (no multipart).
 
 | Query param | Notes |
 |-------------|-------|
-| `status` | `queued` \| `sent` \| `failed` |
+| `status` | `queued` \| `scheduled` \| `cancelled` \| `sent` \| `failed` |
 | `recipient` | substring filter on the recipient's bare email address; display names are not matched |
 | `template` | filter by named MJML template name; only matches emails submitted with `kind: mjml_named` |
 | `id` | exact email id (UUID) |
@@ -285,6 +334,11 @@ with `500`. Batch items use the inline/remote attachment form (no multipart).
 ```bash
 curl "http://localhost:3000/emails?status=failed&limit=50"
 ```
+
+An email's status is `cancelled` once it is cancelled, otherwise `sent` or `failed` once its
+latest delivery event says so. Otherwise it is `scheduled` while its `send_at_ms` is in the future and `queued` after that (and for
+emails without `send_at_ms`). `status=queued` therefore does not match scheduled emails.
+Emails submitted with `send_at_ms` also return it in the record.
 
 ```json
 {
@@ -367,6 +421,8 @@ each event as JSON:
 | `event_type` | Meaning | `payload` fields |
 |--------------|---------|------------------|
 | `queued` | accepted and enqueued | `correlation_id` |
+| `scheduled` | accepted and held until `send_at_ms`; sent instead of `queued`; informational | `send_at_ms`, `correlation_id` |
+| `cancelled` | a scheduled email was cancelled before any worker touched it; informational | `correlation_id` |
 | `sending` | a delivery attempt is starting | `attempt`, `correlation_id` |
 | `delivery.succeeded` | accepted by the upstream SMTP server | `sender_name`, `correlation_id`, `smtp_response`, `message_id` |
 | `retrying` | attempt failed, will retry | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
@@ -548,11 +604,11 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 
 | Status | When |
 |--------|------|
-| `400` | malformed JSON/multipart, validation failure (sender/recipients/reply_to/headers/body/attachment), bad UUID, unreachable/disallowed remote attachment, batch over 100 |
+| `400` | malformed JSON/multipart, validation failure (sender/recipients/reply_to/headers/body/attachment), `send_at_ms` in the past (beyond 60 s) or past the schedule horizon, bad UUID, unreachable/disallowed remote attachment, batch over 100 |
 | `401` | missing/invalid bearer token |
 | `403` | the sender's domain is not in the operator's `CATAPULTE_ALLOWED_SENDER_DOMAINS` list (exact domain match, no subdomains), including an idempotent retry whose sender is no longer allowed, or one that would republish a stored original whose sender is no longer allowed; in a batch the item is rejected instead |
 | `409` | idempotency key matches a submission that never completed; retry later |
-| `422` | every recipient is on the suppression list |
+| `422` | every recipient is on the suppression list, or `send_at_ms` was given on a queue backend that cannot schedule |
 | `500` | storage / queue / attachment-store failure |
 
 ## Limits
@@ -565,6 +621,7 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 | Max attachments per email | 10 |
 | Max message size | 25 MiB by default (`CATAPULTE_MAX_MESSAGE_BYTES`) |
 | Max emails per batch | 100 |
+| Schedule horizon | 30 days by default (`CATAPULTE_MAX_SCHEDULE_AHEAD_SECS`) |
 | Tags per email | 5 (1-64 characters each) |
 | Metadata keys per email | 10 (keys 1-64 bytes, values up to 1024 bytes) |
 | List page size | default 20, max 100 |

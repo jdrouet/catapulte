@@ -2,9 +2,10 @@ use axum::Extension;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Multipart, Query, Request, State};
+use axum::extract::{FromRequest, Multipart, Path, Query, Request, State};
 use catapulte_domain::entity::email::EmailId;
-use catapulte_domain::port::email_repository::ListEmailsParams;
+use catapulte_domain::port::email_repository::{CancelOutcome, ListEmailsParams};
+use catapulte_domain::use_case::cancel_email::CancelEmailUseCase;
 use catapulte_domain::use_case::list_emails::ListEmailsUseCase;
 use catapulte_domain::use_case::submit_email::{
     AttachmentInput, SubmitEmailError, SubmitEmailUseCase,
@@ -81,6 +82,8 @@ pub async fn submit_email_batch<S: HttpServerState>(
                     e @ (SubmitEmailError::MessageTooLarge { .. }
                     | SubmitEmailError::SenderDomainNotAllowed { .. }
                     | SubmitEmailError::AllRecipientsSuppressed
+                    | SubmitEmailError::SendAtOutOfRange
+                    | SubmitEmailError::SchedulingUnavailable
                     | SubmitEmailError::ReservationIncomplete { .. }),
                 ) => {
                     results.push(BatchItemResultDto::Rejected {
@@ -264,6 +267,47 @@ pub async fn list_emails<S: HttpServerState>(
     }))
 }
 
+/// Cancels a scheduled email that no worker has touched. Repeating the call also answers 204.
+///
+/// # Errors
+///
+/// Returns `AppError::InvalidEmailId` for a malformed id, `AppError::NotFound` when no email of
+/// the caller has this id, and `AppError::NotCancellable` once a worker has handled the email.
+#[tracing::instrument(skip_all)]
+pub async fn cancel_email<S: HttpServerState>(
+    State(state): State<S>,
+    Extension(identity): Extension<ApiKeyIdentity>,
+    Path(raw_id): Path<String>,
+) -> Result<axum::http::StatusCode, AppError> {
+    let id = EmailId::from(uuid::Uuid::parse_str(&raw_id).map_err(|_| AppError::InvalidEmailId)?);
+    match state
+        .cancel_email()
+        .execute(id, identity.read_scope())
+        .await?
+    {
+        CancelOutcome::Cancelled { .. } | CancelOutcome::AlreadyCancelled => {
+            Ok(axum::http::StatusCode::NO_CONTENT)
+        }
+        CancelOutcome::NotFound => Err(AppError::NotFound),
+        CancelOutcome::NotCancellable => Err(AppError::NotCancellable),
+    }
+}
+
+/// Test double for states that never cancel: any email is unknown.
+#[cfg(test)]
+pub(crate) struct NoopCancelEmail;
+
+#[cfg(test)]
+impl CancelEmailUseCase for NoopCancelEmail {
+    async fn execute(
+        &self,
+        _id: EmailId,
+        _owner: Option<String>,
+    ) -> Result<CancelOutcome, catapulte_domain::use_case::cancel_email::CancelEmailError> {
+        Ok(CancelOutcome::NotFound)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -271,10 +315,12 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use catapulte_domain::entity::email::EmailId;
+    use catapulte_domain::port::email_repository::CancelOutcome;
     use catapulte_domain::port::email_repository::{
         EmailRecord, EmailRepositoryError, EmailStatus, ListEmailsParams,
     };
     use catapulte_domain::port::event_repository::{EventRecord, ListEventsParams};
+    use catapulte_domain::use_case::cancel_email::CancelEmailUseCase;
     use catapulte_domain::use_case::list_emails::{ListEmailsError, ListEmailsUseCase};
     use catapulte_domain::use_case::list_events::{ListEventsError, ListEventsUseCase};
     use catapulte_domain::use_case::submit_email::{
@@ -335,6 +381,12 @@ mod tests {
                 return Err(SubmitEmailError::SenderDomainNotAllowed {
                     domain: "b.c".to_owned(),
                 });
+            }
+            if input.subject.as_deref() == Some("send-at-out-of-range") {
+                return Err(SubmitEmailError::SendAtOutOfRange);
+            }
+            if input.subject.as_deref() == Some("scheduling-unavailable") {
+                return Err(SubmitEmailError::SchedulingUnavailable);
             }
             if input.subject.as_deref() == Some("incomplete") {
                 return Err(SubmitEmailError::ReservationIncomplete {
@@ -431,6 +483,12 @@ mod tests {
     }
 
     impl HttpServerState for TestState {
+        fn cancel_email(
+            &self,
+        ) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+            &crate::routes::emails::NoopCancelEmail
+        }
+
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
@@ -482,6 +540,12 @@ mod tests {
     }
 
     impl HttpServerState for FailingTestState {
+        fn cancel_email(
+            &self,
+        ) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+            &crate::routes::emails::NoopCancelEmail
+        }
+
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
@@ -532,6 +596,12 @@ mod tests {
     }
 
     impl HttpServerState for FailingEmailRepoState {
+        fn cancel_email(
+            &self,
+        ) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+            &crate::routes::emails::NoopCancelEmail
+        }
+
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
@@ -618,6 +688,7 @@ mod tests {
             status: EmailStatus::Queued,
             tags: vec![],
             metadata: std::collections::BTreeMap::new(),
+            send_at_ms: None,
         }
     }
 
@@ -1362,12 +1433,14 @@ mod tests {
     #[derive(Clone)]
     struct CapturingSubmit {
         captured_bytes: Arc<Mutex<Vec<Vec<u8>>>>,
+        send_at: Arc<Mutex<Vec<Option<i64>>>>,
     }
 
     impl CapturingSubmit {
         fn new() -> Self {
             Self {
                 captured_bytes: Arc::new(Mutex::new(Vec::new())),
+                send_at: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -1375,6 +1448,7 @@ mod tests {
     impl SubmitEmailUseCase for CapturingSubmit {
         async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
             use catapulte_domain::use_case::submit_email::AttachmentInput;
+            self.send_at.lock().unwrap().push(input.send_at_ms);
             for att in input.attachments {
                 if let AttachmentInput::Inline { bytes, .. } = att {
                     self.captured_bytes.lock().unwrap().push(bytes.to_vec());
@@ -1388,6 +1462,40 @@ mod tests {
     struct CapturingTestState {
         submit: Arc<CapturingSubmit>,
         list_emails: Arc<FakeListEmails>,
+        cancel: Arc<ScriptedCancel>,
+    }
+
+    /// Answers by id (1 cancelled, 2 already cancelled, 3 not cancellable, 4 failure,
+    /// otherwise unknown) and records the owner scope it was called with.
+    #[derive(Default)]
+    struct ScriptedCancel {
+        owners: Mutex<Vec<Option<String>>>,
+    }
+
+    impl CancelEmailUseCase for ScriptedCancel {
+        async fn execute(
+            &self,
+            id: EmailId,
+            owner: Option<String>,
+        ) -> Result<CancelOutcome, catapulte_domain::use_case::cancel_email::CancelEmailError>
+        {
+            self.owners.lock().unwrap().push(owner);
+            match id.as_uuid().as_u128() {
+                1 => Ok(CancelOutcome::Cancelled {
+                    context: catapulte_domain::entity::lifecycle_event::EventContext::default(),
+                }),
+                2 => Ok(CancelOutcome::AlreadyCancelled),
+                3 => Ok(CancelOutcome::NotCancellable),
+                4 => Err(
+                    catapulte_domain::use_case::cancel_email::CancelEmailError::Repository(
+                        EmailRepositoryError::Storage {
+                            source: anyhow::anyhow!("db down"),
+                        },
+                    ),
+                ),
+                _ => Ok(CancelOutcome::NotFound),
+            }
+        }
     }
 
     impl crate::ReadinessState for CapturingTestState {
@@ -1399,6 +1507,12 @@ mod tests {
     }
 
     impl HttpServerState for CapturingTestState {
+        fn cancel_email(
+            &self,
+        ) -> &impl catapulte_domain::use_case::cancel_email::CancelEmailUseCase {
+            self.cancel.as_ref()
+        }
+
         fn submit_email(&self) -> &impl SubmitEmailUseCase {
             self.submit.as_ref()
         }
@@ -1459,6 +1573,7 @@ mod tests {
             CapturingTestState {
                 submit,
                 list_emails: Arc::new(FakeListEmails::new()),
+                cancel: Arc::new(ScriptedCancel::default()),
             },
             None,
             std::time::Duration::from_secs(30),
@@ -1901,5 +2016,325 @@ mod tests {
             .unwrap();
         assert_eq!(single.status(), StatusCode::BAD_REQUEST);
         assert_eq!(batch.status(), single.status());
+    }
+
+    fn capturing_router() -> (axum::Router, Arc<Mutex<Vec<Option<i64>>>>) {
+        let submit = Arc::new(CapturingSubmit::new());
+        let send_at = submit.send_at.clone();
+        let app = router(
+            CapturingTestState {
+                submit,
+                list_emails: Arc::new(FakeListEmails::new()),
+                cancel: Arc::new(ScriptedCancel::default()),
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        (app, send_at)
+    }
+
+    #[tokio::test]
+    async fn json_submit_forwards_send_at_ms() {
+        let (app, send_at) = capturing_router();
+        let mut payload = valid_email_payload("r@x.y");
+        payload["send_at_ms"] = serde_json::json!(1_900_000_000_000_i64);
+
+        let response = app
+            .oneshot(post_json(serde_json::to_vec(&payload).unwrap()))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(*send_at.lock().unwrap(), vec![Some(1_900_000_000_000)]);
+    }
+
+    #[tokio::test]
+    async fn multipart_submit_forwards_send_at_ms() {
+        let (app, send_at) = capturing_router();
+        let envelope = serde_json::to_vec(&serde_json::json!({
+            "sender": "a@b.c",
+            "recipients": [{"kind": "to", "address": "t@x.y"}],
+            "body": {"kind": "plain", "text": "hi"},
+            "send_at_ms": 1_900_000_000_000_i64
+        }))
+        .unwrap();
+        let body = multipart_body(
+            "b1",
+            &[("envelope", None, Some("application/json"), &envelope)],
+        );
+
+        let response = app.oneshot(post_multipart("b1", body)).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(*send_at.lock().unwrap(), vec![Some(1_900_000_000_000)]);
+    }
+
+    #[tokio::test]
+    async fn single_submit_maps_scheduling_errors_to_400_and_422() {
+        for (subject, status, message) in [
+            (
+                "send-at-out-of-range",
+                StatusCode::BAD_REQUEST,
+                "send_at_ms is in the past or beyond the maximum schedule horizon",
+            ),
+            (
+                "scheduling-unavailable",
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "scheduled sends are not available on this queue backend",
+            ),
+        ] {
+            let mut payload = valid_email_payload("r@x.y");
+            payload["subject"] = serde_json::json!(subject);
+            let response = make_router()
+                .oneshot(post_json(serde_json::to_vec(&payload).unwrap()))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{subject}");
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(json["error"].as_str(), Some(message));
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_items_with_scheduling_errors_are_rejected_while_others_are_accepted() {
+        let mut out_of_range = valid_email_payload("r2@x.y");
+        out_of_range["subject"] = serde_json::json!("send-at-out-of-range");
+        let mut unavailable = valid_email_payload("r3@x.y");
+        unavailable["subject"] = serde_json::json!("scheduling-unavailable");
+        let payload = serde_json::json!({
+            "emails": [valid_email_payload("r1@x.y"), out_of_range, unavailable]
+        });
+
+        let response = make_router()
+            .oneshot(post_batch_json(Body::from(
+                serde_json::to_vec(&payload).unwrap(),
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results[0]["status"].as_str(), Some("accepted"));
+        assert_eq!(results[1]["status"].as_str(), Some("rejected"));
+        assert_eq!(results[2]["status"].as_str(), Some("rejected"));
+    }
+
+    #[tokio::test]
+    async fn list_emails_scheduled_filter_forwarded() {
+        let list_emails = Arc::new(FakeListEmails::new());
+        let captured = list_emails.captured_params.clone();
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit::default()),
+                list_emails,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        app.oneshot(get_emails("?status=scheduled")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(
+            params.as_ref().unwrap().status,
+            Some(EmailStatus::Scheduled)
+        );
+    }
+
+    #[tokio::test]
+    async fn list_emails_serialises_scheduled_status_and_send_at_ms_only_when_set() {
+        let scheduled = EmailRecord {
+            status: EmailStatus::Scheduled,
+            send_at_ms: Some(1_900_000_000_000),
+            ..sample_email_record()
+        };
+        let list_emails = Arc::new(FakeListEmails::with_records(vec![
+            scheduled,
+            sample_email_record(),
+        ]));
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit::default()),
+                list_emails,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+
+        let response = app.oneshot(get_emails("")).await.unwrap();
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["emails"][0]["status"], "scheduled");
+        assert_eq!(json["emails"][0]["send_at_ms"], 1_900_000_000_000_i64);
+        assert_eq!(json["emails"][1]["status"], "queued");
+        assert!(json["emails"][1].get("send_at_ms").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_emails_cancelled_filter_forwarded() {
+        let list_emails = Arc::new(FakeListEmails::new());
+        let captured = list_emails.captured_params.clone();
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit::default()),
+                list_emails,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        app.oneshot(get_emails("?status=cancelled")).await.unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(
+            params.as_ref().unwrap().status,
+            Some(EmailStatus::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn list_emails_serialises_the_cancelled_status() {
+        let cancelled = EmailRecord {
+            status: EmailStatus::Cancelled,
+            ..sample_email_record()
+        };
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit::default()),
+                list_emails: Arc::new(FakeListEmails::with_records(vec![cancelled])),
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+
+        let response = app.oneshot(get_emails("")).await.unwrap();
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["emails"][0]["status"], "cancelled");
+    }
+
+    fn cancel_router(
+        auth: Option<Arc<crate::auth::AuthConfig>>,
+    ) -> (axum::Router, Arc<ScriptedCancel>) {
+        let cancel = Arc::new(ScriptedCancel::default());
+        let app = router(
+            CapturingTestState {
+                submit: Arc::new(CapturingSubmit::new()),
+                list_emails: Arc::new(FakeListEmails::new()),
+                cancel: cancel.clone(),
+            },
+            auth,
+            std::time::Duration::from_secs(30),
+        );
+        (app, cancel)
+    }
+
+    fn post_cancel(id: &str, token: Option<&str>) -> Request<Body> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/emails/{id}/cancel"));
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        request.body(Body::empty()).unwrap()
+    }
+
+    fn uuid_n(n: u128) -> String {
+        uuid::Uuid::from_u128(n).to_string()
+    }
+
+    #[tokio::test]
+    async fn cancel_maps_each_outcome_to_its_status() {
+        for (n, status) in [
+            (1, StatusCode::NO_CONTENT),
+            (2, StatusCode::NO_CONTENT),
+            (3, StatusCode::CONFLICT),
+            (4, StatusCode::INTERNAL_SERVER_ERROR),
+            (5, StatusCode::NOT_FOUND),
+        ] {
+            let (app, _) = cancel_router(None);
+            let response = app.oneshot(post_cancel(&uuid_n(n), None)).await.unwrap();
+            assert_eq!(response.status(), status, "id {n}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_conflict_body_names_the_reason() {
+        let (app, _) = cancel_router(None);
+
+        let response = app.oneshot(post_cancel(&uuid_n(3), None)).await.unwrap();
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"], "email can no longer be cancelled");
+    }
+
+    #[tokio::test]
+    async fn cancel_with_a_malformed_id_is_400() {
+        let (app, owners) = cancel_router(None);
+
+        let response = app.oneshot(post_cancel("not-a-uuid", None)).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(owners.owners.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_scopes_a_named_key_to_its_owner_and_an_admin_to_none() {
+        let auth = |admin: bool| {
+            crate::auth::AuthConfig::new(
+                None,
+                vec![crate::auth::NamedApiKey {
+                    name: "team".to_owned(),
+                    secret: "s3cret".to_owned(),
+                    admin,
+                    sender_domains: None,
+                }],
+            )
+            .unwrap()
+            .map(Arc::new)
+        };
+
+        let (app, cancel) = cancel_router(auth(false));
+        app.oneshot(post_cancel(&uuid_n(1), Some("s3cret")))
+            .await
+            .unwrap();
+        assert_eq!(
+            *cancel.owners.lock().unwrap(),
+            vec![Some("team".to_owned())]
+        );
+
+        let (app, cancel) = cancel_router(auth(true));
+        app.oneshot(post_cancel(&uuid_n(1), Some("s3cret")))
+            .await
+            .unwrap();
+        assert_eq!(*cancel.owners.lock().unwrap(), vec![None]);
+
+        let (app, cancel) = cancel_router(None);
+        app.oneshot(post_cancel(&uuid_n(1), None)).await.unwrap();
+        assert_eq!(*cancel.owners.lock().unwrap(), vec![None]);
+    }
+
+    #[tokio::test]
+    async fn cancel_requires_a_key_when_auth_is_on() {
+        let auth = crate::auth::AuthConfig::new(Some("s3cret".to_owned()), vec![])
+            .unwrap()
+            .map(Arc::new);
+        let (app, cancel) = cancel_router(auth);
+
+        let without = app
+            .clone()
+            .oneshot(post_cancel(&uuid_n(1), None))
+            .await
+            .unwrap();
+        let wrong = app
+            .oneshot(post_cancel(&uuid_n(1), Some("nope")))
+            .await
+            .unwrap();
+
+        assert_eq!(without.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+        assert!(cancel.owners.lock().unwrap().is_empty());
     }
 }
