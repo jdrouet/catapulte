@@ -117,6 +117,13 @@ fn token_parts(token: &AckToken) -> Result<(&[u8], u32), EmailQueueError> {
         })
 }
 
+/// A token whose attempt no longer matches the row belongs to a claim another worker took over.
+fn claim_lost() -> EmailQueueError {
+    EmailQueueError::Storage {
+        source: anyhow::anyhow!("the claim is no longer held"),
+    }
+}
+
 /// Claims the row with the earliest availability time that is due.
 const CLAIM_SQL: &str = "UPDATE email_queue \
      SET attempt_count = attempt_count + 1, claimed_until = ? \
@@ -322,13 +329,18 @@ impl EmailQueue for SqliteAdapter {
     }
 
     async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
-        let (entry_id_bytes, _) = token_parts(&token)?;
-        sqlx::query("DELETE FROM email_queue WHERE id = ?")
-            .bind(entry_id_bytes)
+        let (entry_id, attempt) = token_parts(&token)?;
+        let deleted = sqlx::query("DELETE FROM email_queue WHERE id = ? AND attempt_count = ?")
+            .bind(entry_id)
+            .bind(i64::from(attempt))
             .execute(self.pool())
             .await
             .context("deleting from email_queue")
-            .map_err(|source| EmailQueueError::Storage { source })?;
+            .map_err(|source| EmailQueueError::Storage { source })?
+            .rows_affected();
+        if deleted == 0 {
+            return Err(claim_lost());
+        }
         Ok(())
     }
 
@@ -336,14 +348,21 @@ impl EmailQueue for SqliteAdapter {
         let now = now_ms();
         let delay_ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
         let claimed_until = now.saturating_add(delay_ms);
-        let (entry_id_bytes, _) = token_parts(&token)?;
-        sqlx::query("UPDATE email_queue SET claimed_until = ? WHERE id = ?")
-            .bind(claimed_until)
-            .bind(entry_id_bytes)
-            .execute(self.pool())
-            .await
-            .context("nacking email_queue entry")
-            .map_err(|source| EmailQueueError::Storage { source })?;
+        let (entry_id, attempt) = token_parts(&token)?;
+        let updated = sqlx::query(
+            "UPDATE email_queue SET claimed_until = ? WHERE id = ? AND attempt_count = ?",
+        )
+        .bind(claimed_until)
+        .bind(entry_id)
+        .bind(i64::from(attempt))
+        .execute(self.pool())
+        .await
+        .context("nacking email_queue entry")
+        .map_err(|source| EmailQueueError::Storage { source })?
+        .rows_affected();
+        if updated == 0 {
+            return Err(claim_lost());
+        }
         Ok(())
     }
 
@@ -363,9 +382,7 @@ impl EmailQueue for SqliteAdapter {
         if renewed == 1 {
             Ok(())
         } else {
-            Err(EmailQueueError::Storage {
-                source: anyhow::anyhow!("the claim is no longer held"),
-            })
+            Err(claim_lost())
         }
     }
 
@@ -1576,6 +1593,39 @@ mod tests {
         assert!(matches!(result, Err(EmailQueueError::Storage { .. })));
         assert_eq!(claim_state(&adapter, &second).await, before);
         adapter.in_progress(&second).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stale_ack_leaves_the_row_another_worker_took() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let first = adapter.try_dequeue().await.unwrap().unwrap().token;
+        expire_claim(&adapter, &first).await;
+        let second = adapter.try_dequeue().await.unwrap().unwrap().token;
+        let before = claim_state(&adapter, &second).await;
+
+        adapter.ack(first).await.unwrap_err();
+
+        assert_eq!(claim_state(&adapter, &second).await, before);
+        adapter.ack(second).await.unwrap();
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stale_nack_leaves_the_claim_another_worker_took() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let first = adapter.try_dequeue().await.unwrap().unwrap().token;
+        expire_claim(&adapter, &first).await;
+        let second = adapter.try_dequeue().await.unwrap().unwrap().token;
+        let before = claim_state(&adapter, &second).await;
+
+        adapter
+            .nack(first, std::time::Duration::from_secs(1))
+            .await
+            .unwrap_err();
+
+        assert_eq!(claim_state(&adapter, &second).await, before);
     }
 
     #[tokio::test]
