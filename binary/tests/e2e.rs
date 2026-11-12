@@ -1,3 +1,5 @@
+mod support;
+
 use std::collections::HashSet;
 use std::net::TcpListener;
 use std::time::Duration;
@@ -29,13 +31,15 @@ fn free_port() -> u16 {
 }
 
 async fn start_mailpit() -> testcontainers::ContainerAsync<GenericImage> {
-    GenericImage::new("axllent/mailpit", "latest")
-        .with_exposed_port(1025.tcp())
-        .with_exposed_port(8025.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("[http] accessible via"))
-        .start()
-        .await
-        .expect("failed to start mailpit container; ensure Docker is running")
+    crate::support::labelled(
+        GenericImage::new("axllent/mailpit", "latest")
+            .with_exposed_port(1025.tcp())
+            .with_exposed_port(8025.tcp())
+            .with_wait_for(WaitFor::message_on_stdout("[http] accessible via")),
+    )
+    .start()
+    .await
+    .expect("failed to start mailpit container; ensure Docker is running")
 }
 
 /// Polls `127.0.0.1:<port>` until it accepts a TCP connection or the deadline
@@ -73,14 +77,16 @@ async fn start_mailpit_ready() -> (testcontainers::ContainerAsync<GenericImage>,
 }
 
 async fn start_nats() -> testcontainers::ContainerAsync<GenericImage> {
-    GenericImage::new("nats", "2-alpine")
-        .with_exposed_port(4222.tcp())
-        .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
-        .with_wait_for(WaitFor::millis(200))
-        .with_cmd(["nats-server".to_owned(), "--js".to_owned()])
-        .start()
-        .await
-        .expect("failed to start NATS container; ensure Docker is running")
+    crate::support::labelled(
+        GenericImage::new("nats", "2-alpine")
+            .with_exposed_port(4222.tcp())
+            .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
+            .with_wait_for(WaitFor::millis(200))
+            .with_cmd(["nats-server".to_owned(), "--js".to_owned()]),
+    )
+    .start()
+    .await
+    .expect("failed to start NATS container; ensure Docker is running")
 }
 
 fn base_smtp(port: u16) -> MultiSenderConfig {

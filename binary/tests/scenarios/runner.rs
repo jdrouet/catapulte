@@ -39,13 +39,15 @@ async fn wait_for_tcp(port: u16, timeout: Duration) {
 }
 
 async fn start_mailpit() -> testcontainers::ContainerAsync<GenericImage> {
-    GenericImage::new("axllent/mailpit", "latest")
-        .with_exposed_port(1025.tcp())
-        .with_exposed_port(8025.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("[http] accessible via"))
-        .start()
-        .await
-        .expect("failed to start mailpit container; ensure Docker is running")
+    crate::support::labelled(
+        GenericImage::new("axllent/mailpit", "latest")
+            .with_exposed_port(1025.tcp())
+            .with_exposed_port(8025.tcp())
+            .with_wait_for(WaitFor::message_on_stdout("[http] accessible via")),
+    )
+    .start()
+    .await
+    .expect("failed to start mailpit container; ensure Docker is running")
 }
 
 pub async fn run_scenario<S, SFut, B, BFut>(

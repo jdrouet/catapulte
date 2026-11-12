@@ -1,3 +1,5 @@
+mod support;
+
 mod scenarios {
     pub mod backends;
     pub mod context;

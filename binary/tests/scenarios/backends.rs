@@ -71,28 +71,32 @@ fn base_attachment_fetcher() -> HttpAttachmentFetcherConfig {
 }
 
 async fn start_postgres() -> testcontainers::ContainerAsync<GenericImage> {
-    GenericImage::new("postgres", "16-alpine")
-        .with_exposed_port(5432.tcp())
-        .with_wait_for(WaitFor::message_on_stderr(
-            "database system is ready to accept connections",
-        ))
-        .with_env_var("POSTGRES_USER", "catapulte")
-        .with_env_var("POSTGRES_PASSWORD", "catapulte")
-        .with_env_var("POSTGRES_DB", "catapulte")
-        .start()
-        .await
-        .expect("failed to start postgres container; ensure Docker is running")
+    crate::support::labelled(
+        GenericImage::new("postgres", "16-alpine")
+            .with_exposed_port(5432.tcp())
+            .with_wait_for(WaitFor::message_on_stderr(
+                "database system is ready to accept connections",
+            ))
+            .with_env_var("POSTGRES_USER", "catapulte")
+            .with_env_var("POSTGRES_PASSWORD", "catapulte")
+            .with_env_var("POSTGRES_DB", "catapulte"),
+    )
+    .start()
+    .await
+    .expect("failed to start postgres container; ensure Docker is running")
 }
 
 async fn start_nats() -> testcontainers::ContainerAsync<GenericImage> {
-    GenericImage::new("nats", "2-alpine")
-        .with_exposed_port(4222.tcp())
-        .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
-        .with_wait_for(WaitFor::millis(200))
-        .with_cmd(["nats-server".to_owned(), "--js".to_owned()])
-        .start()
-        .await
-        .expect("failed to start NATS container; ensure Docker is running")
+    crate::support::labelled(
+        GenericImage::new("nats", "2-alpine")
+            .with_exposed_port(4222.tcp())
+            .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
+            .with_wait_for(WaitFor::millis(200))
+            .with_cmd(["nats-server".to_owned(), "--js".to_owned()]),
+    )
+    .start()
+    .await
+    .expect("failed to start NATS container; ensure Docker is running")
 }
 
 fn nats_config(url: String, http_port: u16) -> NatsConfig {
