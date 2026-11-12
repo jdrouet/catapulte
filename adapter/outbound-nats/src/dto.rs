@@ -81,6 +81,8 @@ pub struct EnvelopeDto {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub metadata: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -199,6 +201,7 @@ impl From<(&EmailId, &Envelope)> for QueuedEmailPayload {
                 unsubscribe: envelope.unsubscribe.as_ref().map(UnsubscribeDto::from),
                 tags: envelope.tags.clone(),
                 metadata: envelope.metadata.clone(),
+                send_at_ms: envelope.send_at_ms,
             },
         }
     }
@@ -240,7 +243,7 @@ impl TryFrom<QueuedEmailPayload> for (EmailId, Envelope) {
                 .transpose()?,
             tags: payload.envelope.tags,
             metadata: payload.envelope.metadata,
-            send_at_ms: None,
+            send_at_ms: payload.envelope.send_at_ms,
         };
         Ok((EmailId::from(payload.id), envelope))
     }
@@ -451,5 +454,35 @@ mod tests {
         let payload: QueuedEmailPayload = serde_json::from_value(legacy).unwrap();
         let (_, env) = <(EmailId, Envelope)>::try_from(payload).unwrap();
         assert!(env.tags.is_empty() && env.metadata.is_empty());
+    }
+
+    #[test]
+    fn send_at_ms_round_trips_and_a_legacy_payload_has_none() {
+        let id = EmailId::default();
+        let mut envelope = Envelope::new(
+            "sender@example.com",
+            vec![(RecipientKind::To, "to@example.com".into())],
+            BodySource::Plain(Plain::try_new(Some("hi".into()), None).unwrap()),
+        );
+        envelope.send_at_ms = Some(1_800_000_000_123);
+        let bytes = serde_json::to_vec(&QueuedEmailPayload::from((&id, &envelope))).unwrap();
+        let (_, back) = <(EmailId, Envelope)>::try_from(
+            serde_json::from_slice::<QueuedEmailPayload>(&bytes).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(back.send_at_ms, Some(1_800_000_000_123));
+
+        envelope.send_at_ms = None;
+        let bytes = serde_json::to_vec(&QueuedEmailPayload::from((&id, &envelope))).unwrap();
+        assert!(
+            !String::from_utf8(bytes.clone())
+                .unwrap()
+                .contains("send_at_ms")
+        );
+        let (_, plain) = <(EmailId, Envelope)>::try_from(
+            serde_json::from_slice::<QueuedEmailPayload>(&bytes).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plain.send_at_ms, None);
     }
 }

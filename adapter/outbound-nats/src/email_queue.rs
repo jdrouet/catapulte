@@ -5,6 +5,7 @@ use async_nats::jetstream::context::PublishErrorKind;
 use async_nats::{HeaderMap, header};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
+use catapulte_domain::port::clock::{Clock, SystemClock};
 use catapulte_domain::port::email_queue::{
     AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, TraceCarrier,
 };
@@ -22,6 +23,16 @@ fn publish_headers(id: EmailId, pairs: &[(String, String)]) -> HeaderMap {
         map.insert(k.as_str(), v.as_str());
     }
     map
+}
+
+/// `@at` schedule value: the send time rounded up to a whole second, in UTC.
+fn schedule_at(send_at_ms: i64) -> anyhow::Result<String> {
+    let secs = send_at_ms.div_euclid(1000) + i64::from(send_at_ms.rem_euclid(1000) > 0);
+    let at = time::OffsetDateTime::from_unix_timestamp(secs).context("send time out of range")?;
+    let formatted = at
+        .format(&time::format_description::well_known::Rfc3339)
+        .context("formatting the send time")?;
+    Ok(format!("@at {formatted}"))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,10 +157,37 @@ impl EmailQueue for NatsAdapter {
             .context("serializing envelope")
             .map_err(|source| EmailQueueError::Storage { source })?;
         let trace_pairs = catapulte_telemetry::propagation::inject_current();
-        let headers = publish_headers(id, &trace_pairs);
+        let mut headers = publish_headers(id, &trace_pairs);
+        let mut subject = self.subject().to_owned();
+        if let Some(send_at_ms) = envelope.send_at_ms.filter(|t| *t > SystemClock.now_ms()) {
+            if !self.supports_scheduling() {
+                return Err(EmailQueueError::Storage {
+                    source: anyhow::anyhow!(
+                        "this NATS queue cannot hold scheduled emails; see the startup warning"
+                    ),
+                });
+            }
+            if let Some(limit) = self.schedule_limit()
+                && u128::from(send_at_ms.abs_diff(SystemClock.now_ms())) >= limit.as_millis()
+            {
+                return Err(EmailQueueError::Storage {
+                    source: anyhow::anyhow!(
+                        "send_at_ms is beyond what the NATS stream max_age can hold"
+                    ),
+                });
+            }
+            headers.insert(
+                header::NATS_SCHEDULE,
+                schedule_at(send_at_ms)
+                    .map_err(|source| EmailQueueError::Storage { source })?
+                    .as_str(),
+            );
+            headers.insert(header::NATS_SCHEDULE_TARGET, subject.as_str());
+            subject = format!("{subject}.scheduled.{}", id.as_uuid());
+        }
         let ack = self
             .jetstream()
-            .publish_with_headers(self.subject().to_owned(), headers, bytes.into())
+            .publish_with_headers(subject, headers, bytes.into())
             .await
             .map_err(|e| publish_failure(PublishStage::Send, e))?;
         ack.await
@@ -372,6 +410,31 @@ mod classify_tests {
 }
 
 #[cfg(test)]
+mod schedule_tests {
+    use super::schedule_at;
+
+    #[test]
+    fn a_whole_second_is_kept() {
+        assert_eq!(
+            schedule_at(1_800_000_000_000).unwrap(),
+            "@at 2027-01-15T08:00:00Z"
+        );
+    }
+
+    #[test]
+    fn a_fraction_of_a_second_rounds_up() {
+        assert_eq!(
+            schedule_at(1_800_000_000_001).unwrap(),
+            "@at 2027-01-15T08:00:01Z"
+        );
+        assert_eq!(
+            schedule_at(1_800_000_000_999).unwrap(),
+            "@at 2027-01-15T08:00:01Z"
+        );
+    }
+}
+
+#[cfg(test)]
 mod nak_tests {
     use super::nak_payload;
     use std::time::Duration;
@@ -428,7 +491,11 @@ mod tests {
     }
 
     async fn start_nats() -> (testcontainers::ContainerAsync<GenericImage>, u16) {
-        let nats = GenericImage::new("nats", "2-alpine")
+        start_nats_image("2-alpine").await
+    }
+
+    async fn start_nats_image(tag: &str) -> (testcontainers::ContainerAsync<GenericImage>, u16) {
+        let nats = GenericImage::new("nats", tag)
             .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
             .with_cmd(["--js".to_owned()])
             .start()
@@ -711,5 +778,310 @@ mod tests {
         .unwrap();
 
         assert_eq!(adapter.renew_interval(), Duration::from_millis(500));
+    }
+
+    const MIN_IMAGE: &str = "2.12-alpine";
+
+    fn config_on(port: u16) -> NatsConfig {
+        NatsConfig {
+            url: format!("nats://127.0.0.1:{port}"),
+            stream: "TEST".to_owned(),
+            subject: "test.queued".to_owned(),
+            consumer: "worker".to_owned(),
+            ack_wait_secs: 3,
+            max_deliver: 3,
+            backoff_secs: vec![],
+        }
+    }
+
+    async fn raw_jetstream(port: u16) -> async_nats::jetstream::Context {
+        async_nats::jetstream::new(
+            async_nats::connect(format!("nats://127.0.0.1:{port}"))
+                .await
+                .unwrap(),
+        )
+    }
+
+    /// Creates the stream the way the code did before schedules existed.
+    async fn old_stream(
+        js: &async_nats::jetstream::Context,
+        retention: async_nats::jetstream::stream::RetentionPolicy,
+        max_age: Duration,
+    ) -> async_nats::jetstream::stream::Stream {
+        js.create_stream(async_nats::jetstream::stream::Config {
+            name: "TEST".to_owned(),
+            subjects: vec!["test.queued".to_owned()],
+            retention,
+            max_age,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn durable(
+        stream: &async_nats::jetstream::stream::Stream,
+        filter: &str,
+        ack_wait: Duration,
+    ) {
+        stream
+            .create_consumer(async_nats::jetstream::consumer::pull::Config {
+                durable_name: Some("worker".to_owned()),
+                ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
+                ack_wait,
+                max_deliver: 3,
+                filter_subject: filter.to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn stream_config(
+        adapter_or_js: &async_nats::jetstream::Context,
+    ) -> async_nats::jetstream::stream::Config {
+        adapter_or_js
+            .get_stream("TEST")
+            .await
+            .unwrap()
+            .cached_info()
+            .config
+            .clone()
+    }
+
+    fn in_ms(ms: i64) -> i64 {
+        i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap()
+            + ms
+    }
+
+    fn scheduled_envelope(send_at_ms: i64) -> Envelope {
+        Envelope {
+            send_at_ms: Some(send_at_ms),
+            ..sample_envelope()
+        }
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn a_fresh_stream_on_2_12_is_upgraded_and_holds_a_scheduled_email() {
+        let (_nats, port) = start_nats_image(MIN_IMAGE).await;
+        let adapter = config_on(port).build().await.unwrap();
+        assert!(adapter.supports_scheduling());
+        let config = stream_config(adapter.jetstream()).await;
+        assert!(config.allow_message_schedules);
+        assert!(
+            config
+                .subjects
+                .contains(&"test.queued.scheduled.*".to_owned())
+        );
+
+        let send_at = in_ms(3_000);
+        let id = EmailId::default();
+        adapter
+            .enqueue(id, &scheduled_envelope(send_at))
+            .await
+            .unwrap();
+        let now_id = EmailId::default();
+        adapter.enqueue(now_id, &sample_envelope()).await.unwrap();
+
+        let first = tokio::time::timeout(Duration::from_secs(2), adapter.dequeue())
+            .await
+            .expect("the immediate message is available")
+            .unwrap();
+        assert_eq!(first.id, now_id);
+        adapter.ack(first.token).await.unwrap();
+        let early = tokio::time::timeout(Duration::from_secs(2), adapter.dequeue()).await;
+        assert!(early.is_err(), "the scheduled message must not fire early");
+        let fired = tokio::time::timeout(Duration::from_secs(10), adapter.dequeue())
+            .await
+            .expect("the scheduled message fires")
+            .unwrap();
+        assert_eq!(fired.id, id);
+        assert_eq!(fired.envelope.send_at_ms, Some(send_at));
+        assert_eq!(fired.attempt, 1);
+        adapter.ack(fired.token).await.unwrap();
+        assert_eq!(stream_messages(&adapter).await, 0);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn an_old_stream_is_upgraded_keeping_its_other_fields_and_stays_upgraded() {
+        use async_nats::jetstream::stream::RetentionPolicy;
+        let (_nats, port) = start_nats_image(MIN_IMAGE).await;
+        let js = raw_jetstream(port).await;
+        let stream = old_stream(&js, RetentionPolicy::WorkQueue, Duration::from_hours(1)).await;
+        durable(&stream, "test.queued", Duration::from_secs(3)).await;
+
+        let adapter = config_on(port).build().await.unwrap();
+
+        assert!(adapter.supports_scheduling());
+        let upgraded = stream_config(&js).await;
+        assert_eq!(upgraded.max_age, Duration::from_hours(1));
+        assert!(upgraded.allow_message_schedules);
+        assert_eq!(
+            upgraded.subjects,
+            vec![
+                "test.queued".to_owned(),
+                "test.queued.scheduled.*".to_owned()
+            ]
+        );
+        let again = config_on(port).build().await.unwrap();
+        assert!(again.supports_scheduling());
+        let after = stream_config(&js).await;
+        assert_eq!(after.subjects, upgraded.subjects);
+        assert_eq!(after.max_age, upgraded.max_age);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn concurrent_connects_both_end_up_supporting_schedules() {
+        use async_nats::jetstream::stream::RetentionPolicy;
+        let (_nats, port) = start_nats_image(MIN_IMAGE).await;
+        let js = raw_jetstream(port).await;
+        let stream = old_stream(&js, RetentionPolicy::WorkQueue, Duration::ZERO).await;
+        durable(&stream, "test.queued", Duration::from_secs(3)).await;
+
+        let (a, b) = tokio::join!(config_on(port).build(), config_on(port).build());
+
+        assert!(a.unwrap().supports_scheduling());
+        assert!(b.unwrap().supports_scheduling());
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn an_unfiltered_durable_consumer_leaves_the_stream_untouched() {
+        use async_nats::jetstream::stream::RetentionPolicy;
+        let (_nats, port) = start_nats_image(MIN_IMAGE).await;
+        let js = raw_jetstream(port).await;
+        let stream = old_stream(&js, RetentionPolicy::WorkQueue, Duration::ZERO).await;
+        durable(&stream, "", Duration::from_secs(3)).await;
+
+        let adapter = config_on(port).build().await.unwrap();
+
+        assert!(!adapter.supports_scheduling());
+        let config = stream_config(&js).await;
+        assert!(!config.allow_message_schedules);
+        assert_eq!(config.subjects, vec!["test.queued".to_owned()]);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn an_interest_stream_is_not_used_for_schedules() {
+        use async_nats::jetstream::stream::RetentionPolicy;
+        let (_nats, port) = start_nats_image(MIN_IMAGE).await;
+        let js = raw_jetstream(port).await;
+        old_stream(&js, RetentionPolicy::Interest, Duration::ZERO).await;
+
+        let adapter = config_on(port).build().await.unwrap();
+
+        assert!(!adapter.supports_scheduling());
+        let config = stream_config(&js).await;
+        assert!(!config.allow_message_schedules);
+        assert_eq!(config.subjects, vec!["test.queued".to_owned()]);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn a_sub_second_ack_deadline_disables_scheduling() {
+        use async_nats::jetstream::stream::RetentionPolicy;
+        let (_nats, port) = start_nats_image(MIN_IMAGE).await;
+        let js = raw_jetstream(port).await;
+        let stream = old_stream(&js, RetentionPolicy::WorkQueue, Duration::ZERO).await;
+        durable(&stream, "test.queued", Duration::from_millis(500)).await;
+
+        let adapter = config_on(port).build().await.unwrap();
+
+        assert!(!adapter.supports_scheduling());
+        assert!(!stream_config(&js).await.allow_message_schedules);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn an_older_server_is_unsupported_and_refuses_a_future_enqueue() {
+        let (_nats, port) = start_nats_image("2.11-alpine").await;
+        let adapter = config_on(port).build().await.unwrap();
+        assert!(!adapter.supports_scheduling());
+        let config = stream_config(adapter.jetstream()).await;
+        assert_eq!(config.subjects, vec!["test.queued".to_owned()]);
+
+        let result = adapter
+            .enqueue(EmailId::default(), &scheduled_envelope(in_ms(60_000)))
+            .await;
+
+        assert!(matches!(result, Err(EmailQueueError::Storage { .. })));
+        assert_eq!(stream_messages(&adapter).await, 0);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn a_finite_max_age_caps_the_schedule_horizon() {
+        use async_nats::jetstream::stream::RetentionPolicy;
+        let (_nats, port) = start_nats_image(MIN_IMAGE).await;
+        let js = raw_jetstream(port).await;
+        let stream = old_stream(&js, RetentionPolicy::WorkQueue, Duration::from_hours(1)).await;
+        durable(&stream, "test.queued", Duration::from_secs(3)).await;
+        let adapter = config_on(port).build().await.unwrap();
+        assert!(adapter.supports_scheduling());
+        assert_eq!(adapter.schedule_limit(), Some(Duration::from_mins(55)));
+
+        let result = adapter
+            .enqueue(
+                EmailId::default(),
+                &scheduled_envelope(in_ms(2 * 3_600_000)),
+            )
+            .await;
+
+        assert!(matches!(result, Err(EmailQueueError::Storage { .. })));
+        assert_eq!(stream_messages(&adapter).await, 0);
+        adapter
+            .enqueue(EmailId::default(), &scheduled_envelope(in_ms(30 * 60_000)))
+            .await
+            .unwrap();
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn a_stream_whose_max_age_is_too_short_is_unsupported() {
+        use async_nats::jetstream::stream::RetentionPolicy;
+        let (_nats, port) = start_nats_image(MIN_IMAGE).await;
+        let js = raw_jetstream(port).await;
+        let stream = old_stream(&js, RetentionPolicy::WorkQueue, Duration::from_mins(5)).await;
+        durable(&stream, "test.queued", Duration::from_secs(3)).await;
+
+        let adapter = config_on(port).build().await.unwrap();
+
+        assert!(!adapter.supports_scheduling());
+        assert!(!stream_config(&js).await.allow_message_schedules);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn another_consumer_on_the_schedule_subjects_leaves_the_stream_untouched() {
+        use async_nats::jetstream::stream::RetentionPolicy;
+        let (_nats, port) = start_nats_image(MIN_IMAGE).await;
+        let js = raw_jetstream(port).await;
+        let stream = old_stream(&js, RetentionPolicy::WorkQueue, Duration::ZERO).await;
+        durable(&stream, "test.queued", Duration::from_secs(3)).await;
+        stream
+            .create_consumer(async_nats::jetstream::consumer::pull::Config {
+                durable_name: Some("other".to_owned()),
+                filter_subject: "test.queued.scheduled.*".to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let adapter = config_on(port).build().await.unwrap();
+
+        assert!(!adapter.supports_scheduling());
+        let config = stream_config(&js).await;
+        assert!(!config.allow_message_schedules);
+        assert_eq!(config.subjects, vec!["test.queued".to_owned()]);
     }
 }
