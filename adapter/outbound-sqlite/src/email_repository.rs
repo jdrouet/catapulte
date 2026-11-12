@@ -656,7 +656,9 @@ mod tests {
     use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain};
     use catapulte_domain::entity::email::{EmailId, RecipientKind};
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
+    use catapulte_domain::entity::lifecycle_event::{
+        EventContext, LifecycleEvent, TERMINAL_EVENT_TYPES,
+    };
     use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::{
         DuplicateState, EmailRepository, EmailRepositoryError, EmailStatus, EnqueueState,
@@ -1924,6 +1926,167 @@ mod tests {
         add_event_with_id(&adapter, tie_failed, "delivery.succeeded", 5, low2).await;
         add_event_with_id(&adapter, tie_failed, "delivery.failed", 5, high2).await;
         assert_eq!(status_of(tie_failed).await, EmailStatus::Failed);
+    }
+
+    async fn terminal_of(adapter: &SqliteAdapter, id: EmailId) -> String {
+        sqlx::query_scalar("SELECT terminal_event_type FROM emails WHERE id = ?")
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn terminal_mismatches(adapter: &SqliteAdapter) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM emails e WHERE \
+                (e.terminal_event_type, e.terminal_event_at_ms, e.terminal_event_id) IS NOT (\
+                SELECT COALESCE(le.event_type, ''), le.created_at, le.id \
+                FROM (SELECT 1) LEFT JOIN lifecycle_events le \
+                  ON le.email_id = e.id AND le.event_type IN ('delivery.succeeded', 'delivery.failed') \
+                ORDER BY le.created_at DESC, le.id DESC LIMIT 1)",
+        )
+        .fetch_one(adapter.pool())
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn terminal_event_follows_every_terminal_type_and_ignores_others() {
+        let adapter = fresh_adapter().await;
+        for event_type in TERMINAL_EVENT_TYPES {
+            let id = EmailId::default();
+            adapter.save(id, &sample_envelope()).await.unwrap();
+            add_event(&adapter, id, event_type).await;
+            assert_eq!(terminal_of(&adapter, id).await, *event_type);
+        }
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        for event_type in [
+            "queued",
+            "sending",
+            "retrying",
+            "bounced",
+            "complained",
+            "suppressed",
+            "scheduled",
+            "cancelled",
+        ] {
+            add_event(&adapter, id, event_type).await;
+        }
+        assert_eq!(terminal_of(&adapter, id).await, "");
+    }
+
+    #[tokio::test]
+    async fn terminal_event_keeps_the_latest_by_created_at_then_id() {
+        let adapter = fresh_adapter().await;
+        let low = uuid::Uuid::from_u128(1);
+        let high = uuid::Uuid::from_u128(2);
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+
+        add_event_at(&adapter, id, "delivery.succeeded", 10).await;
+        add_event_at(&adapter, id, "delivery.failed", 5).await;
+        assert_eq!(terminal_of(&adapter, id).await, "delivery.succeeded");
+
+        add_event_at(&adapter, id, "delivery.failed", 20).await;
+        assert_eq!(terminal_of(&adapter, id).await, "delivery.failed");
+
+        add_event_at(&adapter, id, "sending", 30).await;
+        assert_eq!(terminal_of(&adapter, id).await, "delivery.failed");
+
+        let tie = EmailId::default();
+        adapter.save(tie, &sample_envelope()).await.unwrap();
+        add_event_with_id(&adapter, tie, "delivery.succeeded", 5, high).await;
+        add_event_with_id(&adapter, tie, "delivery.failed", 5, low).await;
+        assert_eq!(terminal_of(&adapter, tie).await, "delivery.succeeded");
+
+        let tie_up = EmailId::default();
+        adapter.save(tie_up, &sample_envelope()).await.unwrap();
+        add_event_with_id(
+            &adapter,
+            tie_up,
+            "delivery.failed",
+            5,
+            uuid::Uuid::from_u128(3),
+        )
+        .await;
+        add_event_with_id(
+            &adapter,
+            tie_up,
+            "delivery.succeeded",
+            5,
+            uuid::Uuid::from_u128(4),
+        )
+        .await;
+        assert_eq!(terminal_of(&adapter, tie_up).await, "delivery.succeeded");
+        assert_eq!(terminal_mismatches(&adapter).await, 0);
+    }
+
+    #[tokio::test]
+    async fn the_migration_backfills_the_terminal_event() {
+        let adapter = fresh_adapter().await;
+        sqlx::query("DROP TRIGGER lifecycle_events_track_terminal")
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+        let low = uuid::Uuid::from_u128(1);
+        let high = uuid::Uuid::from_u128(2);
+
+        let none = EmailId::default();
+        adapter.save(none, &sample_envelope()).await.unwrap();
+        let informational = EmailId::default();
+        adapter
+            .save(informational, &sample_envelope())
+            .await
+            .unwrap();
+        add_event_at(&adapter, informational, "sending", 3).await;
+        let recovered = EmailId::default();
+        adapter.save(recovered, &sample_envelope()).await.unwrap();
+        add_event_at(&adapter, recovered, "delivery.failed", 1).await;
+        add_event_at(&adapter, recovered, "delivery.succeeded", 2).await;
+        let tie = EmailId::default();
+        adapter.save(tie, &sample_envelope()).await.unwrap();
+        add_event_with_id(&adapter, tie, "delivery.succeeded", 5, low).await;
+        add_event_with_id(&adapter, tie, "delivery.failed", 5, high).await;
+        assert_eq!(terminal_of(&adapter, recovered).await, "");
+
+        sqlx::raw_sql(include_str!(
+            "../migrations/20261124000002_track_terminal_event.sql"
+        ))
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(terminal_mismatches(&adapter).await, 0);
+        assert_eq!(terminal_of(&adapter, none).await, "");
+        assert_eq!(terminal_of(&adapter, informational).await, "");
+        assert_eq!(terminal_of(&adapter, recovered).await, "delivery.succeeded");
+        assert_eq!(terminal_of(&adapter, tie).await, "delivery.failed");
+
+        add_event_at(&adapter, tie, "delivery.succeeded", 9).await;
+        assert_eq!(terminal_of(&adapter, tie).await, "delivery.succeeded");
+        assert_eq!(terminal_mismatches(&adapter).await, 0);
+    }
+
+    #[tokio::test]
+    async fn terminal_event_is_written_in_the_inserting_transaction() {
+        // SQLite serializes writers, so the trigger needs no further concurrency handling.
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+
+        let mut tx = adapter.pool().begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO lifecycle_events (id, email_id, event_type) VALUES (?, ?, 'delivery.succeeded')",
+        )
+        .bind(uuid::Uuid::now_v7().as_bytes().to_vec())
+        .bind(id.as_uuid().as_bytes().to_vec())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.rollback().await.unwrap();
+
+        assert_eq!(terminal_of(&adapter, id).await, "");
     }
 
     fn owned_envelope(owner: &str, key: &str) -> Envelope {
