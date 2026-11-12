@@ -640,7 +640,9 @@ mod tests {
     use catapulte_domain::entity::body::{BodySource, MjmlSource, Plain};
     use catapulte_domain::entity::email::{EmailId, RecipientKind};
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
+    use catapulte_domain::entity::lifecycle_event::{
+        EventContext, LifecycleEvent, TERMINAL_EVENT_TYPES,
+    };
     use catapulte_domain::entity::sender::SenderName;
     use catapulte_domain::port::email_repository::{
         DuplicateState, EmailRepository, EmailRepositoryError, EmailStatus, EnqueueState,
@@ -1663,6 +1665,270 @@ mod tests {
         add_event_with_id(&adapter, tie_failed, "delivery.succeeded", 5, low2).await;
         add_event_with_id(&adapter, tie_failed, "delivery.failed", 5, high2).await;
         assert_eq!(status_of(tie_failed).await, EmailStatus::Failed);
+    }
+
+    async fn terminal_of(adapter: &PostgresAdapter, id: EmailId) -> String {
+        sqlx::query_scalar("SELECT terminal_event_type FROM emails WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn terminal_mismatches(adapter: &PostgresAdapter) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM emails e LEFT JOIN LATERAL (\
+                SELECT le.event_type, le.created_at, le.id FROM lifecycle_events le \
+                WHERE le.email_id = e.id AND le.event_type IN ('delivery.succeeded', 'delivery.failed') \
+                ORDER BY le.created_at DESC, le.id DESC LIMIT 1) t ON true \
+             WHERE (e.terminal_event_type, e.terminal_event_at_ms, e.terminal_event_id) \
+                IS DISTINCT FROM (COALESCE(t.event_type, ''), t.created_at, t.id)",
+        )
+        .fetch_one(adapter.pool())
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn terminal_event_follows_every_terminal_type_and_ignores_others() {
+        let adapter = fresh_adapter().await;
+        for event_type in TERMINAL_EVENT_TYPES {
+            let id = EmailId::default();
+            adapter.save(id, &sample_envelope()).await.unwrap();
+            add_event(&adapter, id, event_type).await;
+            assert_eq!(terminal_of(&adapter, id).await, *event_type);
+        }
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        for event_type in [
+            "queued",
+            "sending",
+            "retrying",
+            "bounced",
+            "complained",
+            "suppressed",
+            "scheduled",
+            "cancelled",
+        ] {
+            add_event(&adapter, id, event_type).await;
+        }
+        assert_eq!(terminal_of(&adapter, id).await, "");
+    }
+
+    #[tokio::test]
+    async fn terminal_event_keeps_the_latest_by_created_at_then_id() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+
+        add_event_at(&adapter, id, "delivery.succeeded", 10).await;
+        add_event_at(&adapter, id, "delivery.failed", 5).await;
+        assert_eq!(terminal_of(&adapter, id).await, "delivery.succeeded");
+
+        add_event_at(&adapter, id, "delivery.failed", 20).await;
+        assert_eq!(terminal_of(&adapter, id).await, "delivery.failed");
+
+        add_event_at(&adapter, id, "sending", 30).await;
+        assert_eq!(terminal_of(&adapter, id).await, "delivery.failed");
+
+        let tie = EmailId::default();
+        adapter.save(tie, &sample_envelope()).await.unwrap();
+        add_event_with_id(
+            &adapter,
+            tie,
+            "delivery.succeeded",
+            5,
+            uuid::Uuid::from_u128(2),
+        )
+        .await;
+        add_event_with_id(
+            &adapter,
+            tie,
+            "delivery.failed",
+            5,
+            uuid::Uuid::from_u128(1),
+        )
+        .await;
+        assert_eq!(terminal_of(&adapter, tie).await, "delivery.succeeded");
+
+        let tie_up = EmailId::default();
+        adapter.save(tie_up, &sample_envelope()).await.unwrap();
+        add_event_with_id(
+            &adapter,
+            tie_up,
+            "delivery.failed",
+            5,
+            uuid::Uuid::from_u128(3),
+        )
+        .await;
+        add_event_with_id(
+            &adapter,
+            tie_up,
+            "delivery.succeeded",
+            5,
+            uuid::Uuid::from_u128(4),
+        )
+        .await;
+        assert_eq!(terminal_of(&adapter, tie_up).await, "delivery.succeeded");
+        assert_eq!(terminal_mismatches(&adapter).await, 0);
+    }
+
+    #[tokio::test]
+    async fn the_migration_backfills_the_terminal_event() {
+        let adapter = fresh_adapter().await;
+        sqlx::query("ALTER TABLE lifecycle_events DISABLE TRIGGER lifecycle_events_track_terminal")
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        let none = EmailId::default();
+        adapter.save(none, &sample_envelope()).await.unwrap();
+        let informational = EmailId::default();
+        adapter
+            .save(informational, &sample_envelope())
+            .await
+            .unwrap();
+        add_event_at(&adapter, informational, "sending", 3).await;
+        let recovered = EmailId::default();
+        adapter.save(recovered, &sample_envelope()).await.unwrap();
+        add_event_at(&adapter, recovered, "delivery.failed", 1).await;
+        add_event_at(&adapter, recovered, "delivery.succeeded", 2).await;
+        let tie = EmailId::default();
+        adapter.save(tie, &sample_envelope()).await.unwrap();
+        add_event_with_id(
+            &adapter,
+            tie,
+            "delivery.succeeded",
+            5,
+            uuid::Uuid::from_u128(1),
+        )
+        .await;
+        add_event_with_id(
+            &adapter,
+            tie,
+            "delivery.failed",
+            5,
+            uuid::Uuid::from_u128(2),
+        )
+        .await;
+        assert_eq!(terminal_of(&adapter, recovered).await, "");
+
+        sqlx::raw_sql(include_str!(
+            "../migrations/20261124000002_track_terminal_event.sql"
+        ))
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(terminal_mismatches(&adapter).await, 0);
+        assert_eq!(terminal_of(&adapter, none).await, "");
+        assert_eq!(terminal_of(&adapter, informational).await, "");
+        assert_eq!(terminal_of(&adapter, recovered).await, "delivery.succeeded");
+        assert_eq!(terminal_of(&adapter, tie).await, "delivery.failed");
+
+        add_event_at(&adapter, tie, "delivery.succeeded", 9).await;
+        assert_eq!(terminal_of(&adapter, tie).await, "delivery.succeeded");
+        assert_eq!(terminal_mismatches(&adapter).await, 0);
+    }
+
+    type Terminal = (&'static str, i64, u128);
+
+    /// Transaction A inserts `first` and stays open; `second` is inserted on another
+    /// connection, must wait for A, and is released once A commits or rolls back.
+    async fn race(
+        adapter: &PostgresAdapter,
+        first: Terminal,
+        second: Terminal,
+        commit: bool,
+    ) -> EmailId {
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        let insert = "INSERT INTO lifecycle_events (id, email_id, event_type, created_at) VALUES ($1, $2, $3, $4)";
+
+        let mut tx = adapter.pool().begin().await.unwrap();
+        sqlx::query(insert)
+            .bind(uuid::Uuid::from_u128(first.2))
+            .bind(id.as_uuid())
+            .bind(first.0)
+            .bind(first.1)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+
+        let pool = adapter.pool().clone();
+        let b = tokio::spawn(async move {
+            sqlx::query(insert)
+                .bind(uuid::Uuid::from_u128(second.2))
+                .bind(id.as_uuid())
+                .bind(second.0)
+                .bind(second.1)
+                .execute(&pool)
+                .await
+                .unwrap();
+        });
+
+        // Row-lock waits show up as transactionid locks, which carry no database,
+        // so the waiting backend is matched through its session instead.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+                 WHERE NOT l.granted AND a.datname = current_database()",
+            )
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+            if waiting >= 1 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the second insert never waited on the first transaction"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        if commit {
+            tx.commit().await.unwrap();
+        } else {
+            tx.rollback().await.unwrap();
+        }
+        b.await.unwrap();
+        assert_eq!(terminal_mismatches(adapter).await, 0);
+        id
+    }
+
+    const SUCCEEDED: &str = "delivery.succeeded";
+    const FAILED: &str = "delivery.failed";
+
+    #[tokio::test]
+    async fn concurrent_newer_commits_first() {
+        let adapter = fresh_adapter().await;
+        let id = race(&adapter, (SUCCEEDED, 10, 1), (FAILED, 5, 2), true).await;
+        assert_eq!(terminal_of(&adapter, id).await, SUCCEEDED);
+    }
+
+    #[tokio::test]
+    async fn concurrent_older_commits_first() {
+        let adapter = fresh_adapter().await;
+        let id = race(&adapter, (SUCCEEDED, 5, 1), (FAILED, 10, 2), true).await;
+        assert_eq!(terminal_of(&adapter, id).await, FAILED);
+    }
+
+    #[tokio::test]
+    async fn concurrent_equal_time_higher_id_wins() {
+        let adapter = fresh_adapter().await;
+        let id = race(&adapter, (SUCCEEDED, 5, 1), (FAILED, 5, 2), true).await;
+        assert_eq!(terminal_of(&adapter, id).await, FAILED);
+        let id = race(&adapter, (SUCCEEDED, 5, 4), (FAILED, 5, 3), true).await;
+        assert_eq!(terminal_of(&adapter, id).await, SUCCEEDED);
+    }
+
+    #[tokio::test]
+    async fn concurrent_rolled_back_event_is_not_stored() {
+        let adapter = fresh_adapter().await;
+        let id = race(&adapter, (SUCCEEDED, 10, 1), (FAILED, 5, 2), false).await;
+        assert_eq!(terminal_of(&adapter, id).await, FAILED);
     }
 
     fn owned_envelope(owner: &str, key: &str) -> Envelope {
