@@ -71,6 +71,32 @@ fn base_attachment_fetcher() -> HttpAttachmentFetcherConfig {
     HttpAttachmentFetcherConfig::default()
 }
 
+// The image's temporary init server also logs "ready" and listens only on the socket; the
+// final server is the only one reachable over TCP inside the container.
+async fn wait_for_final_server(id: &str) {
+    for _ in 0..150 {
+        let ready = std::process::Command::new("docker")
+            .args([
+                "exec",
+                id,
+                "pg_isready",
+                "-h",
+                "127.0.0.1",
+                "-U",
+                "catapulte",
+            ])
+            .output()
+            .expect("failed to run docker exec")
+            .status
+            .success();
+        if ready {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    panic!("postgres did not become ready within 30s");
+}
+
 static POSTGRES: OnceLock<(String, u16)> = OnceLock::new();
 
 // The container lives on its own thread and runtime so it outlives the test that started it.
@@ -101,7 +127,7 @@ fn postgres() -> &'static (String, u16) {
                     .await
                     .expect("failed to start postgres container; ensure Docker is running");
                     let port = container.get_host_port_ipv4(5432).await.unwrap();
-                    wait_for_tcp(port, std::time::Duration::from_secs(30)).await;
+                    wait_for_final_server(container.id()).await;
                     sender.send((container.id().to_owned(), port)).unwrap();
                     // Keeps the container alive for the whole process.
                     std::future::pending::<()>().await;

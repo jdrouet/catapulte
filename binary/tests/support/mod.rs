@@ -32,11 +32,23 @@ static RUN: LazyLock<String> = LazyLock::new(|| {
     let _watcher = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "while kill -0 {pid} 2>/dev/null; do sleep 1; done; \
-             for _ in 1 2 3; do \
-             ids=$(docker ps -aq --filter label={LABEL_KEY}={value}); \
-             [ -z \"$ids\" ] && exit 0; \
-             docker rm -f -v $ids >/dev/null 2>&1; sleep 1; done"
+            "while kill -0 {pid} 2>/dev/null; do sleep 1; done\n\
+             sleep 2\n\
+             empty=0\n\
+             for _ in $(seq 60); do\n\
+             if ids=$(docker ps -aq --filter label={LABEL_KEY}={value}); then\n\
+             if [ -z \"$ids\" ]; then\n\
+             empty=$((empty + 1))\n\
+             [ $empty -ge 2 ] && exit 0\n\
+             else\n\
+             empty=0\n\
+             docker rm -f -v $ids >/dev/null 2>&1\n\
+             fi\n\
+             else\n\
+             empty=0\n\
+             fi\n\
+             sleep 1\n\
+             done"
         ))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
