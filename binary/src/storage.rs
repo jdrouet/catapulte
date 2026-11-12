@@ -58,7 +58,7 @@ impl EmailRepository for StorageAdapter {
         id: EmailId,
         owner: &str,
         state: EnqueueState,
-    ) -> Result<(), EmailRepositoryError> {
+    ) -> Result<bool, EmailRepositoryError> {
         match self {
             Self::Sqlite(a) => a.set_enqueue_state(id, owner, state).await,
             Self::Postgres(a) => a.set_enqueue_state(id, owner, state).await,

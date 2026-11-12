@@ -457,8 +457,8 @@ mod tests {
             _: EmailId,
             _: &str,
             _: EnqueueState,
-        ) -> Result<(), EmailRepositoryError> {
-            Ok(())
+        ) -> Result<bool, EmailRepositoryError> {
+            Ok(true)
         }
 
         async fn delete(&self, _: EmailId) -> Result<(), EmailRepositoryError> {
@@ -502,8 +502,8 @@ mod tests {
             _: EmailId,
             _: &str,
             _: EnqueueState,
-        ) -> Result<(), EmailRepositoryError> {
-            Ok(())
+        ) -> Result<bool, EmailRepositoryError> {
+            Ok(true)
         }
 
         async fn delete(&self, _: EmailId) -> Result<(), EmailRepositoryError> {

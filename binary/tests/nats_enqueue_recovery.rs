@@ -23,6 +23,7 @@ use catapulte_domain::port::email_repository::{
     ListEmailsParams, SaveResult,
 };
 use catapulte_domain::port::event_publisher::EventPublisher;
+use catapulte_domain::port::event_repository::{EventRepository, ListEventsParams};
 use catapulte_domain::use_case::submit_email::{
     AttachmentInput, SubmitEmailInput, SubmitEmailService,
 };
@@ -52,7 +53,7 @@ impl EmailQueue for AckLosingQueue {
         id: EmailId,
         envelope: &Envelope,
     ) -> Result<EnqueueOutcome, EmailQueueError> {
-        self.inner.enqueue(id, envelope).await?;
+        let outcome = self.inner.enqueue(id, envelope).await?;
         self.publishes.fetch_add(1, Ordering::SeqCst);
         *self.last_envelope.lock().unwrap() = Some(envelope.clone());
         if self.lose_ack.swap(false, Ordering::SeqCst) {
@@ -60,7 +61,7 @@ impl EmailQueue for AckLosingQueue {
                 source: anyhow::anyhow!("injected: ack lost after a successful publish"),
             });
         }
-        Ok(EnqueueOutcome::Inserted)
+        Ok(outcome)
     }
 
     async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
@@ -116,7 +117,7 @@ impl EmailRepository for StateFailingRepository {
         id: EmailId,
         owner: &str,
         state: EnqueueState,
-    ) -> Result<(), EmailRepositoryError> {
+    ) -> Result<bool, EmailRepositoryError> {
         if state == EnqueueState::Enqueued && self.fail_enqueued.load(Ordering::SeqCst) {
             return Err(EmailRepositoryError::Storage {
                 source: anyhow::anyhow!("injected: enqueued state write failed"),
@@ -290,6 +291,24 @@ impl Harness {
             .unwrap()
     }
 
+    async fn queued_events(&self) -> usize {
+        self.events
+            .list_events(ListEventsParams {
+                owner: None,
+                email_id: None,
+                event_type: Some("queued".to_owned()),
+                sender_name: None,
+                error_class: None,
+                after_ms: None,
+                before_ms: None,
+                limit: 100,
+                offset: 0,
+            })
+            .await
+            .unwrap()
+            .len()
+    }
+
     /// True when a same-key save finds an already-enqueued row with nothing to replay.
     async fn row_is_enqueued(&self) -> bool {
         let probe = Envelope {
@@ -363,11 +382,18 @@ async fn failed_post_publish_state_write_retry_republishes_without_duplicating()
 
     let id = h.service.execute(input()).await.unwrap();
     assert!(!h.row_is_enqueued().await);
+    assert_eq!(
+        h.queued_events().await,
+        0,
+        "a failed state write announces nothing"
+    );
+    h.repo.fail_enqueued.store(false, Ordering::SeqCst);
     let again = h.service.execute(input()).await.unwrap();
 
     assert_eq!(again, id);
     assert_eq!(h.queue.publishes.load(Ordering::SeqCst), 2);
     assert_eq!(h.stream_messages().await, 1);
+    assert_eq!(h.queued_events().await, 1);
 }
 
 #[tokio::test]

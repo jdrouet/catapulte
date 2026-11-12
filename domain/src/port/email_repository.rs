@@ -82,6 +82,10 @@ pub trait EmailRepository: Send + Sync + 'static {
         attachments: &[AttachmentRef],
     ) -> impl std::future::Future<Output = Result<(), EmailRepositoryError>> + Send;
 
+    /// `Publishable` always returns `true`. `Enqueued` returns `true` only when this call moved
+    /// the state there and no worker event or delivery fence exists; it returns `false` when the
+    /// email was already enqueued or a worker has touched it.
+    ///
     /// # Errors
     ///
     /// Returns `EmailRepositoryError::Storage` if no row of `owner` matches or the
@@ -91,7 +95,7 @@ pub trait EmailRepository: Send + Sync + 'static {
         id: EmailId,
         owner: &str,
         state: EnqueueState,
-    ) -> impl std::future::Future<Output = Result<(), EmailRepositoryError>> + Send;
+    ) -> impl std::future::Future<Output = Result<bool, EmailRepositoryError>> + Send;
 
     /// # Errors
     ///

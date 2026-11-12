@@ -154,7 +154,7 @@ impl EmailQueue for NatsAdapter {
             .map_err(|e| publish_failure(PublishStage::Send, e))?;
         ack.await
             .map_err(|e| publish_failure(PublishStage::Ack, e))?;
-        Ok(EnqueueOutcome::Inserted)
+        Ok(EnqueueOutcome::Published)
     }
 
     async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {

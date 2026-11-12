@@ -67,7 +67,7 @@ impl EmailQueue for MemoryQueue {
                 source: anyhow::anyhow!("memory queue channel closed"),
             });
         }
-        Ok(EnqueueOutcome::Inserted)
+        Ok(EnqueueOutcome::Published)
     }
 
     async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {

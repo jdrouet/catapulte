@@ -88,6 +88,8 @@ pub enum EnqueueOutcome {
     /// An earlier call already enqueued the email, so nothing was added and the caller must
     /// not announce it again.
     AlreadyEnqueued,
+    /// Accepted by a queue that does not record the enqueue state; the caller confirms it.
+    Published,
 }
 
 pub trait EmailQueue: Send + Sync + 'static {

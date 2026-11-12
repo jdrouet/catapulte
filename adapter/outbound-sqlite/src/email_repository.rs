@@ -215,29 +215,54 @@ impl EmailRepository for SqliteAdapter {
         id: EmailId,
         owner: &str,
         state: EnqueueState,
-    ) -> Result<(), EmailRepositoryError> {
-        let value = match state {
-            EnqueueState::Publishable => "publishable",
-            EnqueueState::Enqueued => "enqueued",
+    ) -> Result<bool, EmailRepositoryError> {
+        let storage = |source| EmailRepositoryError::Storage { source };
+        let not_found = || EmailRepositoryError::Storage {
+            source: anyhow::anyhow!("email not found for set_enqueue_state: id={}", id.as_uuid()),
         };
-        let result =
-            sqlx::query("UPDATE emails SET enqueue_state = ? WHERE id = ? AND api_key = ?")
-                .bind(value)
-                .bind(id.as_uuid().as_bytes().to_vec())
-                .bind(owner)
-                .execute(self.pool())
-                .await
-                .context("updating enqueue_state")
-                .map_err(|source| EmailRepositoryError::Storage { source })?;
-        if result.rows_affected() == 0 {
-            return Err(EmailRepositoryError::Storage {
-                source: anyhow::anyhow!(
-                    "email not found for set_enqueue_state: id={}",
-                    id.as_uuid()
-                ),
-            });
+        if state == EnqueueState::Publishable {
+            let result = sqlx::query(
+                "UPDATE emails SET enqueue_state = 'publishable' WHERE id = ? AND api_key = ?",
+            )
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .bind(owner)
+            .execute(self.pool())
+            .await
+            .context("updating enqueue_state")
+            .map_err(storage)?;
+            return if result.rows_affected() == 0 {
+                Err(not_found())
+            } else {
+                Ok(true)
+            };
         }
-        Ok(())
+        let enqueued = sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(format!(
+            "UPDATE emails SET enqueue_state = 'enqueued' \
+             WHERE id = ?1 AND api_key = ?2 AND enqueue_state <> 'enqueued' \
+             RETURNING (delivery_started_at_ms IS NULL AND NOT EXISTS ( \
+                 SELECT 1 FROM lifecycle_events \
+                 WHERE email_id = emails.id AND event_type IN ({worker})))",
+            worker = sql_list(WORKER_EVENT_TYPES),
+        )))
+        .bind(id.as_uuid().as_bytes().to_vec())
+        .bind(owner)
+        .fetch_optional(self.pool())
+        .await
+        .context("updating enqueue_state")
+        .map_err(storage)?;
+        if let Some(announce) = enqueued {
+            return Ok(announce);
+        }
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM emails WHERE id = ?1 AND api_key = ?2)",
+        )
+        .bind(id.as_uuid().as_bytes().to_vec())
+        .bind(owner)
+        .fetch_one(self.pool())
+        .await
+        .context("checking the email exists")
+        .map_err(storage)?;
+        if exists { Ok(false) } else { Err(not_found()) }
     }
 
     async fn set_attachments(
@@ -2038,5 +2063,96 @@ mod tests {
         };
         assert_eq!(replayed.tags, envelope.tags);
         assert_eq!(replayed.metadata, envelope.metadata);
+    }
+
+    #[tokio::test]
+    async fn enqueued_transition_announces_once() {
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+
+        assert!(
+            adapter
+                .set_enqueue_state(id, "", EnqueueState::Enqueued)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !adapter
+                .set_enqueue_state(id, "", EnqueueState::Enqueued)
+                .await
+                .unwrap()
+        );
+        assert_eq!(state_of(&adapter, id).await, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn enqueued_transition_with_a_worker_event_does_not_announce() {
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+        add_event(&adapter, id, "sending").await;
+
+        let announce = adapter
+            .set_enqueue_state(id, "", EnqueueState::Enqueued)
+            .await
+            .unwrap();
+
+        assert!(!announce);
+        assert_eq!(state_of(&adapter, id).await, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn enqueued_transition_with_a_delivery_fence_does_not_announce() {
+        use catapulte_domain::port::email_repository::EmailCancellation;
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+        adapter.start_delivery(id).await.unwrap();
+
+        let announce = adapter
+            .set_enqueue_state(id, "", EnqueueState::Enqueued)
+            .await
+            .unwrap();
+
+        assert!(!announce);
+        assert_eq!(state_of(&adapter, id).await, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn enqueued_transition_ignores_informational_events() {
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+        add_event(&adapter, id, "queued").await;
+
+        assert!(
+            adapter
+                .set_enqueue_state(id, "", EnqueueState::Enqueued)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn set_enqueue_state_on_a_missing_row_is_an_error() {
+        let adapter = fresh_adapter().await;
+
+        for state in [EnqueueState::Publishable, EnqueueState::Enqueued] {
+            let result = adapter
+                .set_enqueue_state(EmailId::default(), "", state)
+                .await;
+            assert!(matches!(result, Err(EmailRepositoryError::Storage { .. })));
+        }
+    }
+
+    #[tokio::test]
+    async fn publishable_transition_is_unconditional() {
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Enqueued)).await;
+
+        assert!(
+            adapter
+                .set_enqueue_state(id, "", EnqueueState::Publishable)
+                .await
+                .unwrap()
+        );
+        assert_eq!(state_of(&adapter, id).await, "publishable");
     }
 }
