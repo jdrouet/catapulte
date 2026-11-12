@@ -49,8 +49,8 @@ a cancel guarded by the same row locks. The subsections below record each decisi
 The storage queue (SQLite or PostgreSQL) holds scheduled emails. A queue row is claimable only
 when its availability time has passed. Support depends on the queue adapter, not on the
 storage backend: a deployment with `QueueAdapter::Sqlite` or `QueueAdapter::Postgres`
-supports scheduling. NATS and memory queue deployments reject `send_at_ms` with 422. NATS
-support is left to a later decision on JetStream schedules.
+supports scheduling. NATS and memory queue deployments reject `send_at_ms` with 422 (amended
+by 202611121500). NATS support is left to a later decision on JetStream schedules.
 
 ### (b) Durable, once-only enqueue
 
@@ -253,6 +253,10 @@ empty claims complete in under 100 ms.
   a cancelled email never arrives, and that NATS and memory deployments reject scheduling.
 
 ## More Information
+
+Decision (a), which deployments support scheduling, and decision (c), Cancel, are amended by
+"Scheduled sends on the NATS and memory queues" (202611121500). NATS and memory now support
+scheduling, the cancel commit rule is relaxed, and a delivery fence is added.
 
 The design answers the concerns raised against earlier drafts.
 

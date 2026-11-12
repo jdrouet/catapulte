@@ -250,9 +250,11 @@ before `send_at_ms` on the clock of the node that claims it. Delivery can be lat
   with a `queued` event. An older time returns `400`.
 - A time further ahead than `CATAPULTE_MAX_SCHEDULE_AHEAD_SECS` (default 30 days)
   returns `400`. In a batch the item is `rejected`.
-- Scheduling needs a storage-backed queue (SQLite or PostgreSQL). With the NATS or
-  in-memory queue the request returns `422` with `scheduled sends are not available on
-  this queue backend`. Over NATS inbound, both errors are acknowledged and discarded.
+- All queues support scheduling. The memory queue loses scheduled emails on restart. A NATS
+  queue needs server 2.12 or later and a suitable stream; otherwise the request returns
+  `422` with `scheduled sends are not available on this queue backend`. On NATS the stream
+  `max_age` can lower the horizon. See the readme for the requirements. Over NATS inbound,
+  both errors are acknowledged and discarded.
 - The sender allow-list is checked at submit (and again when a retry recovers the email),
   not by the worker. Suppressions are checked at submit and again at send time. The
   template and sender quotas are evaluated at send time. Attachments are stored at submit
@@ -267,11 +269,12 @@ before `send_at_ms` on the clock of the node that claims it. Delivery can be lat
 
 #### Cancelling a scheduled email
 
-`POST /emails/{id}/cancel` withdraws a scheduled email. After a `204`, no worker has
-claimed the email and none will: nothing is sent. Only emails submitted with `send_at_ms`
-can be cancelled, and only until a worker claims them (including once the time has come
-and a worker picks it up). The call is scoped like the list routes: you can cancel your own
-emails, and an admin key can cancel any email.
+`POST /emails/{id}/cancel` withdraws a scheduled email. A successful cancel (`204`) means
+the email is never sent. On the NATS and memory queues the queued message stays in place
+and a worker drops it when it comes due. Only emails submitted with `send_at_ms` can be
+cancelled, and only until a worker starts delivering them, which can happen once the time
+has come. The call is scoped like the list routes: you can cancel your own emails, and an
+admin key can cancel any email.
 
 | Status | When |
 |--------|------|
@@ -608,7 +611,7 @@ Errors return a minimal JSON body (details are logged server-side, not returned)
 | `401` | missing/invalid bearer token |
 | `403` | the sender's domain is not in the operator's `CATAPULTE_ALLOWED_SENDER_DOMAINS` list (exact domain match, no subdomains), including an idempotent retry whose sender is no longer allowed, or one that would republish a stored original whose sender is no longer allowed; in a batch the item is rejected instead |
 | `409` | idempotency key matches a submission that never completed; retry later |
-| `422` | every recipient is on the suppression list, or `send_at_ms` was given on a queue backend that cannot schedule |
+| `422` | every recipient is on the suppression list, or `send_at_ms` was given on a queue that cannot schedule (a NATS queue below 2.12 or with an unsuitable stream) |
 | `500` | storage / queue / attachment-store failure |
 
 ## Limits

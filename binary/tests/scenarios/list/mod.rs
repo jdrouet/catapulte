@@ -11,5 +11,4 @@ pub mod list_unsubscribe;
 pub mod mjml_inline_renders_with_variables;
 pub mod plain_email;
 pub mod reply_to_and_headers;
-pub mod scheduled_send_rejected_without_storage_queue;
 pub mod scheduled_send_waits_for_send_at;

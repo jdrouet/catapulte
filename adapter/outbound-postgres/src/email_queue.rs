@@ -73,6 +73,29 @@ pub(crate) fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Enve
     })
 }
 
+/// How long a claim holds a row before another worker may take it.
+const CLAIM_LEASE_MS: i64 = 300_000;
+
+/// The token is the queue entry id followed by the attempt count the claim set. That count
+/// changes on every claim, so a renewal can tell its own claim from a later one.
+fn claim_token(entry_id: uuid::Uuid, attempt: u32) -> AckToken {
+    let mut bytes = entry_id.as_bytes().to_vec();
+    bytes.extend_from_slice(&attempt.to_be_bytes());
+    AckToken::new(bytes)
+}
+
+fn token_parts(token: &AckToken) -> Result<(uuid::Uuid, u32), EmailQueueError> {
+    let storage = |source| EmailQueueError::Storage { source };
+    let (id, attempt) = token
+        .0
+        .split_last_chunk::<4>()
+        .ok_or_else(|| storage(anyhow::anyhow!("invalid queue token")))?;
+    let id = uuid::Uuid::from_slice(id)
+        .context("invalid queue token")
+        .map_err(storage)?;
+    Ok((id, u32::from_be_bytes(*attempt)))
+}
+
 /// Selects and locks the due row with the earliest availability time.
 const CLAIM_SELECT: &str = "SELECT id, email_id, attempt_count, trace_context FROM email_queue \
      WHERE claimed_until <= $1 \
@@ -170,8 +193,7 @@ impl PostgresAdapter {
         };
 
         let new_attempt = current_attempt + 1;
-        let processing_timeout_ms: i64 = 300_000;
-        let claim_until = now + processing_timeout_ms;
+        let claim_until = now + CLAIM_LEASE_MS;
 
         sqlx::query(
             "UPDATE email_queue SET claimed_until = $1, attempt_count = attempt_count + 1 WHERE id = $2",
@@ -213,7 +235,7 @@ impl PostgresAdapter {
                     .map_err(|source| EmailQueueError::Storage { source })?;
                 let envelope =
                     parse_envelope(&row).map_err(|source| EmailQueueError::Storage { source })?;
-                let token = AckToken::new(entry_id.as_bytes().to_vec());
+                let token = claim_token(entry_id, new_attempt);
                 let trace = deserialize_trace_context(trace_raw);
                 Ok(Some(DequeuedEmail {
                     id: EmailId::from(email_id_uuid),
@@ -323,9 +345,7 @@ impl EmailQueue for PostgresAdapter {
     }
 
     async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
-        let entry_id = uuid::Uuid::from_slice(&token.0)
-            .context("invalid ack token")
-            .map_err(|source| EmailQueueError::Storage { source })?;
+        let (entry_id, _) = token_parts(&token)?;
         sqlx::query("DELETE FROM email_queue WHERE id = $1")
             .bind(entry_id)
             .execute(self.pool())
@@ -339,9 +359,7 @@ impl EmailQueue for PostgresAdapter {
         let now_ms = now_ms();
         let delay_ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
         let claimed_until = now_ms.saturating_add(delay_ms);
-        let entry_id = uuid::Uuid::from_slice(&token.0)
-            .context("invalid nack token")
-            .map_err(|source| EmailQueueError::Storage { source })?;
+        let (entry_id, _) = token_parts(&token)?;
         sqlx::query("UPDATE email_queue SET claimed_until = $1 WHERE id = $2")
             .bind(claimed_until)
             .bind(entry_id)
@@ -350,6 +368,32 @@ impl EmailQueue for PostgresAdapter {
             .context("nacking email_queue entry")
             .map_err(|source| EmailQueueError::Storage { source })?;
         Ok(())
+    }
+
+    async fn in_progress(&self, token: &AckToken) -> Result<(), EmailQueueError> {
+        let (entry_id, attempt) = token_parts(token)?;
+        let renewed = sqlx::query(
+            "UPDATE email_queue SET claimed_until = $1 WHERE id = $2 AND attempt_count = $3",
+        )
+        .bind(now_ms().saturating_add(CLAIM_LEASE_MS))
+        .bind(entry_id)
+        .bind(i32::try_from(attempt).unwrap_or(i32::MAX))
+        .execute(self.pool())
+        .await
+        .context("extending the email_queue claim")
+        .map_err(|source| EmailQueueError::Storage { source })?
+        .rows_affected();
+        if renewed == 1 {
+            Ok(())
+        } else {
+            Err(EmailQueueError::Storage {
+                source: anyhow::anyhow!("the claim is no longer held"),
+            })
+        }
+    }
+
+    fn renew_interval(&self) -> Duration {
+        Duration::from_millis(CLAIM_LEASE_MS.unsigned_abs() / 3)
     }
 }
 
@@ -1451,5 +1495,308 @@ mod tests {
         })
         .await
         .expect("test timed out");
+    }
+
+    async fn bare_scheduled_email(adapter: &PostgresAdapter, key: Option<&str>) -> EmailId {
+        let id = EmailId::default();
+        let mut envelope = sample_envelope();
+        envelope.send_at_ms = Some(in_an_hour());
+        envelope.idempotency_key = key.map(str::to_owned);
+        adapter.save(id, &envelope).await.unwrap();
+        adapter
+            .set_enqueue_state(id, "", EnqueueState::Enqueued)
+            .await
+            .unwrap();
+        id
+    }
+
+    async fn delivery_started_at(adapter: &PostgresAdapter, id: EmailId) -> Option<i64> {
+        sqlx::query_scalar("SELECT delivery_started_at_ms FROM emails WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn start_delivery_is_repeatable_and_keeps_the_first_timestamp() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+        let id = bare_scheduled_email(&adapter, None).await;
+
+        assert_eq!(
+            adapter.start_delivery(id).await.unwrap(),
+            DeliveryStart::Proceed
+        );
+        let first = delivery_started_at(&adapter, id).await;
+        assert!(first.is_some());
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        assert_eq!(
+            adapter.start_delivery(id).await.unwrap(),
+            DeliveryStart::Proceed
+        );
+
+        assert_eq!(delivery_started_at(&adapter, id).await, first);
+    }
+
+    #[tokio::test]
+    async fn start_delivery_proceeds_for_a_missing_email() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+
+        assert_eq!(
+            adapter.start_delivery(EmailId::default()).await.unwrap(),
+            DeliveryStart::Proceed
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_and_delivery_start_race_has_exactly_one_winner() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+        let (mut cancels, mut starts) = (0, 0);
+        for i in 0..50 {
+            let id = scheduled_email(&adapter, "", in_an_hour()).await;
+            let cancel = |adapter: PostgresAdapter| {
+                tokio::spawn(async move { adapter.cancel(id, Some("")).await })
+            };
+            let start = |adapter: PostgresAdapter| {
+                tokio::spawn(async move { adapter.start_delivery(id).await })
+            };
+            let (cancel_task, start_task) = if i % 2 == 0 {
+                let c = cancel(adapter.clone());
+                (c, start(adapter.clone()))
+            } else {
+                let s = start(adapter.clone());
+                (cancel(adapter.clone()), s)
+            };
+            let cancelled = matches!(
+                cancel_task.await.unwrap().unwrap(),
+                CancelOutcome::Cancelled { .. }
+            );
+            let proceeded = start_task.await.unwrap().unwrap() == DeliveryStart::Proceed;
+            assert_ne!(cancelled, proceeded, "exactly one side must win");
+            if cancelled {
+                cancels += 1;
+                assert_eq!(delivery_started_at(&adapter, id).await, None);
+            } else {
+                starts += 1;
+                assert_eq!(cancelled_at(&adapter, id).await, None);
+            }
+        }
+        eprintln!("race results: cancel won {cancels}, delivery start won {starts}");
+    }
+
+    #[tokio::test]
+    async fn a_delivery_fence_is_worker_evidence_for_a_publishable_duplicate() {
+        use catapulte_domain::port::email_repository::EmailCancellation;
+        let adapter = fresh_adapter().await;
+        let id = bare_scheduled_email(&adapter, Some("k")).await;
+        adapter
+            .set_enqueue_state(id, "", EnqueueState::Publishable)
+            .await
+            .unwrap();
+        adapter.start_delivery(id).await.unwrap();
+        let mut envelope = sample_envelope();
+        envelope.idempotency_key = Some("k".to_owned());
+
+        let result = adapter.save(EmailId::default(), &envelope).await.unwrap();
+
+        let SaveResult::Duplicate {
+            id: existing,
+            state,
+            recovery,
+        } = result
+        else {
+            panic!("expected a duplicate");
+        };
+        assert_eq!(existing, id);
+        assert_eq!(state, DuplicateState::Complete);
+        assert!(recovery.is_none());
+        let stored: String = sqlx::query_scalar("SELECT enqueue_state FROM emails WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+        assert_eq!(stored, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn a_publishable_duplicate_without_a_fence_recovers_with_its_send_at() {
+        let adapter = fresh_adapter().await;
+        let id = bare_scheduled_email(&adapter, Some("k")).await;
+        adapter
+            .set_enqueue_state(id, "", EnqueueState::Publishable)
+            .await
+            .unwrap();
+        let mut envelope = sample_envelope();
+        envelope.idempotency_key = Some("k".to_owned());
+
+        let result = adapter.save(EmailId::default(), &envelope).await.unwrap();
+
+        let SaveResult::Duplicate { recovery, .. } = result else {
+            panic!("expected a duplicate");
+        };
+        assert!(recovery.unwrap().send_at_ms.is_some());
+    }
+
+    async fn claim_state(
+        adapter: &PostgresAdapter,
+        token: &catapulte_domain::port::email_queue::AckToken,
+    ) -> (i64, i64) {
+        sqlx::query_as("SELECT claimed_until, attempt_count::BIGINT FROM email_queue WHERE id = $1")
+            .bind(super::token_parts(token).unwrap().0)
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn expire_claim(
+        adapter: &PostgresAdapter,
+        token: &catapulte_domain::port::email_queue::AckToken,
+    ) {
+        sqlx::query("UPDATE email_queue SET claimed_until = 1 WHERE id = $1")
+            .bind(super::token_parts(token).unwrap().0)
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn in_progress_extends_the_claim_and_keeps_the_attempt() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let token = adapter.try_dequeue().await.unwrap().unwrap().token;
+        expire_claim(&adapter, &token).await;
+
+        adapter.in_progress(&token).await.unwrap();
+
+        let (claimed_until, attempts) = claim_state(&adapter, &token).await;
+        assert!(claimed_until >= super::now_ms() + 299_000);
+        assert_eq!(attempts, 1);
+        assert_eq!(
+            adapter.renew_interval(),
+            std::time::Duration::from_secs(100)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_renewed_claim_cannot_be_taken_by_another_worker() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let token = adapter.try_dequeue().await.unwrap().unwrap().token;
+        expire_claim(&adapter, &token).await;
+        adapter.in_progress(&token).await.unwrap();
+
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stale_claim_cannot_renew_a_row_another_worker_took() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let first = adapter.try_dequeue().await.unwrap().unwrap().token;
+        expire_claim(&adapter, &first).await;
+        let second = adapter.try_dequeue().await.unwrap().unwrap().token;
+        let before = claim_state(&adapter, &second).await;
+
+        let result = adapter.in_progress(&first).await;
+
+        assert!(matches!(result, Err(EmailQueueError::Storage { .. })));
+        assert_eq!(claim_state(&adapter, &second).await, before);
+        adapter.in_progress(&second).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_acked_claim_cannot_renew() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let token = adapter.try_dequeue().await.unwrap().unwrap().token;
+        adapter.ack(token.clone()).await.unwrap();
+
+        let result = adapter.in_progress(&token).await;
+
+        assert!(matches!(result, Err(EmailQueueError::Storage { .. })));
+    }
+
+    #[tokio::test]
+    async fn an_unrenewed_expired_claim_is_taken_again() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let token = adapter.try_dequeue().await.unwrap().unwrap().token;
+        expire_claim(&adapter, &token).await;
+
+        assert_eq!(adapter.try_dequeue().await.unwrap().unwrap().attempt, 2);
+    }
+
+    #[tokio::test]
+    async fn without_a_queue_row_cancel_wins_then_delivery_is_dropped() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+        let id = bare_scheduled_email(&adapter, None).await;
+
+        let outcome = adapter.cancel(id, Some("")).await.unwrap();
+
+        assert!(matches!(outcome, CancelOutcome::Cancelled { .. }));
+        assert_eq!(
+            adapter.start_delivery(id).await.unwrap(),
+            DeliveryStart::Cancelled
+        );
+        assert_eq!(delivery_started_at(&adapter, id).await, None);
+    }
+
+    #[tokio::test]
+    async fn without_a_queue_row_delivery_start_blocks_the_cancel() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+        let id = bare_scheduled_email(&adapter, None).await;
+
+        assert_eq!(
+            adapter.start_delivery(id).await.unwrap(),
+            DeliveryStart::Proceed
+        );
+
+        assert_eq!(
+            adapter.cancel(id, Some("")).await.unwrap(),
+            CancelOutcome::NotCancellable
+        );
+        assert_eq!(cancelled_at(&adapter, id).await, None);
+    }
+
+    #[tokio::test]
+    async fn cancel_and_delivery_start_race_without_a_queue_row_has_exactly_one_winner() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+        let (mut cancels, mut starts) = (0, 0);
+        for i in 0..50 {
+            let id = bare_scheduled_email(&adapter, None).await;
+            let cancel = |adapter: PostgresAdapter| {
+                tokio::spawn(async move { adapter.cancel(id, Some("")).await })
+            };
+            let start = |adapter: PostgresAdapter| {
+                tokio::spawn(async move { adapter.start_delivery(id).await })
+            };
+            let (cancel_task, start_task) = if i % 2 == 0 {
+                let c = cancel(adapter.clone());
+                (c, start(adapter.clone()))
+            } else {
+                let s = start(adapter.clone());
+                (cancel(adapter.clone()), s)
+            };
+            let cancelled = matches!(
+                cancel_task.await.unwrap().unwrap(),
+                CancelOutcome::Cancelled { .. }
+            );
+            let proceeded = start_task.await.unwrap().unwrap() == DeliveryStart::Proceed;
+            assert_ne!(cancelled, proceeded, "exactly one side must win");
+            if cancelled {
+                cancels += 1;
+                assert_eq!(delivery_started_at(&adapter, id).await, None);
+            } else {
+                starts += 1;
+                assert_eq!(cancelled_at(&adapter, id).await, None);
+            }
+        }
+        eprintln!("race results: cancel won {cancels}, delivery start won {starts}");
     }
 }

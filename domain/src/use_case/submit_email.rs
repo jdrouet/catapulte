@@ -385,13 +385,17 @@ where
             return Err(SubmitEmailError::SchedulingUnavailable);
         };
         let now = self.clock.now_ms();
-        let horizon_ms = i64::try_from(horizon.as_millis()).unwrap_or(i64::MAX);
         if send_at < now.saturating_sub(SEND_AT_PAST_TOLERANCE_MS)
-            || send_at > now.saturating_add(horizon_ms)
+            || self.beyond_horizon(send_at, horizon)
         {
             return Err(SubmitEmailError::SendAtOutOfRange);
         }
         Ok(())
+    }
+
+    fn beyond_horizon(&self, send_at_ms: i64, horizon: Duration) -> bool {
+        let horizon_ms = i64::try_from(horizon.as_millis()).unwrap_or(i64::MAX);
+        send_at_ms > self.clock.now_ms().saturating_add(horizon_ms)
     }
 
     /// Handles a submission whose idempotency key already exists. A recovery republish is
@@ -408,34 +412,48 @@ where
         }
         if let Some(envelope) = recovery {
             self.check_sender_allowed(&envelope.sender, caller_domains)?;
-            // An overdue time is enqueued as is; a future one needs a queue that can delay it.
-            if self.limits.max_schedule_ahead.is_none()
-                && envelope.send_at_ms.is_some_and(|t| t > self.clock.now_ms())
-            {
-                return Err(SubmitEmailError::SchedulingUnavailable);
+            // An overdue time is enqueued as is; a future one needs a queue that can delay it,
+            // that far ahead.
+            if let Some(send_at) = envelope.send_at_ms.filter(|t| *t > self.clock.now_ms()) {
+                let horizon = self
+                    .limits
+                    .max_schedule_ahead
+                    .ok_or(SubmitEmailError::SchedulingUnavailable)?;
+                if self.beyond_horizon(send_at, horizon) {
+                    return Err(SubmitEmailError::SendAtOutOfRange);
+                }
             }
-            if self.queue.enqueue(id, &envelope).await? == EnqueueOutcome::Inserted {
-                self.mark_enqueued_and_announce(id, &envelope).await;
-            }
+            let outcome = self.queue.enqueue(id, &envelope).await?;
+            self.announce_enqueue(outcome, id, &envelope).await;
         }
         Ok(id)
     }
 
-    /// Records the confirmed publish and emits `queued` (or `scheduled` for a future send time). A failed state write is only
-    /// logged: the row stays `publishable` and a same-key retry republishes, deduplicated
-    /// by the queue.
-    async fn mark_enqueued_and_announce(&self, id: EmailId, envelope: &Envelope) {
-        if let Err(e) = self
-            .repository
-            .set_enqueue_state(id, &envelope.owner, EnqueueState::Enqueued)
-            .await
-        {
-            tracing::warn!(
-                error = %error_chain(&e),
-                email_id = %id.as_uuid(),
-                "failed to record enqueued state"
-            );
+    /// Announces an enqueue once. `Inserted` already recorded the state; for `Published` the
+    /// state write decides, and only a `true` result announces. A failed write announces
+    /// nothing and a same-key retry republishes.
+    async fn announce_enqueue(&self, outcome: EnqueueOutcome, id: EmailId, envelope: &Envelope) {
+        match outcome {
+            EnqueueOutcome::Inserted => self.announce_queued(id, envelope).await,
+            EnqueueOutcome::AlreadyEnqueued => {}
+            EnqueueOutcome::Published => match self
+                .repository
+                .set_enqueue_state(id, &envelope.owner, EnqueueState::Enqueued)
+                .await
+            {
+                Ok(true) => self.announce_queued(id, envelope).await,
+                Ok(false) => {}
+                Err(e) => tracing::warn!(
+                    error = %error_chain(&e),
+                    email_id = %id.as_uuid(),
+                    "failed to record enqueued state"
+                ),
+            },
         }
+    }
+
+    /// Emits `queued`, or `scheduled` for a future send time.
+    async fn announce_queued(&self, id: EmailId, envelope: &Envelope) {
         let context = envelope.event_context();
         let event = match envelope.send_at_ms {
             Some(send_at_ms) if send_at_ms > self.clock.now_ms() => LifecycleEvent::Scheduled {
@@ -684,9 +702,7 @@ where
 
         match self.queue.enqueue(id, &envelope).await {
             Ok(outcome) => {
-                if outcome == EnqueueOutcome::Inserted {
-                    self.mark_enqueued_and_announce(id, &envelope).await;
-                }
+                self.announce_enqueue(outcome, id, &envelope).await;
                 self.announce_suppressed(id, &envelope, dropped).await;
             }
             // The message may be queued: keep the row and blobs so a retry can republish it.
@@ -833,8 +849,8 @@ mod tests {
             _id: EmailId,
             _owner: &str,
             _state: EnqueueState,
-        ) -> Result<(), EmailRepositoryError> {
-            Ok(())
+        ) -> Result<bool, EmailRepositoryError> {
+            Ok(true)
         }
 
         async fn list_all_attachment_blobs(
@@ -886,8 +902,8 @@ mod tests {
             _id: EmailId,
             _owner: &str,
             _state: EnqueueState,
-        ) -> Result<(), EmailRepositoryError> {
-            Ok(())
+        ) -> Result<bool, EmailRepositoryError> {
+            Ok(true)
         }
 
         async fn list_all_attachment_blobs(
@@ -939,8 +955,8 @@ mod tests {
             _id: EmailId,
             _owner: &str,
             _state: EnqueueState,
-        ) -> Result<(), EmailRepositoryError> {
-            Ok(())
+        ) -> Result<bool, EmailRepositoryError> {
+            Ok(true)
         }
 
         async fn list_all_attachment_blobs(
@@ -965,6 +981,17 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for FakeQueue {
+        async fn in_progress(
+            &self,
+            _token: &crate::port::email_queue::AckToken,
+        ) -> Result<(), EmailQueueError> {
+            unimplemented!()
+        }
+
+        fn renew_interval(&self) -> std::time::Duration {
+            unimplemented!()
+        }
+
         async fn enqueue(
             &self,
             id: EmailId,
@@ -1000,6 +1027,17 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for FailingQueue {
+        async fn in_progress(
+            &self,
+            _token: &crate::port::email_queue::AckToken,
+        ) -> Result<(), EmailQueueError> {
+            unimplemented!()
+        }
+
+        fn renew_interval(&self) -> std::time::Duration {
+            unimplemented!()
+        }
+
         async fn enqueue(
             &self,
             _id: EmailId,
@@ -1517,6 +1555,8 @@ mod tests {
         /// Applies the `publishable` state, then reports failure.
         fail_publishable_after_commit: Arc<std::sync::atomic::AtomicBool>,
         fail_enqueued: Arc<std::sync::atomic::AtomicBool>,
+        /// Models a worker event or delivery fence stored for every email.
+        worker_evidence: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl KeyedRepository {
@@ -1527,6 +1567,7 @@ mod tests {
                 fail_publishable: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 fail_publishable_after_commit: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 fail_enqueued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                worker_evidence: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }
         }
 
@@ -1591,7 +1632,7 @@ mod tests {
             id: EmailId,
             owner: &str,
             state: EnqueueState,
-        ) -> Result<(), EmailRepositoryError> {
+        ) -> Result<bool, EmailRepositoryError> {
             use std::sync::atomic::Ordering::SeqCst;
             let (fail, new_state) = match state {
                 EnqueueState::Publishable => (&self.fail_publishable, RowState::Publishable),
@@ -1603,19 +1644,24 @@ mod tests {
                 });
             }
             let mut rows = self.rows.lock().unwrap();
-            if let Some(row) = rows
+            let Some(row) = rows
                 .iter_mut()
                 .find(|r| r.id == id && r.envelope.owner == owner)
-            {
-                row.state = new_state;
-            }
+            else {
+                return Err(EmailRepositoryError::Storage {
+                    source: anyhow::anyhow!("email not found"),
+                });
+            };
+            let was_enqueued = row.state == RowState::Enqueued;
+            row.state = new_state;
             if state == EnqueueState::Publishable && self.fail_publishable_after_commit.load(SeqCst)
             {
                 return Err(EmailRepositoryError::Storage {
                     source: anyhow::anyhow!("state write failed after commit"),
                 });
             }
-            Ok(())
+            Ok(state == EnqueueState::Publishable
+                || (!was_enqueued && !self.worker_evidence.load(SeqCst)))
         }
 
         async fn delete(&self, id: EmailId) -> Result<(), EmailRepositoryError> {
@@ -1643,6 +1689,10 @@ mod tests {
         calls: QueueCalls,
         script: Arc<Mutex<std::collections::VecDeque<bool>>>,
         already_enqueued: Arc<std::sync::atomic::AtomicBool>,
+        /// Reports `Published`, like a queue that does not track the enqueue state.
+        published: Arc<std::sync::atomic::AtomicBool>,
+        /// Rows an `Inserted` outcome marks enqueued, like the storage queue's own transaction.
+        rows: Arc<Mutex<Option<KeyedRows>>>,
     }
 
     impl ScriptedQueue {
@@ -1652,12 +1702,25 @@ mod tests {
                 calls: Arc::new(Mutex::new(Vec::new())),
                 script: Arc::new(Mutex::new(script.iter().copied().collect())),
                 already_enqueued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                published: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                rows: Arc::new(Mutex::new(None)),
             }
         }
     }
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for ScriptedQueue {
+        async fn in_progress(
+            &self,
+            _token: &crate::port::email_queue::AckToken,
+        ) -> Result<(), EmailQueueError> {
+            unimplemented!()
+        }
+
+        fn renew_interval(&self) -> std::time::Duration {
+            unimplemented!()
+        }
+
         async fn enqueue(
             &self,
             id: EmailId,
@@ -1674,7 +1737,17 @@ mod tests {
                 {
                     Ok(EnqueueOutcome::AlreadyEnqueued)
                 }
-                None => Ok(EnqueueOutcome::Inserted),
+                None if self.published.load(std::sync::atomic::Ordering::SeqCst) => {
+                    Ok(EnqueueOutcome::Published)
+                }
+                None => {
+                    if let Some(rows) = &*self.rows.lock().unwrap()
+                        && let Some(row) = rows.lock().unwrap().iter_mut().find(|r| r.id == id)
+                    {
+                        row.state = RowState::Enqueued;
+                    }
+                    Ok(EnqueueOutcome::Inserted)
+                }
                 Some(true) => Err(EmailQueueError::Uncertain {
                     source: anyhow::anyhow!("ack lost"),
                 }),
@@ -1718,6 +1791,7 @@ mod tests {
         FakeAttachmentStore,
         FakeFetcher,
     > {
+        *queue.rows.lock().unwrap() = Some(repo.rows.clone());
         SubmitEmailService::new(
             repo.clone(),
             queue.clone(),
@@ -1873,6 +1947,66 @@ mod tests {
         assert_eq!(queued_count(&events), 0);
     }
 
+    fn set(flag: &Arc<std::sync::atomic::AtomicBool>, value: bool) {
+        flag.store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[tokio::test]
+    async fn a_second_published_announce_after_recovery_is_a_no_op() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[true]);
+        let events = FakeEventPublisher::new();
+        let service = service_with(&repo, &queue, &events, &FakeAttachmentStore::new());
+        service.execute(keyed_input("k", 10)).await.unwrap_err();
+        set(&queue.published, true);
+
+        let id = service.execute(keyed_input("k", 10)).await.unwrap();
+
+        assert_eq!(queued_count(&events), 1);
+        assert_eq!(repo.states(), vec![RowState::Enqueued]);
+        set(&repo.worker_evidence, true);
+        let envelope = repo.rows.lock().unwrap()[0].envelope.clone();
+        service
+            .announce_enqueue(EnqueueOutcome::Published, id, &envelope)
+            .await;
+        assert_eq!(queued_count(&events), 1);
+    }
+
+    #[tokio::test]
+    async fn published_with_worker_evidence_confirms_the_state_without_announcing() {
+        let repo = KeyedRepository::new();
+        let queue = ScriptedQueue::failing(&[true]);
+        let events = FakeEventPublisher::new();
+        let service = service_with(&repo, &queue, &events, &FakeAttachmentStore::new());
+        service.execute(keyed_input("k", 10)).await.unwrap_err();
+        set(&queue.published, true);
+        set(&repo.worker_evidence, true);
+
+        service.execute(keyed_input("k", 10)).await.unwrap();
+
+        assert_eq!(queued_count(&events), 0);
+        assert_eq!(repo.states(), vec![RowState::Enqueued]);
+    }
+
+    #[tokio::test]
+    async fn published_with_a_failed_state_write_announces_only_on_the_retry() {
+        let repo = KeyedRepository::new();
+        set(&repo.fail_enqueued, true);
+        let queue = ScriptedQueue::failing(&[]);
+        set(&queue.published, true);
+        let events = FakeEventPublisher::new();
+        let service = service_with(&repo, &queue, &events, &FakeAttachmentStore::new());
+
+        service.execute(keyed_input("k", 10)).await.unwrap();
+        assert_eq!(queued_count(&events), 0);
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+        set(&repo.fail_enqueued, false);
+        service.execute(keyed_input("k", 10)).await.unwrap();
+
+        assert_eq!(queued_count(&events), 1);
+        assert_eq!(repo.states(), vec![RowState::Enqueued]);
+    }
+
     #[tokio::test]
     async fn already_enqueued_submit_returns_the_id_without_announcing() {
         let repo = KeyedRepository::new();
@@ -1896,6 +2030,7 @@ mod tests {
         repo.fail_enqueued
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let queue = ScriptedQueue::failing(&[]);
+        set(&queue.published, true);
         let service = service_with(
             &repo,
             &queue,
@@ -2969,5 +3104,47 @@ mod tests {
         let id = later.execute(scheduled_input("k", None)).await.unwrap();
         assert_eq!(id, repo.rows.lock().unwrap()[0].id);
         assert_eq!(repo.states(), vec![RowState::Enqueued]);
+    }
+
+    #[tokio::test]
+    async fn a_stored_time_beyond_the_horizon_is_not_recovered() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[true]),
+            FakeEventPublisher::new(),
+        );
+        scheduled_service(&repo, &queue, &events, NOW, Some(HOUR * 2))
+            .execute(scheduled_input("k", Some(NOW + 7_200_000)))
+            .await
+            .unwrap_err();
+        let narrower = scheduled_service(&repo, &queue, &events, NOW, Some(HOUR));
+
+        let err = narrower
+            .execute(scheduled_input("k", None))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SubmitEmailError::SendAtOutOfRange));
+        assert_eq!(queue.calls.lock().unwrap().len(), 1, "nothing enqueued");
+        assert_eq!(repo.states(), vec![RowState::Publishable]);
+    }
+
+    #[tokio::test]
+    async fn a_stored_time_within_the_horizon_is_recovered_with_its_send_at() {
+        let (repo, queue, events) = (
+            KeyedRepository::new(),
+            ScriptedQueue::failing(&[true]),
+            FakeEventPublisher::new(),
+        );
+        let service = scheduled_service(&repo, &queue, &events, NOW, Some(HOUR));
+        service
+            .execute(scheduled_input("k", Some(NOW + 1_800_000)))
+            .await
+            .unwrap_err();
+
+        service.execute(scheduled_input("k", None)).await.unwrap();
+
+        assert_eq!(queue.calls.lock().unwrap().len(), 2);
+        assert_eq!(scheduled_events(&events), vec![NOW + 1_800_000]);
     }
 }

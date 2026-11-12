@@ -301,6 +301,16 @@ impl AppConfig {
             .build()
             .context("building attachment fetcher adapter")?;
 
+        let max_schedule_ahead = queue.schedule_horizon(self.max_schedule_ahead);
+        if let Some(horizon) = max_schedule_ahead
+            && horizon < self.max_schedule_ahead
+        {
+            tracing::warn!(
+                horizon_secs = horizon.as_secs(),
+                "the schedule horizon is capped by the NATS stream max_age"
+            );
+        }
+
         let submit_email = Arc::new(
             SubmitEmailService::new(
                 storage.clone(),
@@ -313,12 +323,8 @@ impl AppConfig {
             .with_limits(SubmitLimits {
                 max_message_bytes: self.max_message_bytes,
                 allowed_sender_domains: self.allowed_sender_domains.clone(),
-                // Only the storage queues can hold a row back until its send time.
-                max_schedule_ahead: matches!(
-                    queue,
-                    queue::QueueAdapter::Sqlite(_) | queue::QueueAdapter::Postgres(_)
-                )
-                .then_some(self.max_schedule_ahead),
+                // None when the queue cannot hold an email until its send time.
+                max_schedule_ahead,
             }),
         );
         self.render

@@ -58,7 +58,7 @@ impl EmailRepository for StorageAdapter {
         id: EmailId,
         owner: &str,
         state: EnqueueState,
-    ) -> Result<(), EmailRepositoryError> {
+    ) -> Result<bool, EmailRepositoryError> {
         match self {
             Self::Sqlite(a) => a.set_enqueue_state(id, owner, state).await,
             Self::Postgres(a) => a.set_enqueue_state(id, owner, state).await,
@@ -89,6 +89,16 @@ impl catapulte_domain::port::email_repository::EmailCancellation for StorageAdap
         match self {
             Self::Sqlite(a) => a.cancel(id, owner).await,
             Self::Postgres(a) => a.cancel(id, owner).await,
+        }
+    }
+
+    async fn start_delivery(
+        &self,
+        id: EmailId,
+    ) -> Result<catapulte_domain::port::email_repository::DeliveryStart, EmailRepositoryError> {
+        match self {
+            Self::Sqlite(a) => a.start_delivery(id).await,
+            Self::Postgres(a) => a.start_delivery(id).await,
         }
     }
 }

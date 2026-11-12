@@ -77,7 +77,9 @@ mod tests {
     use super::{CancelEmailError, CancelEmailService, CancelEmailUseCase};
     use crate::entity::email::EmailId;
     use crate::entity::lifecycle_event::{EventContext, LifecycleEvent};
-    use crate::port::email_repository::{CancelOutcome, EmailCancellation, EmailRepositoryError};
+    use crate::port::email_repository::{
+        CancelOutcome, DeliveryStart, EmailCancellation, EmailRepositoryError,
+    };
     use crate::port::event_publisher::{EventPublisher, EventPublisherError};
 
     struct FakeCancellation {
@@ -94,6 +96,13 @@ mod tests {
             self.owners.lock().unwrap().push(owner.map(str::to_owned));
             Ok(self.outcome.clone())
         }
+
+        async fn start_delivery(
+            &self,
+            _id: EmailId,
+        ) -> Result<DeliveryStart, EmailRepositoryError> {
+            unimplemented!()
+        }
     }
 
     struct FailingCancellation;
@@ -107,6 +116,13 @@ mod tests {
             Err(EmailRepositoryError::Storage {
                 source: anyhow::anyhow!("db down"),
             })
+        }
+
+        async fn start_delivery(
+            &self,
+            _id: EmailId,
+        ) -> Result<DeliveryStart, EmailRepositoryError> {
+            unimplemented!()
         }
     }
 

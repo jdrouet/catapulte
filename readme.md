@@ -105,7 +105,7 @@ All configuration is done via environment variables.
 | `CATAPULTE_BOUNCE_DOMAIN` | Domain of the signed return path (`bounces+{id}-{tag}@domain`) used as the SMTP `MAIL FROM`, so bounces can be tied to an email. Set together with `CATAPULTE_BOUNCE_SECRET`; setting only one stops startup. See [Bounce return path](#bounce-return-path) | unset (the sender address is used) |
 | `CATAPULTE_BOUNCE_INGEST_SECRET` | Enables `POST /inbound/feedback` and is its bearer secret, at least 32 bytes (`openssl rand -base64 48`). Unset leaves the route out (404). API keys never work on that route. See [Bounce and complaint ingestion](#bounce-and-complaint-ingestion) | unset |
 | `CATAPULTE_BOUNCE_SECRET` | Key that signs the return paths, at least 32 bytes; generate one with `openssl rand -base64 48`. Keep it stable: rotating it makes bounces for mail already sent unverifiable | unset |
-| `CATAPULTE_MAX_SCHEDULE_AHEAD_SECS` | Furthest `send_at_ms` accepted, in seconds, a positive integer. Applies only to the storage queue (SQLite or PostgreSQL); other queues refuse scheduled sends with `422`. See [Storage queue](#storage-queue) | `2592000` (30 days) |
+| `CATAPULTE_MAX_SCHEDULE_AHEAD_SECS` | Furthest `send_at_ms` accepted, in seconds, a positive integer. Applies to every queue. A NATS queue that cannot hold schedules (see [Scheduled sends on NATS](#scheduled-sends-on-nats)) refuses scheduled sends with `422`, and its stream `max_age` can lower the horizon | `2592000` (30 days) |
 | `CATAPULTE_ALLOWED_SENDER_DOMAINS` | Comma-separated sender domains the API accepts. Matching is exact (no subdomains), case-insensitive, and IDN domains are compared in punycode. Unset accepts any domain; set but empty denies every sender. An entry that is not a valid domain stops startup | unset |
 
 ### Storage Backend
@@ -296,9 +296,13 @@ side channel in private-key operations). Some receivers do not yet verify Ed2551
 
 Each queue row carries the time from which it can be claimed. Workers claim the row with the earliest availability time first (earliest-availability ordering, not strict arrival order; ties are unspecified). Rows that are due immediately keep their order, and a retried row is now ordered by its retry time.
 
-Scheduled sends (`send_at_ms`) are held in this queue until their time. Availability, validation and claims use the clock of the node that handles them, so keep instance clocks in sync (NTP). Upgrade every instance before clients use `send_at_ms`: an older instance would not honour the delay. The object-store expiry for attachments must be longer than the schedule horizon, because the blobs are written at submit time.
+Scheduled sends (`send_at_ms`) are held in this queue as a row that cannot be claimed until its time. Availability, validation and claims use the clock of the node that handles them, so keep instance clocks in sync (NTP). Upgrade every instance before clients use `send_at_ms`: an older instance would not honour the delay. The object-store expiry for attachments must be longer than the schedule horizon, because the blobs are written at submit time.
 
 Upgrading to this version runs a migration that locks `email_queue` while it rewrites rows with a NULL availability time, so apply it in a maintenance window. The queue is normally small, so the lock is short. Afterwards a NULL availability time cannot be stored: PostgreSQL rejects it, and on SQLite a trigger fills it in, so older writers cannot strand a row.
+
+#### Memory queue
+
+Scheduled sends are supported: the queue holds the email in process until its time. Scheduled emails are lost on restart, like everything else in this queue.
 
 #### NATS Queue (if backend is `nats`)
 Enqueue waits for the JetStream publish acknowledgement before it succeeds.
@@ -312,6 +316,21 @@ Enqueue waits for the JetStream publish acknowledgement before it succeeds.
 | `CATAPULTE_QUEUE_ACK_WAIT_SECS` | Redelivery timeout | `30` |
 | `CATAPULTE_QUEUE_MAX_DELIVER` | Maximum delivery attempts | `3` |
 | `CATAPULTE_QUEUE_BACKOFF` | Comma-separated retry backoff steps in seconds | `30,60,120` |
+
+##### Scheduled sends on NATS
+
+A future `send_at_ms` is published as a JetStream message schedule that fires onto the queued subject at its time. This needs NATS 2.12 or later on every server node. Catapulte checks the server it connects to at startup, so make sure the whole cluster is upgraded. If scheduling cannot be used, Catapulte logs a warning at startup and answers `422` to `send_at_ms`; everything else keeps working.
+
+At startup Catapulte enables schedules on the stream by itself. It adds the subjects `{subject}.scheduled.*` and sets `allow_msg_schedules`. The flag cannot be turned off again. When the flag is set, the NATS server itself also enables rollup on the stream and clears the deny-purge setting; Catapulte changes nothing else. Running a server older than 2.12 against a stream that has the flag is not safe.
+
+Scheduling is used only when all of these hold. Otherwise the stream is left unchanged.
+
+- The consumer filters exactly the queued subject, and no other consumer covers `{subject}.scheduled.*`.
+- The stream retention is `WorkQueue` or `Limits`, the discard policy is `Old`, and the stream has no mirror, sources or subject transform.
+- The effective ack deadline (the smaller of the ack wait and every backoff step) is at least 1 second.
+- The stream `max_age` is unlimited or longer than 5 minutes. A finite `max_age` also lowers the schedule horizon to `max_age` minus 5 minutes, because a schedule expires with the stream's messages.
+
+Use one Catapulte queue subject per stream. A cancelled schedule stays in the stream until its send time, then the worker drops it. A worker that receives an email before its time on its own clock waits in place and keeps the message alive; a clock more than 30 seconds apart from the NATS server holds a worker slot for that long and logs a warning.
 
 ##### Delivery model and recovery
 

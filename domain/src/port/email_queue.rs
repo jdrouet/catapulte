@@ -88,6 +88,8 @@ pub enum EnqueueOutcome {
     /// An earlier call already enqueued the email, so nothing was added and the caller must
     /// not announce it again.
     AlreadyEnqueued,
+    /// Accepted by a queue that does not record the enqueue state; the caller confirms it.
+    Published,
 }
 
 pub trait EmailQueue: Send + Sync + 'static {
@@ -135,4 +137,17 @@ pub trait EmailQueue: Send + Sync + 'static {
         token: AckToken,
         delay: Duration,
     ) -> impl std::future::Future<Output = Result<(), EmailQueueError>> + Send;
+
+    /// Extends the claim on a dequeued message without changing its attempt count.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmailQueueError::Storage` when the claim could not be extended.
+    fn in_progress(
+        &self,
+        token: &AckToken,
+    ) -> impl std::future::Future<Output = Result<(), EmailQueueError>> + Send;
+
+    /// How often [`EmailQueue::in_progress`] must be called to keep a claim.
+    fn renew_interval(&self) -> Duration;
 }

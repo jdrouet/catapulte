@@ -6,7 +6,7 @@ use catapulte_domain::entity::lifecycle_event::{
     EventContext, PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES,
 };
 use catapulte_domain::port::email_repository::{
-    CancelOutcome, DuplicateState, EmailCancellation, EmailRecord, EmailRepository,
+    CancelOutcome, DeliveryStart, DuplicateState, EmailCancellation, EmailRecord, EmailRepository,
     EmailRepositoryError, EmailStatus, EnqueueState, ListEmailsParams, SaveResult,
 };
 use sqlx::QueryBuilder;
@@ -209,29 +209,54 @@ impl EmailRepository for PostgresAdapter {
         id: EmailId,
         owner: &str,
         state: EnqueueState,
-    ) -> Result<(), EmailRepositoryError> {
-        let value = match state {
-            EnqueueState::Publishable => "publishable",
-            EnqueueState::Enqueued => "enqueued",
+    ) -> Result<bool, EmailRepositoryError> {
+        let storage = |source| EmailRepositoryError::Storage { source };
+        let not_found = || EmailRepositoryError::Storage {
+            source: anyhow::anyhow!("email not found for set_enqueue_state: id={}", id.as_uuid()),
         };
-        let result =
-            sqlx::query("UPDATE emails SET enqueue_state = $1 WHERE id = $2 AND api_key = $3")
-                .bind(value)
-                .bind(id.as_uuid())
-                .bind(owner)
-                .execute(self.pool())
-                .await
-                .context("updating enqueue_state")
-                .map_err(|source| EmailRepositoryError::Storage { source })?;
-        if result.rows_affected() == 0 {
-            return Err(EmailRepositoryError::Storage {
-                source: anyhow::anyhow!(
-                    "email not found for set_enqueue_state: id={}",
-                    id.as_uuid()
-                ),
-            });
+        if state == EnqueueState::Publishable {
+            let result = sqlx::query(
+                "UPDATE emails SET enqueue_state = 'publishable' WHERE id = $1 AND api_key = $2",
+            )
+            .bind(id.as_uuid())
+            .bind(owner)
+            .execute(self.pool())
+            .await
+            .context("updating enqueue_state")
+            .map_err(storage)?;
+            return if result.rows_affected() == 0 {
+                Err(not_found())
+            } else {
+                Ok(true)
+            };
         }
-        Ok(())
+        let enqueued = sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(format!(
+            "UPDATE emails SET enqueue_state = 'enqueued' \
+             WHERE id = $1 AND api_key = $2 AND enqueue_state <> 'enqueued' \
+             RETURNING (delivery_started_at_ms IS NULL AND NOT EXISTS ( \
+                 SELECT 1 FROM lifecycle_events \
+                 WHERE email_id = emails.id AND event_type IN ({worker})))",
+            worker = sql_list(WORKER_EVENT_TYPES),
+        )))
+        .bind(id.as_uuid())
+        .bind(owner)
+        .fetch_optional(self.pool())
+        .await
+        .context("updating enqueue_state")
+        .map_err(storage)?;
+        if let Some(announce) = enqueued {
+            return Ok(announce);
+        }
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM emails WHERE id = $1 AND api_key = $2)",
+        )
+        .bind(id.as_uuid())
+        .bind(owner)
+        .fetch_one(self.pool())
+        .await
+        .context("checking the email exists")
+        .map_err(storage)?;
+        if exists { Ok(false) } else { Err(not_found()) }
     }
 
     async fn set_attachments(
@@ -364,7 +389,8 @@ impl EmailCancellation for PostgresAdapter {
         let cancelled = sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE emails SET cancelled_at_ms = $1 \
              WHERE id = $2 AND ($3::text IS NULL OR api_key = $3) \
-               AND cancelled_at_ms IS NULL AND send_at_ms IS NOT NULL \
+               AND cancelled_at_ms IS NULL AND delivery_started_at_ms IS NULL \
+               AND send_at_ms IS NOT NULL \
                AND enqueue_state = 'enqueued' \
                AND NOT EXISTS (SELECT 1 FROM lifecycle_events \
                                WHERE email_id = emails.id AND event_type IN ({worker})) \
@@ -417,8 +443,9 @@ impl EmailCancellation for PostgresAdapter {
                 .await
                 .context("checking for remaining queue rows")
                 .map_err(storage)?;
-        // Anything but exactly one untouched row means a worker may hold the email.
-        if removed != 1 || remaining {
+        // Several rows, or one left behind, mean a worker may hold the email. No row at all is
+        // fine: NATS and memory keep none, and the delivery fence covers them.
+        if removed > 1 || remaining {
             tx.rollback()
                 .await
                 .context("rolling back the cancel")
@@ -435,6 +462,36 @@ impl EmailCancellation for PostgresAdapter {
                 tags: tags.map(|j| j.0).unwrap_or_default(),
                 metadata: extras.map(|j| j.0.metadata).unwrap_or_default(),
             },
+        })
+    }
+
+    async fn start_delivery(&self, id: EmailId) -> Result<DeliveryStart, EmailRepositoryError> {
+        let storage = |source| EmailRepositoryError::Storage { source };
+        let started = sqlx::query(
+            "UPDATE emails SET delivery_started_at_ms = COALESCE(delivery_started_at_ms, $1) \
+             WHERE id = $2 AND cancelled_at_ms IS NULL",
+        )
+        .bind(crate::email_queue::now_ms())
+        .bind(id.as_uuid())
+        .execute(self.pool())
+        .await
+        .context("recording the delivery start")
+        .map_err(storage)?
+        .rows_affected();
+        if started == 1 {
+            return Ok(DeliveryStart::Proceed);
+        }
+        let cancelled: Option<bool> =
+            sqlx::query_scalar("SELECT cancelled_at_ms IS NOT NULL FROM emails WHERE id = $1")
+                .bind(id.as_uuid())
+                .fetch_optional(self.pool())
+                .await
+                .context("classifying the delivery start")
+                .map_err(storage)?;
+        Ok(if cancelled == Some(true) {
+            DeliveryStart::Cancelled
+        } else {
+            DeliveryStart::Proceed
         })
     }
 }
@@ -498,7 +555,8 @@ impl PostgresAdapter {
 
         let row = sqlx::query(
             "SELECT id, enqueue_state, api_key, idempotency_key, correlation_id, subject, sender, \
-                    recipients, body, variables, extras, tags, send_at_ms, cancelled_at_ms \
+                    recipients, body, variables, extras, tags, send_at_ms, cancelled_at_ms, \
+                    delivery_started_at_ms \
              FROM emails WHERE api_key = $1 AND idempotency_key = $2 FOR UPDATE",
         )
         .bind(owner)
@@ -515,6 +573,9 @@ impl PostgresAdapter {
 
         let cancelled: Option<i64> = row
             .try_get("cancelled_at_ms")
+            .map_err(|e| storage(e.into()))?;
+        let delivery_started: Option<i64> = row
+            .try_get("delivery_started_at_ms")
             .map_err(|e| storage(e.into()))?;
         // A cancelled email is final: nothing to replay, whatever its enqueue state.
         let (state, recovery) = if cancelled.is_some() {
@@ -534,7 +595,7 @@ impl PostgresAdapter {
                     .await
                     .context("checking worker evidence")
                     .map_err(storage)?;
-                    if has_evidence {
+                    if has_evidence || delivery_started.is_some() {
                         sqlx::query(
                             "UPDATE emails SET enqueue_state = 'enqueued' WHERE id = $1 AND api_key = $2",
                         )
@@ -1930,5 +1991,96 @@ mod tests {
 
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, wanted);
+    }
+
+    #[tokio::test]
+    async fn enqueued_transition_announces_once() {
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+
+        assert!(
+            adapter
+                .set_enqueue_state(id, "", EnqueueState::Enqueued)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !adapter
+                .set_enqueue_state(id, "", EnqueueState::Enqueued)
+                .await
+                .unwrap()
+        );
+        assert_eq!(state_of(&adapter, id).await, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn enqueued_transition_with_a_worker_event_does_not_announce() {
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+        add_event(&adapter, id, "sending").await;
+
+        let announce = adapter
+            .set_enqueue_state(id, "", EnqueueState::Enqueued)
+            .await
+            .unwrap();
+
+        assert!(!announce);
+        assert_eq!(state_of(&adapter, id).await, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn enqueued_transition_with_a_delivery_fence_does_not_announce() {
+        use catapulte_domain::port::email_repository::EmailCancellation;
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+        adapter.start_delivery(id).await.unwrap();
+
+        let announce = adapter
+            .set_enqueue_state(id, "", EnqueueState::Enqueued)
+            .await
+            .unwrap();
+
+        assert!(!announce);
+        assert_eq!(state_of(&adapter, id).await, "enqueued");
+    }
+
+    #[tokio::test]
+    async fn enqueued_transition_ignores_informational_events() {
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Publishable)).await;
+        add_event(&adapter, id, "queued").await;
+
+        assert!(
+            adapter
+                .set_enqueue_state(id, "", EnqueueState::Enqueued)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn set_enqueue_state_on_a_missing_row_is_an_error() {
+        let adapter = fresh_adapter().await;
+
+        for state in [EnqueueState::Publishable, EnqueueState::Enqueued] {
+            let result = adapter
+                .set_enqueue_state(EmailId::default(), "", state)
+                .await;
+            assert!(matches!(result, Err(EmailRepositoryError::Storage { .. })));
+        }
+    }
+
+    #[tokio::test]
+    async fn publishable_transition_is_unconditional() {
+        let adapter = fresh_adapter().await;
+        let id = keyed_row(&adapter, Some(EnqueueState::Enqueued)).await;
+
+        assert!(
+            adapter
+                .set_enqueue_state(id, "", EnqueueState::Publishable)
+                .await
+                .unwrap()
+        );
+        assert_eq!(state_of(&adapter, id).await, "publishable");
     }
 }
