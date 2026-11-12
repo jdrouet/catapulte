@@ -27,6 +27,106 @@ fn sql_list(types: &[&str]) -> String {
         .join(", ")
 }
 
+#[allow(clippy::too_many_lines)]
+fn list_query(prefix: &str, params: ListEmailsParams) -> QueryBuilder<sqlx::Postgres> {
+    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(format!(
+        "{prefix}WITH latest AS (\
+                SELECT \
+                    e.id, \
+                    e.api_key, \
+                    e.idempotency_key, \
+                    e.subject, \
+                    e.sender, \
+                    e.recipients, \
+                    e.tags, \
+                    e.extras, \
+                    e.created_at, \
+                    e.send_at_ms, \
+                    e.cancelled_at_ms, \
+                    COALESCE(\
+                        (SELECT le.event_type \
+                         FROM lifecycle_events le \
+                         WHERE le.email_id = e.id \
+                           AND le.event_type IN ({terminal}) \
+                         ORDER BY le.created_at DESC, le.id DESC \
+                         LIMIT 1),\
+                        ''\
+                    ) AS latest_terminal_event_type \
+                FROM emails e\
+            ), \
+            email_status AS (\
+                SELECT latest.*, \
+                    CASE \
+                        WHEN cancelled_at_ms IS NOT NULL THEN 'cancelled' \
+                        WHEN latest_terminal_event_type = 'delivery.succeeded' THEN 'sent' \
+                        WHEN latest_terminal_event_type = 'delivery.failed' THEN 'failed' \
+                        WHEN send_at_ms > ",
+        terminal = sql_list(TERMINAL_EVENT_TYPES),
+    ));
+    qb.push_bind(crate::email_queue::now_ms());
+    qb.push(
+        " THEN 'scheduled' \
+                        ELSE 'queued' \
+                    END AS status \
+                FROM latest\
+            ) \
+            SELECT id, idempotency_key, subject, sender, recipients, tags, extras, created_at, \
+                   send_at_ms, status \
+            FROM email_status \
+            WHERE 1=1",
+    );
+
+    if let Some(id) = params.id {
+        qb.push(" AND id = ");
+        qb.push_bind(id.as_uuid());
+    }
+    if let Some(owner) = params.owner {
+        qb.push(" AND api_key = ");
+        qb.push_bind(owner);
+    }
+    if let Some(tag) = params.tag {
+        qb.push(" AND tags ? ");
+        qb.push_bind(tag);
+        qb.push("");
+    }
+    if let Some(after) = params.after_ms {
+        qb.push(" AND created_at > ");
+        qb.push_bind(after);
+    }
+    if let Some(before) = params.before_ms {
+        qb.push(" AND created_at < ");
+        qb.push_bind(before);
+    }
+    if let Some(recipient) = params.recipient {
+        qb.push(
+                " AND EXISTS (SELECT 1 FROM jsonb_array_elements(recipients) r WHERE COALESCE(r->>'bare', r->>'address') ILIKE '%' || ",
+            );
+        qb.push_bind(recipient);
+        qb.push(" || '%')");
+    }
+    if let Some(template) = params.template {
+        qb.push(" AND id IN (SELECT id FROM emails WHERE body->'source'->>'kind' = 'mjml_named' AND body->'source'->>'name' = ");
+        qb.push_bind(template);
+        qb.push(")");
+    }
+    if let Some(status) = params.status {
+        qb.push(" AND status = ");
+        qb.push_bind(match status {
+            EmailStatus::Sent => "sent",
+            EmailStatus::Failed => "failed",
+            EmailStatus::Queued => "queued",
+            EmailStatus::Scheduled => "scheduled",
+            EmailStatus::Cancelled => "cancelled",
+        });
+    }
+
+    qb.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+    qb.push_bind(i64::from(params.limit));
+    qb.push(" OFFSET ");
+    qb.push_bind(i64::from(params.offset));
+    qb
+}
+
 impl EmailRepository for PostgresAdapter {
     /// # Errors
     ///
@@ -90,107 +190,11 @@ impl EmailRepository for PostgresAdapter {
         self.resolve_duplicate(&envelope.owner, key).await
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn list_emails(
         &self,
         params: ListEmailsParams,
     ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
-        let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(format!(
-            "WITH latest AS (\
-                SELECT \
-                    e.id, \
-                    e.api_key, \
-                    e.idempotency_key, \
-                    e.subject, \
-                    e.sender, \
-                    e.recipients, \
-                    e.tags, \
-                    e.extras, \
-                    e.created_at, \
-                    e.send_at_ms, \
-                    e.cancelled_at_ms, \
-                    COALESCE(\
-                        (SELECT le.event_type \
-                         FROM lifecycle_events le \
-                         WHERE le.email_id = e.id \
-                           AND le.event_type IN ({terminal}) \
-                         ORDER BY le.created_at DESC, le.id DESC \
-                         LIMIT 1),\
-                        ''\
-                    ) AS latest_terminal_event_type \
-                FROM emails e\
-            ), \
-            email_status AS (\
-                SELECT latest.*, \
-                    CASE \
-                        WHEN cancelled_at_ms IS NOT NULL THEN 'cancelled' \
-                        WHEN latest_terminal_event_type = 'delivery.succeeded' THEN 'sent' \
-                        WHEN latest_terminal_event_type = 'delivery.failed' THEN 'failed' \
-                        WHEN send_at_ms > ",
-            terminal = sql_list(TERMINAL_EVENT_TYPES),
-        ));
-        qb.push_bind(crate::email_queue::now_ms());
-        qb.push(
-            " THEN 'scheduled' \
-                        ELSE 'queued' \
-                    END AS status \
-                FROM latest\
-            ) \
-            SELECT id, idempotency_key, subject, sender, recipients, tags, extras, created_at, \
-                   send_at_ms, status \
-            FROM email_status \
-            WHERE 1=1",
-        );
-
-        if let Some(id) = params.id {
-            qb.push(" AND id = ");
-            qb.push_bind(id.as_uuid());
-        }
-        if let Some(owner) = params.owner {
-            qb.push(" AND api_key = ");
-            qb.push_bind(owner);
-        }
-        if let Some(tag) = params.tag {
-            qb.push(" AND tags ? ");
-            qb.push_bind(tag);
-            qb.push("");
-        }
-        if let Some(after) = params.after_ms {
-            qb.push(" AND created_at > ");
-            qb.push_bind(after);
-        }
-        if let Some(before) = params.before_ms {
-            qb.push(" AND created_at < ");
-            qb.push_bind(before);
-        }
-        if let Some(recipient) = params.recipient {
-            qb.push(
-                " AND EXISTS (SELECT 1 FROM jsonb_array_elements(recipients) r WHERE COALESCE(r->>'bare', r->>'address') ILIKE '%' || ",
-            );
-            qb.push_bind(recipient);
-            qb.push(" || '%')");
-        }
-        if let Some(template) = params.template {
-            qb.push(" AND id IN (SELECT id FROM emails WHERE body->'source'->>'kind' = 'mjml_named' AND body->'source'->>'name' = ");
-            qb.push_bind(template);
-            qb.push(")");
-        }
-        if let Some(status) = params.status {
-            qb.push(" AND status = ");
-            qb.push_bind(match status {
-                EmailStatus::Sent => "sent",
-                EmailStatus::Failed => "failed",
-                EmailStatus::Queued => "queued",
-                EmailStatus::Scheduled => "scheduled",
-                EmailStatus::Cancelled => "cancelled",
-            });
-        }
-
-        qb.push(" ORDER BY created_at DESC, id DESC LIMIT ");
-        qb.push_bind(i64::from(params.limit));
-        qb.push(" OFFSET ");
-        qb.push_bind(i64::from(params.offset));
-
+        let mut qb = list_query("", params);
         let rows = qb
             .build()
             .fetch_all(self.pool())
@@ -1846,6 +1850,34 @@ mod tests {
         };
         assert_eq!(replayed.tags, envelope.tags);
         assert_eq!(replayed.metadata, envelope.metadata);
+    }
+
+    #[tokio::test]
+    async fn list_emails_uses_the_owner_index_for_a_small_owner() {
+        let adapter = fresh_adapter().await;
+        sqlx::query(
+            "INSERT INTO emails (id, api_key, sender, recipients, body, variables, created_at) \
+             SELECT gen_random_uuid(), CASE WHEN n <= 100 THEN 'key-small' ELSE 'key-big' END, \
+                    'a@b.c', '[]', '{}', '{}', n::bigint \
+             FROM generate_series(1, 20000) n",
+        )
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+        sqlx::query("ANALYZE emails")
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+
+        let mut params = default_list_params();
+        params.owner = Some("key-small".to_owned());
+        let plan: serde_json::Value = super::list_query("EXPLAIN (FORMAT JSON) ", params)
+            .build_query_scalar()
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+        let text = plan.to_string();
+        assert!(text.contains("emails_api_key_created_at"), "{text}");
     }
 
     async fn save_with_send_at(adapter: &PostgresAdapter, send_at_ms: Option<i64>) -> EmailId {
