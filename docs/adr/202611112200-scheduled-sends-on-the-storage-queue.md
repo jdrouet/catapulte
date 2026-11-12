@@ -254,6 +254,9 @@ empty claims complete in under 100 ms.
 
 ## More Information
 
+Decision (c), Cancel, is amended by "Scheduled sends on the NATS and memory queues"
+(202611121500): its commit rule is relaxed and a delivery fence is added.
+
 The design answers the concerns raised against earlier drafts.
 
 - **A separate scheduler and dispatcher.** Not used. Delay is a property of the queue row, so
