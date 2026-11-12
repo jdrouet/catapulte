@@ -448,8 +448,9 @@ impl EmailCancellation for SqliteAdapter {
                 .await
                 .context("checking for remaining queue rows")
                 .map_err(storage)?;
-        // Anything but exactly one untouched row means a worker may hold the email.
-        if removed != 1 || remaining {
+        // Several rows, or one left behind, mean a worker may hold the email. No row at all is
+        // fine: NATS and memory keep none, and the delivery fence covers them.
+        if removed > 1 || remaining {
             tx.rollback()
                 .await
                 .context("rolling back the cancel")

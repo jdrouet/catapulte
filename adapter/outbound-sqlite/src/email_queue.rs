@@ -1599,4 +1599,75 @@ mod tests {
 
         assert_eq!(adapter.try_dequeue().await.unwrap().unwrap().attempt, 2);
     }
+
+    #[tokio::test]
+    async fn without_a_queue_row_cancel_wins_then_delivery_is_dropped() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+        let id = bare_scheduled_email(&adapter, None).await;
+
+        let outcome = adapter.cancel(id, Some("")).await.unwrap();
+
+        assert!(matches!(outcome, CancelOutcome::Cancelled { .. }));
+        assert_eq!(
+            adapter.start_delivery(id).await.unwrap(),
+            DeliveryStart::Cancelled
+        );
+        assert_eq!(delivery_started_at(&adapter, id).await, None);
+    }
+
+    #[tokio::test]
+    async fn without_a_queue_row_delivery_start_blocks_the_cancel() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+        let id = bare_scheduled_email(&adapter, None).await;
+
+        assert_eq!(
+            adapter.start_delivery(id).await.unwrap(),
+            DeliveryStart::Proceed
+        );
+
+        assert_eq!(
+            adapter.cancel(id, Some("")).await.unwrap(),
+            CancelOutcome::NotCancellable
+        );
+        assert_eq!(cancelled_at(&adapter, id).await, None);
+    }
+
+    #[tokio::test]
+    async fn cancel_and_delivery_start_race_without_a_queue_row_has_exactly_one_winner() {
+        use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation};
+        let adapter = fresh_adapter().await;
+        let (mut cancels, mut starts) = (0, 0);
+        for i in 0..50 {
+            let id = bare_scheduled_email(&adapter, None).await;
+            let cancel = |adapter: SqliteAdapter| {
+                tokio::spawn(async move { adapter.cancel(id, Some("")).await })
+            };
+            let start = |adapter: SqliteAdapter| {
+                tokio::spawn(async move { adapter.start_delivery(id).await })
+            };
+            let (cancel_task, start_task) = if i % 2 == 0 {
+                let c = cancel(adapter.clone());
+                (c, start(adapter.clone()))
+            } else {
+                let s = start(adapter.clone());
+                (cancel(adapter.clone()), s)
+            };
+            let cancelled = matches!(
+                cancel_task.await.unwrap().unwrap(),
+                CancelOutcome::Cancelled { .. }
+            );
+            let proceeded = start_task.await.unwrap().unwrap() == DeliveryStart::Proceed;
+            assert_ne!(cancelled, proceeded, "exactly one side must win");
+            if cancelled {
+                cancels += 1;
+                assert_eq!(delivery_started_at(&adapter, id).await, None);
+            } else {
+                starts += 1;
+                assert_eq!(cancelled_at(&adapter, id).await, None);
+            }
+        }
+        eprintln!("race results: cancel won {cancels}, delivery start won {starts}");
+    }
 }

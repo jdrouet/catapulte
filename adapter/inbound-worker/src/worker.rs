@@ -1,7 +1,8 @@
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
 use catapulte_domain::port::attachment_store::AttachmentStore;
+use catapulte_domain::port::clock::{Clock, SystemClock};
 use catapulte_domain::port::email_queue::{AckToken, EmailQueue};
-use catapulte_domain::port::email_repository::EmailRepository;
+use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation, EmailRepository};
 use catapulte_domain::port::event_publisher::EventPublisher;
 use catapulte_domain::use_case::process_queued_email::ProcessQueuedEmailUseCase;
 use tracing::Instrument as _;
@@ -13,7 +14,7 @@ pub trait WorkerState: Clone + Send + Sync + 'static {
     fn email_queue(&self) -> &impl EmailQueue;
     fn event_publisher(&self) -> &impl EventPublisher;
     fn attachment_store(&self) -> &impl AttachmentStore;
-    fn email_repository(&self) -> &impl EmailRepository;
+    fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation);
 }
 
 pub struct WorkerConfig {
@@ -54,13 +55,18 @@ impl WorkerConfig {
     pub fn build(self) -> Worker {
         Worker {
             concurrency: self.concurrency,
+            clock: std::sync::Arc::new(SystemClock),
         }
     }
 }
 
-pub struct Worker {
+pub struct Worker<C: Clock = SystemClock> {
     concurrency: usize,
+    clock: std::sync::Arc<C>,
 }
+
+/// A wait longer than this means the firing source and this worker disagree about the time.
+const SKEW_WARN_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn backoff(attempt: u32) -> std::time::Duration {
     let secs = (30u64 * (1u64 << attempt.saturating_sub(1))).min(3600);
@@ -68,6 +74,17 @@ fn backoff(attempt: u32) -> std::time::Duration {
 }
 
 impl Worker {
+    /// Replaces the wall clock used to decide whether a scheduled email is due.
+    #[must_use]
+    pub fn with_clock<C: Clock>(self, clock: C) -> Worker<C> {
+        Worker {
+            concurrency: self.concurrency,
+            clock: std::sync::Arc::new(clock),
+        }
+    }
+}
+
+impl<C: Clock> Worker<C> {
     /// # Panics
     ///
     /// Never panics in practice: the `expect` on the semaphore acquire is
@@ -96,10 +113,14 @@ impl Worker {
                     // Clone the state for the spawned task. WorkerState impls
                     // hold Arc-wrapped internals so clones are cheap.
                     let st = state.clone();
+                    let clock = std::sync::Arc::clone(&self.clock);
+                    let task_cancel = cancel.clone();
                     tasks.spawn(async move {
                         let _permit = permit; // holds the slot until the task finishes
                         process_one(
                             &st,
+                            clock.as_ref(),
+                            &task_cancel,
                             dequeued.id,
                             dequeued.envelope,
                             dequeued.attempt,
@@ -130,9 +151,57 @@ impl Worker {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+/// Holds the claim until `send_at_ms` has passed on `clock`, renewing it every
+/// `renew_interval` and never giving the message back. Returns `false` when the claim could
+/// not be renewed or the worker is shutting down; the queue then redelivers the message once
+/// the lease lapses.
+async fn wait_until_due<S: WorkerState>(
+    state: &S,
+    clock: &impl Clock,
+    cancel: &tokio_util::sync::CancellationToken,
+    id: catapulte_domain::entity::email::EmailId,
+    send_at_ms: i64,
+    token: &AckToken,
+) -> bool {
+    let queue = state.email_queue();
+    let interval = queue.renew_interval();
+    let started = tokio::time::Instant::now();
+    let mut warned = false;
+    loop {
+        let now = clock.now_ms();
+        if now >= send_at_ms {
+            return true;
+        }
+        if let Err(e) = queue.in_progress(token).await {
+            tracing::error!(
+                error = %e,
+                email_id = %id.as_uuid(),
+                "failed to renew the claim while waiting for the send time"
+            );
+            return false;
+        }
+        let remaining = std::time::Duration::from_millis(send_at_ms.abs_diff(now));
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => return false,
+            () = tokio::time::sleep(interval.min(remaining)) => {}
+        }
+        if !warned && started.elapsed() > SKEW_WARN_AFTER {
+            warned = true;
+            tracing::warn!(
+                email_id = %id.as_uuid(),
+                send_at_ms,
+                "scheduled email still not due after 30 s, check the clock skew"
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn process_one<S: WorkerState>(
     state: &S,
+    clock: &impl Clock,
+    cancel: &tokio_util::sync::CancellationToken,
     id: catapulte_domain::entity::email::EmailId,
     envelope: catapulte_domain::entity::envelope::Envelope,
     attempt: u32,
@@ -152,6 +221,28 @@ async fn process_one<S: WorkerState>(
         let context = envelope.event_context();
         if let Some(ref cid) = correlation_id {
             tracing::Span::current().record("correlation_id", cid.as_str());
+        }
+
+        if let Some(send_at_ms) = envelope.send_at_ms {
+            if !wait_until_due(state, clock, cancel, id, send_at_ms, &token).await {
+                return;
+            }
+            match state.email_repository().start_delivery(id).await {
+                Ok(DeliveryStart::Proceed) => {}
+                Ok(DeliveryStart::Cancelled) => {
+                    if let Err(e) = state.email_queue().ack(token).await {
+                        tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to ack cancelled email");
+                    }
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to record the delivery start");
+                    if let Err(nack_err) = state.email_queue().nack(token, backoff(attempt)).await {
+                        tracing::error!(error = %nack_err, "failed to nack after a fence error");
+                    }
+                    return;
+                }
+            }
         }
 
         if let Err(e) = state
@@ -286,15 +377,16 @@ mod tests {
         AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, TraceCarrier,
     };
     use catapulte_domain::port::email_repository::{
-        EmailRecord, EmailRepository, EmailRepositoryError, EnqueueState, ListEmailsParams,
-        SaveResult,
+        CancelOutcome, DeliveryStart, EmailCancellation, EmailRecord, EmailRepository,
+        EmailRepositoryError, EnqueueState, ListEmailsParams, SaveResult,
     };
     use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
     use catapulte_domain::use_case::process_queued_email::{
         ProcessQueuedEmailError, ProcessQueuedEmailUseCase, ProcessedEmail,
     };
 
-    use super::{Worker, WorkerState, process_one};
+    use super::{Worker, WorkerConfig, WorkerState, process_one};
+    use catapulte_domain::port::clock::{Clock, SystemClock};
 
     fn processed(sender: &str) -> ProcessedEmail {
         ProcessedEmail {
@@ -474,6 +566,20 @@ mod tests {
         }
     }
 
+    impl EmailCancellation for LoggingRepository {
+        async fn cancel(
+            &self,
+            _: EmailId,
+            _: Option<&str>,
+        ) -> Result<CancelOutcome, EmailRepositoryError> {
+            unimplemented!()
+        }
+
+        async fn start_delivery(&self, _: EmailId) -> Result<DeliveryStart, EmailRepositoryError> {
+            Ok(DeliveryStart::Proceed)
+        }
+    }
+
     /// Noop repository used by tests that don't care about repository calls.
     #[derive(Clone)]
     struct NoopRepository;
@@ -516,6 +622,20 @@ mod tests {
 
         async fn delete(&self, _: EmailId) -> Result<(), EmailRepositoryError> {
             unimplemented!()
+        }
+    }
+
+    impl EmailCancellation for NoopRepository {
+        async fn cancel(
+            &self,
+            _: EmailId,
+            _: Option<&str>,
+        ) -> Result<CancelOutcome, EmailRepositoryError> {
+            unimplemented!()
+        }
+
+        async fn start_delivery(&self, _: EmailId) -> Result<DeliveryStart, EmailRepositoryError> {
+            Ok(DeliveryStart::Proceed)
         }
     }
 
@@ -565,7 +685,7 @@ mod tests {
             &self.store
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
             &self.repository
         }
     }
@@ -649,7 +769,7 @@ mod tests {
             &NoopStore
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
             &NoopRepository
         }
     }
@@ -690,7 +810,7 @@ mod tests {
             &self.store
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
             &self.repository
         }
     }
@@ -700,7 +820,7 @@ mod tests {
         use tokio_util::sync::CancellationToken;
 
         let cancel = CancellationToken::new();
-        let worker = Worker { concurrency: 1 };
+        let worker = WorkerConfig::default().build().with_clock(SystemClock);
         let cancel_clone = cancel.clone();
 
         tokio::spawn(async move {
@@ -730,6 +850,8 @@ mod tests {
 
         process_one(
             &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
             id,
             sample_envelope(),
             1,
@@ -775,7 +897,17 @@ mod tests {
         let id = EmailId::default();
         let token = AckToken::new(vec![0u8; 8]);
 
-        process_one(&state, id, envelope, 1, token, TraceCarrier::default()).await;
+        process_one(
+            &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
+            id,
+            envelope,
+            1,
+            token,
+            TraceCarrier::default(),
+        )
+        .await;
 
         let deleted = store.deleted.lock().unwrap();
         assert!(
@@ -803,7 +935,17 @@ mod tests {
         }];
 
         let token = AckToken::new(vec![0u8; 8]);
-        process_one(&state, id, envelope, 1, token, TraceCarrier::default()).await;
+        process_one(
+            &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
+            id,
+            envelope,
+            1,
+            token,
+            TraceCarrier::default(),
+        )
+        .await;
 
         let ops = state.log.snapshot();
         let set_pos = ops
@@ -897,7 +1039,7 @@ mod tests {
             &NoopStore
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
             &NoopRepository
         }
     }
@@ -917,6 +1059,8 @@ mod tests {
         // attempt = 1, well below MAX_ATTEMPTS=3, so only the non-transient check drives failure
         process_one(
             &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
             id,
             sample_envelope(),
             1,
@@ -982,7 +1126,7 @@ mod tests {
             &NoopStore
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
             &NoopRepository
         }
     }
@@ -1010,7 +1154,7 @@ mod tests {
             &NoopStore
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
             &NoopRepository
         }
     }
@@ -1025,6 +1169,8 @@ mod tests {
 
         process_one(
             &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
             EmailId::default(),
             sample_envelope(),
             1,
@@ -1062,6 +1208,8 @@ mod tests {
 
         process_one(
             &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
             id,
             sample_envelope(),
             1,
@@ -1132,7 +1280,7 @@ mod tests {
             &NoopStore
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
             &NoopRepository
         }
     }
@@ -1148,6 +1296,8 @@ mod tests {
         };
         process_one(
             &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
             EmailId::default(),
             sample_envelope(),
             1,
@@ -1176,6 +1326,8 @@ mod tests {
             .insert("order".to_owned(), "42".to_owned());
         process_one(
             &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
             EmailId::default(),
             envelope,
             1,
@@ -1226,6 +1378,8 @@ mod tests {
         };
         process_one(
             &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
             EmailId::default(),
             sample_envelope(),
             1,
@@ -1379,7 +1533,7 @@ mod tests {
             &NoopStore
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
             &NoopRepository
         }
     }
@@ -1455,7 +1609,7 @@ mod tests {
             &NoopStore
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
             &NoopRepository
         }
     }
@@ -1481,6 +1635,7 @@ mod tests {
         let run_task = tokio::spawn(
             Worker {
                 concurrency: CONCURRENCY,
+                clock: Arc::new(SystemClock),
             }
             .run(state, cancel.clone()),
         );
@@ -1583,7 +1738,7 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            Worker { concurrency: 1 }.run(state, cancel),
+            WorkerConfig::default().build().run(state, cancel),
         )
         .await
         .expect("worker must finish within the timeout");
@@ -1644,7 +1799,7 @@ mod tests {
                 &NoopStore
             }
 
-            fn email_repository(&self) -> &impl EmailRepository {
+            fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
                 &NoopRepository
             }
         }
@@ -1668,7 +1823,11 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            Worker { concurrency: 2 }.run(state, cancel),
+            Worker {
+                concurrency: 2,
+                clock: Arc::new(SystemClock),
+            }
+            .run(state, cancel),
         )
         .await
         .expect("worker must finish within the timeout");
@@ -1722,7 +1881,7 @@ mod tests {
             &NoopStore
         }
 
-        fn email_repository(&self) -> &impl EmailRepository {
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
             &NoopRepository
         }
     }
@@ -1738,6 +1897,8 @@ mod tests {
 
         process_one(
             &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
             EmailId::default(),
             sample_envelope(),
             1,
@@ -1772,5 +1933,524 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, LifecycleEvent::Retrying { .. }))
         );
+    }
+
+    /// Wall clock that follows tokio's (paused) time, starting at `BASE_MS`.
+    #[derive(Clone)]
+    struct TimeClock {
+        start: tokio::time::Instant,
+    }
+
+    const BASE_MS: i64 = 1_800_000_000_000;
+
+    impl TimeClock {
+        fn new() -> Self {
+            Self {
+                start: tokio::time::Instant::now(),
+            }
+        }
+    }
+
+    impl Clock for TimeClock {
+        fn now_ms(&self) -> i64 {
+            BASE_MS + i64::try_from(self.start.elapsed().as_millis()).unwrap()
+        }
+    }
+
+    /// Returns the scripted readings in order, then repeats the last one.
+    #[derive(Clone)]
+    struct ScriptedClock {
+        readings: Arc<Mutex<std::collections::VecDeque<i64>>>,
+        last: Arc<Mutex<i64>>,
+    }
+
+    impl ScriptedClock {
+        fn new(readings: &[i64]) -> Self {
+            Self {
+                readings: Arc::new(Mutex::new(readings.iter().copied().collect())),
+                last: Arc::new(Mutex::new(readings.last().copied().unwrap_or_default())),
+            }
+        }
+
+        fn set(&self, now_ms: i64) {
+            self.readings.lock().unwrap().clear();
+            *self.last.lock().unwrap() = now_ms;
+        }
+    }
+
+    impl Clock for ScriptedClock {
+        fn now_ms(&self) -> i64 {
+            let mut last = self.last.lock().unwrap();
+            if let Some(next) = self.readings.lock().unwrap().pop_front() {
+                *last = next;
+            }
+            *last
+        }
+    }
+
+    #[derive(Clone)]
+    struct DeferQueue {
+        interval: Duration,
+        renewals: Arc<std::sync::atomic::AtomicUsize>,
+        fail_renewal: Arc<std::sync::atomic::AtomicBool>,
+        acks: Arc<std::sync::atomic::AtomicUsize>,
+        nacks: Arc<Mutex<Vec<Duration>>>,
+    }
+
+    impl DeferQueue {
+        fn new(interval: Duration) -> Self {
+            Self {
+                interval,
+                renewals: Arc::default(),
+                fail_renewal: Arc::default(),
+                acks: Arc::default(),
+                nacks: Arc::default(),
+            }
+        }
+
+        fn renewals(&self) -> usize {
+            self.renewals.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn acks(&self) -> usize {
+            self.acks.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl EmailQueue for DeferQueue {
+        async fn enqueue(
+            &self,
+            _: EmailId,
+            _: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
+            unimplemented!()
+        }
+
+        async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
+            std::future::pending().await
+        }
+
+        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
+            self.acks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn nack(&self, _: AckToken, delay: Duration) -> Result<(), EmailQueueError> {
+            self.nacks.lock().unwrap().push(delay);
+            Ok(())
+        }
+
+        async fn in_progress(&self, _: &AckToken) -> Result<(), EmailQueueError> {
+            if self.fail_renewal.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(EmailQueueError::Storage {
+                    source: anyhow::anyhow!("lease lost"),
+                });
+            }
+            self.renewals
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn renew_interval(&self) -> Duration {
+            self.interval
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Fence {
+        Proceed,
+        Cancelled,
+        Failing,
+    }
+
+    #[derive(Clone)]
+    struct FenceRepository {
+        fence: Fence,
+        starts: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl EmailRepository for FenceRepository {
+        async fn save(&self, _: EmailId, _: &Envelope) -> Result<SaveResult, EmailRepositoryError> {
+            unimplemented!()
+        }
+
+        async fn list_all_attachment_blobs(&self) -> Result<Vec<BlobRef>, EmailRepositoryError> {
+            unimplemented!()
+        }
+
+        async fn list_emails(
+            &self,
+            _: ListEmailsParams,
+        ) -> Result<Vec<EmailRecord>, EmailRepositoryError> {
+            unimplemented!()
+        }
+
+        async fn set_attachments(
+            &self,
+            _: EmailId,
+            _: &[AttachmentRef],
+        ) -> Result<(), EmailRepositoryError> {
+            Ok(())
+        }
+
+        async fn set_enqueue_state(
+            &self,
+            _: EmailId,
+            _: &str,
+            _: EnqueueState,
+        ) -> Result<bool, EmailRepositoryError> {
+            Ok(true)
+        }
+
+        async fn delete(&self, _: EmailId) -> Result<(), EmailRepositoryError> {
+            unimplemented!()
+        }
+    }
+
+    impl EmailCancellation for FenceRepository {
+        async fn cancel(
+            &self,
+            _: EmailId,
+            _: Option<&str>,
+        ) -> Result<CancelOutcome, EmailRepositoryError> {
+            unimplemented!()
+        }
+
+        async fn start_delivery(&self, _: EmailId) -> Result<DeliveryStart, EmailRepositoryError> {
+            self.starts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match self.fence {
+                Fence::Proceed => Ok(DeliveryStart::Proceed),
+                Fence::Cancelled => Ok(DeliveryStart::Cancelled),
+                Fence::Failing => Err(EmailRepositoryError::Storage {
+                    source: anyhow::anyhow!("db down"),
+                }),
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct CountingProcessor {
+        fail: bool,
+        executed: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ProcessQueuedEmailUseCase for CountingProcessor {
+        async fn execute(
+            &self,
+            _: EmailId,
+            _: Envelope,
+        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
+            self.executed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail {
+                return Err(ProcessQueuedEmailError::Send(
+                    catapulte_domain::port::email_sender::SendError::Send {
+                        sender_name: SenderName::new("primary"),
+                        permanent: false,
+                        source: anyhow::anyhow!("temporary failure"),
+                    },
+                ));
+            }
+            Ok(processed("sender"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct SchedState {
+        queue: DeferQueue,
+        publisher: CapturingEventPublisher,
+        repository: FenceRepository,
+        processor: CountingProcessor,
+    }
+
+    impl SchedState {
+        fn new(interval: Duration, fence: Fence, fail: bool) -> Self {
+            Self {
+                queue: DeferQueue::new(interval),
+                publisher: CapturingEventPublisher::default(),
+                repository: FenceRepository {
+                    fence,
+                    starts: Arc::default(),
+                },
+                processor: CountingProcessor {
+                    fail,
+                    executed: Arc::default(),
+                },
+            }
+        }
+
+        fn executed(&self) -> usize {
+            self.processor
+                .executed
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn starts(&self) -> usize {
+            self.repository
+                .starts
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn events(&self) -> Vec<LifecycleEvent> {
+            self.publisher.events.lock().unwrap().clone()
+        }
+
+        fn nacks(&self) -> Vec<Duration> {
+            self.queue.nacks.lock().unwrap().clone()
+        }
+
+        fn spawn_process(
+            &self,
+            clock: impl Clock + Clone,
+            send_at_ms: Option<i64>,
+        ) -> tokio::task::JoinHandle<()> {
+            self.spawn_process_until(
+                clock,
+                send_at_ms,
+                tokio_util::sync::CancellationToken::new(),
+            )
+        }
+
+        fn spawn_process_until(
+            &self,
+            clock: impl Clock + Clone,
+            send_at_ms: Option<i64>,
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> tokio::task::JoinHandle<()> {
+            let state = self.clone();
+            tokio::spawn(async move {
+                let mut envelope = sample_envelope();
+                envelope.send_at_ms = send_at_ms;
+                process_one(
+                    &state,
+                    &clock,
+                    &cancel,
+                    EmailId::default(),
+                    envelope,
+                    1,
+                    AckToken::new(vec![0u8; 8]),
+                    TraceCarrier::default(),
+                )
+                .await;
+            })
+        }
+    }
+
+    impl WorkerState for SchedState {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &self.processor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &self.queue
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &self.publisher
+        }
+
+        fn attachment_store(&self) -> &impl AttachmentStore {
+            &NoopStore
+        }
+
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
+            &self.repository
+        }
+    }
+
+    fn sending_attempts(events: &[LifecycleEvent]) -> Vec<u32> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                LifecycleEvent::Sending { attempt, .. } => Some(*attempt),
+                _ => None,
+            })
+            .collect()
+    }
+
+    async fn settle() {
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_early_email_waits_and_renews_without_a_nack() {
+        let state = SchedState::new(Duration::from_secs(3), Fence::Proceed, false);
+        let clock = TimeClock::new();
+
+        state
+            .spawn_process(clock, Some(BASE_MS + 10_000))
+            .await
+            .unwrap();
+
+        assert!(state.queue.renewals() >= 4, "{}", state.queue.renewals());
+        assert!(state.nacks().is_empty());
+        assert_eq!(state.executed(), 1);
+        assert_eq!(sending_attempts(&state.events()), vec![1]);
+        assert_eq!(state.starts(), 1);
+        assert_eq!(state.queue.acks(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_backward_clock_jump_only_lengthens_the_wait() {
+        let state = SchedState::new(Duration::from_secs(1), Fence::Proceed, false);
+        let send_at = BASE_MS + 100_000;
+        let clock = ScriptedClock::new(&[send_at - 3_000, send_at - 500, send_at - 2_000, send_at]);
+
+        state.spawn_process(clock, Some(send_at)).await.unwrap();
+
+        assert_eq!(state.queue.renewals(), 3, "one renewal per early reading");
+        assert!(state.nacks().is_empty());
+        assert_eq!(state.executed(), 1);
+        assert_eq!(sending_attempts(&state.events()), vec![1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_transient_failure_after_a_wait_is_nacked_with_the_first_backoff() {
+        let state = SchedState::new(Duration::from_secs(3), Fence::Proceed, true);
+
+        state
+            .spawn_process(TimeClock::new(), Some(BASE_MS + 10_000))
+            .await
+            .unwrap();
+
+        assert_eq!(state.nacks(), vec![super::backoff(1)]);
+        let events = state.events();
+        assert_eq!(sending_attempts(&events), vec![1]);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, LifecycleEvent::Retrying { attempt: 1, .. }))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_email_scheduled_an_hour_ahead_is_never_nacked_and_runs_once_due() {
+        let state = SchedState::new(Duration::from_secs(3), Fence::Proceed, false);
+        let send_at = BASE_MS + 3_600_000;
+        let clock = ScriptedClock::new(&[BASE_MS]);
+        let handle = state.spawn_process(clock.clone(), Some(send_at));
+
+        for _ in 0..40 {
+            tokio::time::advance(Duration::from_secs(3)).await;
+            settle().await;
+        }
+
+        assert!(!handle.is_finished());
+        assert_eq!(state.executed(), 0);
+        assert!(state.nacks().is_empty());
+        assert!(state.events().is_empty());
+        assert!(state.queue.renewals() >= 40);
+        clock.set(send_at);
+        tokio::time::advance(Duration::from_secs(3)).await;
+        handle.await.unwrap();
+        assert_eq!(state.executed(), 1);
+        assert!(state.nacks().is_empty());
+        assert_eq!(sending_attempts(&state.events()), vec![1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_renewal_abandons_the_message_without_side_effects() {
+        let state = SchedState::new(Duration::from_secs(3), Fence::Proceed, false);
+        state
+            .queue
+            .fail_renewal
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        state
+            .spawn_process(TimeClock::new(), Some(BASE_MS + 10_000))
+            .await
+            .unwrap();
+
+        assert_eq!(state.executed(), 0);
+        assert!(state.events().is_empty());
+        assert_eq!(state.queue.acks(), 0);
+        assert!(state.nacks().is_empty());
+        assert_eq!(state.starts(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_email_is_acknowledged_and_dropped() {
+        let state = SchedState::new(Duration::from_secs(3), Fence::Cancelled, false);
+
+        state
+            .spawn_process(TimeClock::new(), Some(BASE_MS - 1_000))
+            .await
+            .unwrap();
+
+        assert_eq!(state.queue.acks(), 1);
+        assert_eq!(state.executed(), 0);
+        assert!(state.events().is_empty());
+        assert!(state.nacks().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fence_error_nacks_without_events() {
+        let state = SchedState::new(Duration::from_secs(3), Fence::Failing, false);
+
+        state
+            .spawn_process(TimeClock::new(), Some(BASE_MS - 1_000))
+            .await
+            .unwrap();
+
+        assert_eq!(state.nacks(), vec![super::backoff(1)]);
+        assert_eq!(state.queue.acks(), 0);
+        assert_eq!(state.executed(), 0);
+        assert!(state.events().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_email_without_a_send_time_skips_the_guard_and_the_fence() {
+        let state = SchedState::new(Duration::from_secs(3), Fence::Cancelled, false);
+
+        state.spawn_process(TimeClock::new(), None).await.unwrap();
+
+        assert_eq!(state.starts(), 0);
+        assert_eq!(state.queue.renewals(), 0);
+        assert_eq!(state.executed(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_due_email_takes_the_fence_without_renewing() {
+        let state = SchedState::new(Duration::from_secs(3), Fence::Proceed, false);
+
+        state
+            .spawn_process(TimeClock::new(), Some(BASE_MS - 1_000))
+            .await
+            .unwrap();
+
+        assert_eq!(state.starts(), 1);
+        assert_eq!(state.queue.renewals(), 0);
+        assert_eq!(state.executed(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_during_a_wait_returns_without_side_effects() {
+        let state = SchedState::new(Duration::from_secs(3), Fence::Proceed, false);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let handle = state.spawn_process_until(
+            ScriptedClock::new(&[BASE_MS]),
+            Some(BASE_MS + 3_600_000),
+            cancel.clone(),
+        );
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_secs(3)).await;
+            settle().await;
+        }
+        assert!(!handle.is_finished());
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("the wait must end on shutdown")
+            .unwrap();
+
+        assert_eq!(state.executed(), 0);
+        assert!(state.events().is_empty());
+        assert_eq!(state.queue.acks(), 0);
+        assert!(state.nacks().is_empty());
+        assert_eq!(state.starts(), 0);
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use catapulte_domain::port::attachment_store::AttachmentStore;
 use catapulte_domain::port::clock::SystemClock;
 use catapulte_domain::port::email_queue::EmailQueue;
-use catapulte_domain::port::email_repository::EmailRepository;
+use catapulte_domain::port::email_repository::{EmailCancellation, EmailRepository};
 use catapulte_domain::port::event_publisher::EventPublisher;
 use catapulte_domain::service::routed_email_sender::RoutedEmailSender;
 use catapulte_domain::service::stored_template_resolver::StoredTemplateResolver;
@@ -165,7 +165,7 @@ impl WorkerState for AppState {
         &self.attachment_store
     }
 
-    fn email_repository(&self) -> &impl EmailRepository {
+    fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
         &self.storage
     }
 }
