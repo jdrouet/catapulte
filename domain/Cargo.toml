@@ -15,7 +15,7 @@ bytes = "1"
 data-encoding = "2"
 hmac = "0.12"
 idna = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 serde_json = { workspace = true }
 thiserror = { version = "2.0" }
 tokio = { workspace = true, features = ["io-util"] }
