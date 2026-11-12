@@ -86,26 +86,38 @@ pub async fn run_scenario<S, SFut, B, BFut>(
         .expect("failed to build application");
 
     let cancel_app = cancel.clone();
-    let app_task = tokio::spawn(async move { app.run_with_shutdown(cancel_app).await });
+    let mut app_task = tokio::spawn(async move { app.run_with_shutdown(cancel_app).await });
 
-    // Poll until the HTTP server is ready.
+    // Poll until the HTTP server is ready, failing at once if the app stops first.
     let client = reqwest::Client::new();
     let http_base = format!("http://127.0.0.1:{http_port}");
-    let deadline = std::time::Instant::now() + Duration::from_mins(1);
-    let mut ready = false;
-    while std::time::Instant::now() < deadline {
+    let started = std::time::Instant::now();
+    loop {
         if let Ok(resp) = client.get(format!("{http_base}/health/ready")).send().await
             && resp.status().is_success()
         {
-            ready = true;
             break;
         }
+        if app_task.is_finished() {
+            match (&mut app_task).await {
+                Ok(Ok(())) => panic!(
+                    "{scenario_name}__{backend_name}: app exited cleanly before becoming ready"
+                ),
+                Ok(Err(e)) => {
+                    panic!("{scenario_name}__{backend_name}: app failed to start: {e:#}")
+                }
+                Err(join_err) => {
+                    panic!("{scenario_name}__{backend_name}: app task panicked: {join_err}")
+                }
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_mins(1),
+            "{scenario_name}__{backend_name}: server not ready after {:?}; app task still running",
+            started.elapsed()
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(
-        ready,
-        "{scenario_name}__{backend_name}: server did not become ready within 60s"
-    );
 
     let ctx = TestContext {
         client,
