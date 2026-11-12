@@ -16,6 +16,7 @@ struct NatsAdapterInner {
     jetstream: jetstream::Context,
     consumer: jetstream::consumer::PullConsumer,
     subject: String,
+    renew_interval: std::time::Duration,
 }
 
 impl NatsAdapter {
@@ -70,12 +71,17 @@ impl NatsAdapter {
             .await
             .context("creating NATS consumer")?;
 
+        // An existing durable keeps its own settings, so read them back.
+        let observed = &consumer.cached_info().config;
+        let renew_interval = renew_interval(observed.ack_wait, &observed.backoff);
+
         Ok(Self {
             inner: std::sync::Arc::new(NatsAdapterInner {
                 client,
                 jetstream: js,
                 consumer,
                 subject: config.subject.clone(),
+                renew_interval,
             }),
         })
     }
@@ -111,6 +117,28 @@ impl NatsAdapter {
     pub(crate) fn subject(&self) -> &str {
         &self.inner.subject
     }
+
+    pub(crate) fn renew_interval(&self) -> std::time::Duration {
+        self.inner.renew_interval
+    }
+}
+
+/// A third of the effective ack deadline: the smallest of `ack_wait` and every backoff entry,
+/// where an `ack_wait` of zero means the server default of 30 s.
+fn renew_interval(
+    ack_wait: std::time::Duration,
+    backoff: &[std::time::Duration],
+) -> std::time::Duration {
+    let ack_wait = if ack_wait.is_zero() {
+        std::time::Duration::from_secs(30)
+    } else {
+        ack_wait
+    };
+    backoff
+        .iter()
+        .copied()
+        .fold(ack_wait, std::time::Duration::min)
+        / 3
 }
 
 pub struct NatsConfig {
@@ -182,5 +210,35 @@ impl NatsConfig {
     /// Returns an error if the adapter fails to connect or set up the stream/consumer.
     pub async fn build(self) -> anyhow::Result<NatsAdapter> {
         NatsAdapter::connect(&self).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::renew_interval;
+
+    #[test]
+    fn an_ack_wait_of_zero_means_the_thirty_second_default() {
+        assert_eq!(renew_interval(Duration::ZERO, &[]), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_shortest_backoff_entry_bounds_the_deadline() {
+        let backoff = [Duration::from_mins(1), Duration::from_millis(1_500)];
+
+        assert_eq!(
+            renew_interval(Duration::from_secs(30), &backoff),
+            Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn ack_wait_bounds_the_deadline_when_it_is_the_smallest() {
+        assert_eq!(
+            renew_interval(Duration::from_secs(3), &[Duration::from_secs(30)]),
+            Duration::from_secs(1)
+        );
     }
 }

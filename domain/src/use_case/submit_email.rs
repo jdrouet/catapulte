@@ -972,6 +972,17 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for FakeQueue {
+        async fn in_progress(
+            &self,
+            _token: &crate::port::email_queue::AckToken,
+        ) -> Result<(), EmailQueueError> {
+            unimplemented!()
+        }
+
+        fn renew_interval(&self) -> std::time::Duration {
+            unimplemented!()
+        }
+
         async fn enqueue(
             &self,
             id: EmailId,
@@ -1007,6 +1018,17 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for FailingQueue {
+        async fn in_progress(
+            &self,
+            _token: &crate::port::email_queue::AckToken,
+        ) -> Result<(), EmailQueueError> {
+            unimplemented!()
+        }
+
+        fn renew_interval(&self) -> std::time::Duration {
+            unimplemented!()
+        }
+
         async fn enqueue(
             &self,
             _id: EmailId,
@@ -1679,6 +1701,17 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailQueue for ScriptedQueue {
+        async fn in_progress(
+            &self,
+            _token: &crate::port::email_queue::AckToken,
+        ) -> Result<(), EmailQueueError> {
+            unimplemented!()
+        }
+
+        fn renew_interval(&self) -> std::time::Duration {
+            unimplemented!()
+        }
+
         async fn enqueue(
             &self,
             id: EmailId,

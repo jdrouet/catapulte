@@ -244,6 +244,23 @@ impl EmailQueue for NatsAdapter {
             .map_err(|source| EmailQueueError::Storage { source })?;
         Ok(())
     }
+
+    async fn in_progress(&self, token: &AckToken) -> Result<(), EmailQueueError> {
+        let reply = String::from_utf8(token.0.clone())
+            .context("invalid in-progress token encoding")
+            .map_err(|source| EmailQueueError::Storage { source })?;
+        self.client()
+            .publish(reply, b"+WPI"[..].into())
+            .await
+            .map_err(nats_err)
+            .context("publishing progress to NATS")
+            .map_err(|source| EmailQueueError::Storage { source })?;
+        Ok(())
+    }
+
+    fn renew_interval(&self) -> Duration {
+        self.renew_interval()
+    }
 }
 
 #[cfg(test)]
@@ -407,6 +424,10 @@ mod tests {
     }
 
     async fn fresh_adapter() -> (NatsAdapter, testcontainers::ContainerAsync<GenericImage>) {
+        adapter_with(3, 3, vec![1, 2, 3]).await
+    }
+
+    async fn start_nats() -> (testcontainers::ContainerAsync<GenericImage>, u16) {
         let nats = GenericImage::new("nats", "2-alpine")
             .with_wait_for(WaitFor::message_on_stderr("Server is ready"))
             .with_cmd(["--js".to_owned()])
@@ -416,14 +437,23 @@ mod tests {
 
         let port = nats.get_host_port_ipv4(4222).await.unwrap();
         wait_for_tcp(port, Duration::from_secs(15)).await;
+        (nats, port)
+    }
+
+    async fn adapter_with(
+        ack_wait_secs: u64,
+        max_deliver: i64,
+        backoff_secs: Vec<u64>,
+    ) -> (NatsAdapter, testcontainers::ContainerAsync<GenericImage>) {
+        let (nats, port) = start_nats().await;
         let adapter = NatsConfig {
             url: format!("nats://127.0.0.1:{port}"),
             stream: "TEST".to_owned(),
             subject: "test.queued".to_owned(),
             consumer: "worker".to_owned(),
-            ack_wait_secs: 3,
-            max_deliver: 3,
-            backoff_secs: vec![1, 2, 3],
+            ack_wait_secs,
+            max_deliver,
+            backoff_secs,
         }
         .build()
         .await
@@ -608,5 +638,78 @@ mod tests {
                 .expect("Nats-Msg-Id missing");
             assert_eq!(got.as_str(), id.as_uuid().to_string());
         }
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn renewing_with_the_progress_ack_prevents_redelivery() {
+        let (adapter, _nats) = adapter_with(2, 1, vec![]).await;
+        assert_eq!(adapter.renew_interval(), Duration::from_secs(2) / 3);
+        adapter
+            .enqueue(EmailId::default(), &sample_envelope())
+            .await
+            .unwrap();
+        let dequeued = tokio::time::timeout(Duration::from_secs(10), adapter.dequeue())
+            .await
+            .expect("dequeue timed out")
+            .unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            adapter.in_progress(&dequeued.token).await.unwrap();
+            tokio::time::sleep(adapter.renew_interval()).await;
+        }
+        let info = adapter.consumer().clone().info().await.unwrap().clone();
+        assert_eq!(info.num_ack_pending, 1, "the claim is still held");
+        assert_eq!(info.delivered.consumer_sequence, 1);
+        adapter.ack(dequeued.token).await.unwrap();
+
+        let again = tokio::time::timeout(Duration::from_secs(3), adapter.dequeue()).await;
+        assert!(again.is_err(), "no redelivery after renewals and an ack");
+        assert_eq!(stream_messages(&adapter).await, 0);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test]
+    async fn the_renew_interval_follows_the_existing_consumer_not_the_request() {
+        let (_nats, port) = start_nats().await;
+        let url = format!("nats://127.0.0.1:{port}");
+        let js = async_nats::jetstream::new(async_nats::connect(&url).await.unwrap());
+        let stream = js
+            .create_stream(async_nats::jetstream::stream::Config {
+                name: "TEST".to_owned(),
+                subjects: vec!["test.queued".to_owned()],
+                retention: async_nats::jetstream::stream::RetentionPolicy::WorkQueue,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        stream
+            .create_consumer(async_nats::jetstream::consumer::pull::Config {
+                durable_name: Some("worker".to_owned()),
+                ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
+                ack_wait: Duration::from_secs(30),
+                max_deliver: 3,
+                filter_subject: "test.queued".to_owned(),
+                backoff: vec![Duration::from_millis(1_500)],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let adapter = NatsConfig {
+            url,
+            stream: "TEST".to_owned(),
+            subject: "test.queued".to_owned(),
+            consumer: "worker".to_owned(),
+            ack_wait_secs: 99,
+            max_deliver: 3,
+            backoff_secs: vec![60],
+        }
+        .build()
+        .await
+        .unwrap();
+
+        assert_eq!(adapter.renew_interval(), Duration::from_millis(500));
     }
 }

@@ -48,6 +48,14 @@ struct AckLosingQueue {
 }
 
 impl EmailQueue for AckLosingQueue {
+    async fn in_progress(&self, token: &AckToken) -> Result<(), EmailQueueError> {
+        self.inner.in_progress(token).await
+    }
+
+    fn renew_interval(&self) -> Duration {
+        self.inner.renew_interval()
+    }
+
     async fn enqueue(
         &self,
         id: EmailId,

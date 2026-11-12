@@ -137,4 +137,17 @@ pub trait EmailQueue: Send + Sync + 'static {
         token: AckToken,
         delay: Duration,
     ) -> impl std::future::Future<Output = Result<(), EmailQueueError>> + Send;
+
+    /// Extends the claim on a dequeued message without changing its attempt count.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmailQueueError::Storage` when the claim could not be extended.
+    fn in_progress(
+        &self,
+        token: &AckToken,
+    ) -> impl std::future::Future<Output = Result<(), EmailQueueError>> + Send;
+
+    /// How often [`EmailQueue::in_progress`] must be called to keep a claim.
+    fn renew_interval(&self) -> Duration;
 }

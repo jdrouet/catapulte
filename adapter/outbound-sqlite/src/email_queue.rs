@@ -96,6 +96,27 @@ pub(crate) fn now_ms() -> i64 {
     .unwrap_or(i64::MAX)
 }
 
+/// How long a claim holds a row before another worker may take it.
+const CLAIM_LEASE_MS: i64 = 300_000;
+
+/// The token is the queue entry id followed by the attempt count the claim set. That count
+/// changes on every claim, so a renewal can tell its own claim from a later one.
+fn claim_token(entry_id: &[u8], attempt: u32) -> AckToken {
+    let mut bytes = entry_id.to_vec();
+    bytes.extend_from_slice(&attempt.to_be_bytes());
+    AckToken::new(bytes)
+}
+
+fn token_parts(token: &AckToken) -> Result<(&[u8], u32), EmailQueueError> {
+    token
+        .0
+        .split_last_chunk::<4>()
+        .map(|(id, attempt)| (id, u32::from_be_bytes(*attempt)))
+        .ok_or_else(|| EmailQueueError::Storage {
+            source: anyhow::anyhow!("invalid queue token"),
+        })
+}
+
 /// Claims the row with the earliest availability time that is due.
 const CLAIM_SQL: &str = "UPDATE email_queue \
      SET attempt_count = attempt_count + 1, claimed_until = ? \
@@ -145,8 +166,7 @@ impl SqliteAdapter {
     async fn try_dequeue(&self) -> Result<Option<DequeuedEmail>, EmailQueueError> {
         use sqlx::Row;
         let now = now_ms();
-        let processing_timeout_ms: i64 = 300_000;
-        let claim_until = now + processing_timeout_ms;
+        let claim_until = now + CLAIM_LEASE_MS;
 
         let maybe = sqlx::query(CLAIM_SQL)
             .bind(claim_until)
@@ -189,8 +209,7 @@ impl SqliteAdapter {
 
         match maybe_row {
             None => {
-                let token = AckToken::new(entry_id_bytes.clone());
-                self.ack(token).await?;
+                self.ack(claim_token(&entry_id_bytes, new_attempt)).await?;
                 Ok(None)
             }
             Some(row) => parse_row(&row)
@@ -199,7 +218,7 @@ impl SqliteAdapter {
                         id,
                         envelope,
                         attempt: new_attempt,
-                        token: AckToken::new(entry_id_bytes.clone()),
+                        token: claim_token(&entry_id_bytes, new_attempt),
                         trace,
                     })
                 })
@@ -303,9 +322,9 @@ impl EmailQueue for SqliteAdapter {
     }
 
     async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
-        let entry_id_bytes = token.0;
+        let (entry_id_bytes, _) = token_parts(&token)?;
         sqlx::query("DELETE FROM email_queue WHERE id = ?")
-            .bind(&entry_id_bytes)
+            .bind(entry_id_bytes)
             .execute(self.pool())
             .await
             .context("deleting from email_queue")
@@ -317,15 +336,41 @@ impl EmailQueue for SqliteAdapter {
         let now = now_ms();
         let delay_ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
         let claimed_until = now.saturating_add(delay_ms);
-        let entry_id_bytes = token.0;
+        let (entry_id_bytes, _) = token_parts(&token)?;
         sqlx::query("UPDATE email_queue SET claimed_until = ? WHERE id = ?")
             .bind(claimed_until)
-            .bind(&entry_id_bytes)
+            .bind(entry_id_bytes)
             .execute(self.pool())
             .await
             .context("nacking email_queue entry")
             .map_err(|source| EmailQueueError::Storage { source })?;
         Ok(())
+    }
+
+    async fn in_progress(&self, token: &AckToken) -> Result<(), EmailQueueError> {
+        let (entry_id, attempt) = token_parts(token)?;
+        let renewed = sqlx::query(
+            "UPDATE email_queue SET claimed_until = ? WHERE id = ? AND attempt_count = ?",
+        )
+        .bind(now_ms().saturating_add(CLAIM_LEASE_MS))
+        .bind(entry_id)
+        .bind(i64::from(attempt))
+        .execute(self.pool())
+        .await
+        .context("extending the email_queue claim")
+        .map_err(|source| EmailQueueError::Storage { source })?
+        .rows_affected();
+        if renewed == 1 {
+            Ok(())
+        } else {
+            Err(EmailQueueError::Storage {
+                source: anyhow::anyhow!("the claim is no longer held"),
+            })
+        }
+    }
+
+    fn renew_interval(&self) -> Duration {
+        Duration::from_millis(CLAIM_LEASE_MS.unsigned_abs() / 3)
     }
 }
 
@@ -1464,5 +1509,94 @@ mod tests {
             panic!("expected a duplicate");
         };
         assert!(recovery.unwrap().send_at_ms.is_some());
+    }
+
+    async fn claim_state(
+        adapter: &SqliteAdapter,
+        token: &catapulte_domain::port::email_queue::AckToken,
+    ) -> (i64, i64) {
+        sqlx::query_as("SELECT claimed_until, attempt_count FROM email_queue WHERE id = ?")
+            .bind(super::token_parts(token).unwrap().0)
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn expire_claim(
+        adapter: &SqliteAdapter,
+        token: &catapulte_domain::port::email_queue::AckToken,
+    ) {
+        sqlx::query("UPDATE email_queue SET claimed_until = 1 WHERE id = ?")
+            .bind(super::token_parts(token).unwrap().0)
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn in_progress_extends_the_claim_and_keeps_the_attempt() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let token = adapter.try_dequeue().await.unwrap().unwrap().token;
+        expire_claim(&adapter, &token).await;
+
+        adapter.in_progress(&token).await.unwrap();
+
+        let (claimed_until, attempts) = claim_state(&adapter, &token).await;
+        assert!(claimed_until >= super::now_ms() + 299_000);
+        assert_eq!(attempts, 1);
+        assert_eq!(
+            adapter.renew_interval(),
+            std::time::Duration::from_secs(100)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_renewed_claim_cannot_be_taken_by_another_worker() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let token = adapter.try_dequeue().await.unwrap().unwrap().token;
+        expire_claim(&adapter, &token).await;
+        adapter.in_progress(&token).await.unwrap();
+
+        assert!(adapter.try_dequeue().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stale_claim_cannot_renew_a_row_another_worker_took() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let first = adapter.try_dequeue().await.unwrap().unwrap().token;
+        expire_claim(&adapter, &first).await;
+        let second = adapter.try_dequeue().await.unwrap().unwrap().token;
+        let before = claim_state(&adapter, &second).await;
+
+        let result = adapter.in_progress(&first).await;
+
+        assert!(matches!(result, Err(EmailQueueError::Storage { .. })));
+        assert_eq!(claim_state(&adapter, &second).await, before);
+        adapter.in_progress(&second).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_acked_claim_cannot_renew() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let token = adapter.try_dequeue().await.unwrap().unwrap().token;
+        adapter.ack(token.clone()).await.unwrap();
+
+        let result = adapter.in_progress(&token).await;
+
+        assert!(matches!(result, Err(EmailQueueError::Storage { .. })));
+    }
+
+    #[tokio::test]
+    async fn an_unrenewed_expired_claim_is_taken_again() {
+        let adapter = fresh_adapter().await;
+        scheduled_email(&adapter, "", due_now()).await;
+        let token = adapter.try_dequeue().await.unwrap().unwrap().token;
+        expire_claim(&adapter, &token).await;
+
+        assert_eq!(adapter.try_dequeue().await.unwrap().unwrap().attempt, 2);
     }
 }

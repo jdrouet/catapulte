@@ -329,6 +329,14 @@ mod tests {
     struct FailingAckQueue;
 
     impl EmailQueue for FailingAckQueue {
+        async fn in_progress(&self, _token: &AckToken) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        fn renew_interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+
         async fn enqueue(
             &self,
             _: EmailId,
@@ -566,6 +574,14 @@ mod tests {
     struct NoopQueue;
 
     impl EmailQueue for NoopQueue {
+        async fn in_progress(&self, _token: &AckToken) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        fn renew_interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+
         async fn enqueue(
             &self,
             _: EmailId,
@@ -827,6 +843,14 @@ mod tests {
     }
 
     impl EmailQueue for TrackingQueue {
+        async fn in_progress(&self, _token: &AckToken) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        fn renew_interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+
         async fn enqueue(
             &self,
             _: EmailId,
@@ -1251,6 +1275,14 @@ mod tests {
     }
 
     impl EmailQueue for FiniteQueue {
+        async fn in_progress(&self, _token: &AckToken) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        fn renew_interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+
         async fn enqueue(
             &self,
             _: EmailId,

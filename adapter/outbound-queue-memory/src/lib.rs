@@ -126,6 +126,14 @@ impl EmailQueue for MemoryQueue {
         }
         Ok(())
     }
+
+    async fn in_progress(&self, _token: &AckToken) -> Result<(), EmailQueueError> {
+        Ok(())
+    }
+
+    fn renew_interval(&self) -> Duration {
+        Duration::from_secs(1)
+    }
 }
 
 #[cfg(test)]

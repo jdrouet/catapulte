@@ -100,6 +100,24 @@ impl EmailQueue for QueueAdapter {
             Self::Nats(a) => a.nack(token, delay).await,
         }
     }
+
+    async fn in_progress(&self, token: &AckToken) -> Result<(), EmailQueueError> {
+        match self {
+            Self::Sqlite(a) => a.in_progress(token).await,
+            Self::Postgres(a) => a.in_progress(token).await,
+            Self::Memory(q) => q.in_progress(token).await,
+            Self::Nats(a) => a.in_progress(token).await,
+        }
+    }
+
+    fn renew_interval(&self) -> Duration {
+        match self {
+            Self::Sqlite(a) => a.renew_interval(),
+            Self::Postgres(a) => a.renew_interval(),
+            Self::Memory(q) => q.renew_interval(),
+            Self::Nats(a) => a.renew_interval(),
+        }
+    }
 }
 
 impl catapulte_domain::port::health::HealthCheck for QueueAdapter {
