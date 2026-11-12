@@ -98,6 +98,7 @@ If the email is not yet due on the injected wall clock, the worker waits in plac
   firing source and the worker.
 - If `in_progress` fails, the worker logs the error and stops handling the message. The lease
   lapses and the queue redelivers it.
+- If the worker shuts down during the wait, it stops the same way, with no ack, nack or event.
 
 The renewal interval is one third of the lease. On NATS the lease is the effective ack
 deadline, the minimum of `ack_wait` and every backoff entry of the consumer as observed. On
@@ -106,8 +107,10 @@ the storage queues it is the claim lease. On the memory queue it is one second.
 `in_progress` has one implementation per queue. On NATS it sends a progress acknowledgement,
 which resets the ack timer and leaves the delivery unchanged. On the storage queues it extends
 the claim with `claimed_until = now + lease` for the claimed row, with the same lease as the
-claim, so no other worker can claim the row during a long wait. On the memory queue it does
-nothing, because there is no lease.
+claim, so no other worker can claim the row during a long wait. The queue token carries the
+attempt count set by the claim, and the renewal only succeeds for that claim, so a worker whose
+lease lapsed cannot extend a row another worker has since claimed, and it fails after an ack.
+On the memory queue it does nothing, because there is no lease.
 
 A wait lasts only as long as the clock skew between the firing source and the worker, or a
 backward wall-clock jump. The cost is one worker slot held during that time.
@@ -130,12 +133,20 @@ time in the past fires immediately, and the fired message replaces the schedule.
   - the stream retention is WorkQueue or Limits;
   - the stream has no mirror and no sources;
   - the stream discard policy is Old;
+  - the stream has no subject transform;
+  - no other consumer of the stream reads the schedule subjects, which includes a consumer
+    without a filter;
+  - the stream `max_age` is unlimited or longer than five minutes;
   - the server version is 2.12 or later;
   - the effective ack deadline is at least one second.
 - **Stream upgrade.** If the stream lacks the schedule subject or the `allow_msg_schedules`
   flag, the adapter updates it from the configuration it fetched, adding
   `{subject}.scheduled.*` and the flag, so no other field changes. The flag is set
   automatically at startup. It cannot be turned off again once set.
+- **Horizon.** A schedule expires with the stream's messages. With a finite `max_age`, the
+  adapter reports a schedule limit of `max_age` minus five minutes, which covers the rounding
+  of `@at` and clock skew. The binary lowers the configured horizon to that limit, and the
+  adapter refuses a later time as a backstop.
 - **Not ready.** If any check fails, the adapter leaves the stream untouched where the check
   concerns the consumer, logs a warning at startup, and the API answers 422 to `send_at_ms`.
   A future email is never published for immediate delivery: enqueueing one without support
@@ -151,9 +162,10 @@ restart, as the rest of the memory queue is.
 
 ### (e) Capability per queue
 
-A queue reports the maximum schedule horizon when it supports scheduling, and nothing
-otherwise. SQLite, PostgreSQL and memory always support it. NATS supports it only when the
-readiness checks in (c) pass. An unsupported queue gives a startup warning and a 422 for
+A queue reports whether it supports scheduling and any limit on the horizon. The binary uses
+the smaller of that limit and the configured horizon, and nothing when unsupported. SQLite,
+PostgreSQL and memory always support it. NATS supports it only when the readiness checks in
+(c) pass. An unsupported queue gives a startup warning and a 422 for
 `send_at_ms`.
 
 ### (f) Announce winner
