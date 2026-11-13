@@ -118,6 +118,8 @@ All configuration is done via environment variables.
 | `CATAPULTE_POSTGRES_MAX_CONNECTIONS` | Maximum size of the Postgres connection pool | `10` |
 | `CATAPULTE_POSTGRES_ACQUIRE_TIMEOUT_SECS` | Seconds to wait for a free pooled connection before erroring | `30` |
 
+**Upgrade note:** each email now stores its latest delivery outcome (`delivery.succeeded` or `delivery.failed`) next to the email, kept current by a database trigger on lifecycle events, and status filters and listings read it instead of scanning events. The migration adds the columns, installs the trigger, backfills existing emails and builds new indexes in one step at startup. On Postgres the index builds are not concurrent, so writes to emails and lifecycle events wait until the migration commits; the wait grows with the number of emails and events, so plan a maintenance window for large databases. The trigger keeps the stored outcome current for every writer, including instances not yet upgraded.
+
 ### Inbound Transports
 
 #### HTTP
