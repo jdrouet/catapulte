@@ -1,7 +1,7 @@
 use anyhow::Context;
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
 use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherError};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 #[derive(Clone)]
@@ -157,7 +157,7 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
 
     use super::{WebhookConfig, WebhookPublisher};
