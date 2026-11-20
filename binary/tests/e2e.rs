@@ -1680,7 +1680,7 @@ async fn scoped_keys_isolate_idempotency_and_reads() {
     let b_emails = get_json(&base, "secret-b", "/emails").await;
     assert_eq!(ids(&b_emails, "emails", "id"), vec![b1.clone()]);
     let foreign = get_json(&base, "secret-a", &format!("/emails?id={b1}")).await;
-    assert!(foreign["emails"].as_array().unwrap().is_empty());
+    assert_eq!(foreign["emails"], serde_json::json!([]));
 
     let a_events = get_json(&base, "secret-a", "/events").await;
     assert!(
@@ -1689,11 +1689,11 @@ async fn scoped_keys_isolate_idempotency_and_reads() {
             .all(|e| *e == a1),
         "a only sees its own events"
     );
-    assert!(!a_events["events"].as_array().unwrap().is_empty());
+    assert_ne!(a_events["events"], serde_json::json!([]));
     let foreign_events = get_json(&base, "secret-a", &format!("/emails/{b1}/events")).await;
-    assert!(foreign_events["events"].as_array().unwrap().is_empty());
+    assert_eq!(foreign_events["events"], serde_json::json!([]));
     let own_events = get_json(&base, "secret-b", &format!("/emails/{b1}/events")).await;
-    assert!(!own_events["events"].as_array().unwrap().is_empty());
+    assert_ne!(own_events["events"], serde_json::json!([]));
 
     let ops_emails = get_json(&base, "secret-ops", "/emails").await;
     assert_eq!(ids(&ops_emails, "emails", "id").len(), 3);
@@ -2320,7 +2320,7 @@ async fn feedback_reports_suppress_only_verified_single_recipient_emails() {
             .await
             .contains(&"bounced".to_owned())
     );
-    assert!(suppressed(&base).await.is_empty());
+    assert_eq!(suppressed(&base).await, [] as [std::string::String; 0]);
 
     // Rejections leave no event and no suppression.
     let at = verp_single.find('@').unwrap();
@@ -2381,7 +2381,7 @@ async fn feedback_reports_suppress_only_verified_single_recipient_emails() {
             .await
             .contains(&"bounced".to_owned())
     );
-    assert!(suppressed(&base).await.is_empty());
+    assert_eq!(suppressed(&base).await, [] as [std::string::String; 0]);
 
     // A soft bounce is an event only.
     let r = post_feedback(
@@ -2397,7 +2397,7 @@ async fn feedback_reports_suppress_only_verified_single_recipient_emails() {
     )
     .await;
     assert_eq!(r.status(), 204);
-    assert!(suppressed(&base).await.is_empty());
+    assert_eq!(suppressed(&base).await, [] as [std::string::String; 0]);
 
     // A Message-ID-only complaint is an unverified event.
     let arf = fixture(
@@ -2421,7 +2421,7 @@ async fn feedback_reports_suppress_only_verified_single_recipient_emails() {
         events["events"][0]["payload"]["tags"],
         serde_json::json!(["welcome"])
     );
-    assert!(suppressed(&base).await.is_empty());
+    assert_eq!(suppressed(&base).await, [] as [std::string::String; 0]);
 
     // A signed hard bounce for the single-recipient email suppresses.
     let r = post_feedback(

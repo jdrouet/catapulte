@@ -574,13 +574,19 @@ mod tests {
             config.auth_entries[0].bearer_token,
             Some("ghp_xxx".to_owned())
         );
-        assert!(config.auth_entries[0].headers.is_empty());
+        assert_eq!(
+            config.auth_entries[0].headers,
+            [] as [(std::string::String, std::string::String); 0]
+        );
         assert_eq!(config.auth_entries[1].host, "gitlab.com");
         assert_eq!(
             config.auth_entries[1].bearer_token,
             Some("glpat_yyy".to_owned())
         );
-        assert!(config.auth_entries[1].headers.is_empty());
+        assert_eq!(
+            config.auth_entries[1].headers,
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     #[test]

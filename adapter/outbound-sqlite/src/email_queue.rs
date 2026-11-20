@@ -731,12 +731,9 @@ mod tests {
 
         assert_eq!(outcome, EnqueueOutcome::AlreadyEnqueued);
         assert_eq!(queue_rows(&adapter, id).await, 0);
-        assert!(
-            adapter
-                .list_all_attachment_blobs()
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            adapter.list_all_attachment_blobs().await.unwrap(),
+            [] as [catapulte_domain::entity::attachment::BlobRef; 0]
         );
     }
 
@@ -1311,12 +1308,9 @@ mod tests {
         adapter.cancel(id, Some("")).await.unwrap();
 
         assert_eq!(status_of(&adapter, id).await, EmailStatus::Cancelled);
-        assert!(
-            adapter
-                .list_all_attachment_blobs()
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            adapter.list_all_attachment_blobs().await.unwrap(),
+            [] as [catapulte_domain::entity::attachment::BlobRef; 0]
         );
         let with = |status| {
             let adapter = adapter.clone();

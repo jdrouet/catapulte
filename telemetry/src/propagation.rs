@@ -33,7 +33,7 @@ mod tests {
         // Without an installed propagator or an active OTel-backed span,
         // inject_current returns an empty vec rather than panicking.
         let pairs = inject_current();
-        assert!(pairs.is_empty());
+        assert_eq!(pairs, [] as [(std::string::String, std::string::String); 0]);
     }
 
     #[test]

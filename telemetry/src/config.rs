@@ -321,7 +321,10 @@ mod tests {
             (&format!("{P}_EXPORTER_OTLP_HEADERS"), ""),
         ])
         .unwrap();
-        assert!(c.headers.is_empty());
+        assert_eq!(
+            c.headers,
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     #[test]
