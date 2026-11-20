@@ -2086,7 +2086,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(repo.states().is_empty());
+        assert_eq!(repo.states(), [] as [RowState; 0]);
         assert_eq!(store.outstanding_blobs(), 0);
     }
 
@@ -2106,7 +2106,7 @@ mod tests {
 
         assert!(matches!(err, SubmitEmailError::Persist(_)));
         assert!(queue.calls.lock().unwrap().is_empty());
-        assert!(repo.states().is_empty());
+        assert_eq!(repo.states(), [] as [RowState; 0]);
         assert_eq!(store.outstanding_blobs(), 0);
     }
 
@@ -2921,7 +2921,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(queued_count(&events), 1);
-        assert!(scheduled_events(&events).is_empty());
+        assert_eq!(scheduled_events(&events), [] as [i64; 0]);
         assert_eq!(queue.calls.lock().unwrap().len(), 1);
     }
 
@@ -3023,7 +3023,7 @@ mod tests {
             .execute(scheduled_input("k", Some(NOW + 10_000)))
             .await
             .unwrap_err();
-        assert!(scheduled_events(&events).is_empty());
+        assert_eq!(scheduled_events(&events), [] as [i64; 0]);
 
         service.execute(scheduled_input("k", None)).await.unwrap();
 

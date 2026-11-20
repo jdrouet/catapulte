@@ -158,7 +158,7 @@ mod tests {
         let output = result.into_plain();
         assert_eq!(output.text(), Some("preview text"));
         let html = output.html().unwrap();
-        assert!(!html.is_empty());
+        assert_ne!(html, "");
         assert!(html.contains("Hello world"));
     }
 
@@ -179,7 +179,7 @@ mod tests {
         let output = result.into_plain();
         assert_eq!(output.text(), None);
         let html = output.html().unwrap();
-        assert!(!html.is_empty());
+        assert_ne!(html, "");
         assert!(html.contains("Hello world"));
     }
 

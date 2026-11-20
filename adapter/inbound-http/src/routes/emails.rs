@@ -1329,7 +1329,7 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let results = json["results"].as_array().expect("results array");
-        assert!(results.is_empty());
+        assert_eq!(*results, Vec::<serde_json::Value>::new());
     }
 
     #[tokio::test]

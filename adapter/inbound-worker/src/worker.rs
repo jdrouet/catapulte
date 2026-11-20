@@ -2286,7 +2286,7 @@ mod tests {
             .unwrap();
 
         assert!(state.queue.renewals() >= 4, "{}", state.queue.renewals());
-        assert!(state.nacks().is_empty());
+        assert_eq!(state.nacks(), [] as [std::time::Duration; 0]);
         assert_eq!(state.executed(), 1);
         assert_eq!(sending_attempts(&state.events()), vec![1]);
         assert_eq!(state.starts(), 1);
@@ -2302,7 +2302,7 @@ mod tests {
         state.spawn_process(clock, Some(send_at)).await.unwrap();
 
         assert_eq!(state.queue.renewals(), 3, "one renewal per early reading");
-        assert!(state.nacks().is_empty());
+        assert_eq!(state.nacks(), [] as [std::time::Duration; 0]);
         assert_eq!(state.executed(), 1);
         assert_eq!(sending_attempts(&state.events()), vec![1]);
     }
@@ -2340,14 +2340,17 @@ mod tests {
 
         assert!(!handle.is_finished());
         assert_eq!(state.executed(), 0);
-        assert!(state.nacks().is_empty());
-        assert!(state.events().is_empty());
+        assert_eq!(state.nacks(), [] as [std::time::Duration; 0]);
+        assert_eq!(
+            state.events(),
+            [] as [catapulte_domain::entity::lifecycle_event::LifecycleEvent; 0]
+        );
         assert!(state.queue.renewals() >= 40);
         clock.set(send_at);
         tokio::time::advance(Duration::from_secs(3)).await;
         handle.await.unwrap();
         assert_eq!(state.executed(), 1);
-        assert!(state.nacks().is_empty());
+        assert_eq!(state.nacks(), [] as [std::time::Duration; 0]);
         assert_eq!(sending_attempts(&state.events()), vec![1]);
     }
 
@@ -2365,9 +2368,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(state.executed(), 0);
-        assert!(state.events().is_empty());
+        assert_eq!(
+            state.events(),
+            [] as [catapulte_domain::entity::lifecycle_event::LifecycleEvent; 0]
+        );
         assert_eq!(state.queue.acks(), 0);
-        assert!(state.nacks().is_empty());
+        assert_eq!(state.nacks(), [] as [std::time::Duration; 0]);
         assert_eq!(state.starts(), 0);
     }
 
@@ -2382,8 +2388,11 @@ mod tests {
 
         assert_eq!(state.queue.acks(), 1);
         assert_eq!(state.executed(), 0);
-        assert!(state.events().is_empty());
-        assert!(state.nacks().is_empty());
+        assert_eq!(
+            state.events(),
+            [] as [catapulte_domain::entity::lifecycle_event::LifecycleEvent; 0]
+        );
+        assert_eq!(state.nacks(), [] as [std::time::Duration; 0]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -2398,7 +2407,10 @@ mod tests {
         assert_eq!(state.nacks(), vec![super::backoff(1)]);
         assert_eq!(state.queue.acks(), 0);
         assert_eq!(state.executed(), 0);
-        assert!(state.events().is_empty());
+        assert_eq!(
+            state.events(),
+            [] as [catapulte_domain::entity::lifecycle_event::LifecycleEvent; 0]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -2448,9 +2460,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(state.executed(), 0);
-        assert!(state.events().is_empty());
+        assert_eq!(
+            state.events(),
+            [] as [catapulte_domain::entity::lifecycle_event::LifecycleEvent; 0]
+        );
         assert_eq!(state.queue.acks(), 0);
-        assert!(state.nacks().is_empty());
+        assert_eq!(state.nacks(), [] as [std::time::Duration; 0]);
         assert_eq!(state.starts(), 0);
     }
 }

@@ -863,8 +863,11 @@ mod tests {
         let (_, _, recovery) = duplicate(&adapter).await;
 
         let recovered = recovery.unwrap();
-        assert!(recovered.reply_to.is_empty());
-        assert!(recovered.headers.is_empty());
+        assert_eq!(recovered.reply_to, [] as [std::string::String; 0]);
+        assert_eq!(
+            recovered.headers,
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     #[tokio::test]

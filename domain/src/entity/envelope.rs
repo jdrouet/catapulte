@@ -169,6 +169,6 @@ mod tests {
             url: None,
             mailto: Some("a%41@e.com".to_owned()),
         };
-        assert!(only_unsafe.headers().is_empty());
+        assert_eq!(only_unsafe.headers(), [] as [(&str, String); 0]);
     }
 }
