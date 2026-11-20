@@ -219,6 +219,11 @@ fn canonical_mailbox(mailbox: &Mailbox) -> Result<String, anyhow::Error> {
             .is_some_and(|n| n.chars().any(char::is_control)),
         "display name contains control characters"
     );
+    // Intake policy: quoted local parts and IP-literal domains are unsupported downstream.
+    anyhow::ensure!(
+        !mailbox.email.user().starts_with('"') && !mailbox.email.domain().starts_with('['),
+        "quoted or IP-literal addresses are not supported"
+    );
     let formatted = format_mailbox(mailbox)?;
     let reparsed = format_mailbox(&parse_mailbox(&formatted)?)?;
     anyhow::ensure!(
@@ -1617,7 +1622,7 @@ mod tests {
     }
 
     #[test]
-    fn addresses_lettre_cannot_put_in_headers_are_rejected() {
+    fn quoted_or_literal_addresses_are_rejected() {
         for address in [
             "a@[127.0.0.1]",
             "\"a b\"@example.com",
