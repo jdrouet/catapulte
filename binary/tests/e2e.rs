@@ -2947,3 +2947,123 @@ async fn previews_and_sends_share_one_admission_limit() {
     assert_eq!(previewed.await.unwrap(), 200);
     wait_for_event(&base, &id, "delivery.succeeded").await;
 }
+
+// The tracing setup only runs in `main`, so this test drives the real binary.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn trace_logs_never_contain_email_contents_on_the_nats_queue() {
+    use tokio::io::AsyncReadExt as _;
+
+    let nats = start_nats().await;
+    let (_mailpit, smtp_port, api_port) = start_mailpit_ready().await;
+    let nats_port = nats.get_host_port_ipv4(4222).await.unwrap();
+    wait_for_tcp(nats_port, Duration::from_secs(15)).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let http_port = free_port();
+    let unique = uuid::Uuid::now_v7().simple().to_string();
+    let recipient = format!("rcpt{unique}@example.com");
+    let body_marker = format!("bodymarker{unique}");
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_catapulte"))
+        .env_clear()
+        .env("RUST_LOG", "trace")
+        .env("CATAPULTE_HTTP_ADDRESS", format!("127.0.0.1:{http_port}"))
+        .env(
+            "CATAPULTE_SQLITE_URL",
+            format!(
+                "sqlite:{}",
+                dir.path().join("catapulte_e2e_trace.db").display()
+            ),
+        )
+        .env("CATAPULTE_QUEUE_BACKEND", "nats")
+        .env(
+            "CATAPULTE_QUEUE_URL",
+            format!("nats://127.0.0.1:{nats_port}"),
+        )
+        .env("CATAPULTE_SENDERS", "default")
+        .env("CATAPULTE_SENDER_DEFAULT_HOST", "127.0.0.1")
+        .env("CATAPULTE_SENDER_DEFAULT_PORT", smtp_port.to_string())
+        .env("CATAPULTE_SENDER_DEFAULT_TLS", "none")
+        .env(
+            "CATAPULTE_ATTACHMENT_FS_ROOT",
+            dir.path().join("attachments"),
+        )
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("failed to spawn catapulte binary");
+
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let out_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stdout.read_to_end(&mut buf).await.unwrap();
+        buf
+    });
+    let err_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        stderr.read_to_end(&mut buf).await.unwrap();
+        buf
+    });
+
+    wait_for_tcp(http_port, Duration::from_secs(30)).await;
+    let base = format!("http://127.0.0.1:{http_port}");
+
+    let response = submit_as(
+        &base,
+        "any",
+        "sender@example.com",
+        None,
+        serde_json::json!({
+            "recipients": [{ "kind": "to", "address": recipient }],
+            "body": { "kind": "plain", "text": body_marker },
+        }),
+    )
+    .await;
+    let id = id_of(response).await;
+    wait_for_delivery(&base, "any", &id).await;
+
+    let mail_api = format!("http://127.0.0.1:{api_port}/api/v1");
+    let listing: serde_json::Value = reqwest::get(format!("{mail_api}/messages"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let message_id = listing["messages"][0]["ID"].as_str().unwrap();
+    let delivered = reqwest::get(format!("{mail_api}/message/{message_id}"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(delivered.contains(&recipient) && delivered.contains(&body_marker));
+
+    child.kill().await.unwrap();
+    let join = async { (out_task.await.unwrap(), err_task.await.unwrap()) };
+    let (out, err) = tokio::time::timeout(Duration::from_secs(10), join)
+        .await
+        .expect("log readers did not finish after the binary was killed");
+    let logs = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out),
+        String::from_utf8_lossy(&err)
+    );
+
+    assert!(logs.contains("TRACE"), "binary did not log at trace level");
+    assert!(logs.contains("async_nats"), "no async_nats logs captured");
+    for marker in [&recipient, &body_marker] {
+        let offending: Vec<&str> = logs
+            .lines()
+            .filter(|l| l.contains(marker.as_str()))
+            .collect();
+        assert!(
+            offending.is_empty(),
+            "marker {marker} leaked into logs:\n{}",
+            offending.join("\n")
+        );
+    }
+}
