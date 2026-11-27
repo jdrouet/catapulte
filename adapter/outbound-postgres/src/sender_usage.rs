@@ -23,10 +23,10 @@ impl catapulte_domain::port::sender_usage::SenderUsage for PostgresAdapter {
 
         let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
             "SELECT sender_name, \
-             SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END) AS sent_count, \
-             SUM(CASE WHEN event_type = 'failed' THEN 1 ELSE 0 END) AS failed_count \
+             SUM(CASE WHEN event_type = 'delivery.succeeded' THEN 1 ELSE 0 END) AS sent_count, \
+             SUM(CASE WHEN event_type = 'delivery.failed' THEN 1 ELSE 0 END) AS failed_count \
              FROM lifecycle_events \
-             WHERE event_type IN ('sent', 'failed') \
+             WHERE event_type IN ('delivery.succeeded', 'delivery.failed') \
              AND sender_name IN (",
         );
         let mut sep = qb.separated(", ");
@@ -71,5 +71,124 @@ impl catapulte_domain::port::sender_usage::SenderUsage for PostgresAdapter {
                 }
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use catapulte_domain::entity::body::{BodySource, Plain};
+    use catapulte_domain::entity::email::EmailId;
+    use catapulte_domain::entity::envelope::Envelope;
+    use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
+    use catapulte_domain::entity::sender::SenderName;
+    use catapulte_domain::port::email_repository::EmailRepository;
+    use catapulte_domain::port::event_publisher::EventPublisher;
+    use catapulte_domain::port::sender_usage::SenderUsage;
+
+    use crate::test_support::fresh_adapter;
+
+    fn sample_envelope() -> Envelope {
+        Envelope::new(
+            "sender@example.com",
+            vec![],
+            BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
+        )
+    }
+
+    #[tokio::test]
+    async fn get_stats_returns_zero_for_sender_with_no_events() {
+        let adapter = fresh_adapter().await;
+        let names = vec![SenderName::new("primary")];
+        let stats = adapter.get_stats(&names, 0).await.unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].name, SenderName::new("primary"));
+        assert_eq!(stats[0].sent_in_range, 0);
+        assert_eq!(stats[0].failed_in_range, 0);
+    }
+
+    #[tokio::test]
+    async fn get_stats_counts_sent_and_failed_events() {
+        let adapter = fresh_adapter().await;
+        let id1 = EmailId::default();
+        let id2 = EmailId::default();
+        adapter.save(id1, &sample_envelope()).await.unwrap();
+        adapter.save(id2, &sample_envelope()).await.unwrap();
+
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id: id1,
+                sender_name: SenderName::new("primary"),
+                context: EventContext::with_correlation(None),
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
+            })
+            .await
+            .unwrap();
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id: id2,
+                sender_name: SenderName::new("primary"),
+                context: EventContext::with_correlation(None),
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
+            })
+            .await
+            .unwrap();
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id: id1,
+                attempt: 3,
+                reason: "err".to_owned(),
+                error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
+                sender_name: Some(SenderName::new("backup")),
+                context: EventContext::with_correlation(None),
+            })
+            .await
+            .unwrap();
+
+        let names = vec![SenderName::new("primary"), SenderName::new("backup")];
+        let stats = adapter.get_stats(&names, 0).await.unwrap();
+
+        let primary = stats
+            .iter()
+            .find(|s| s.name == SenderName::new("primary"))
+            .unwrap();
+        let backup = stats
+            .iter()
+            .find(|s| s.name == SenderName::new("backup"))
+            .unwrap();
+
+        assert_eq!(primary.sent_in_range, 2);
+        assert_eq!(primary.failed_in_range, 0);
+        assert_eq!(backup.sent_in_range, 0);
+        assert_eq!(backup.failed_in_range, 1);
+    }
+
+    #[tokio::test]
+    async fn get_stats_excludes_events_before_since_ms() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        adapter
+            .publish(&LifecycleEvent::Sent {
+                id,
+                sender_name: SenderName::new("primary"),
+                context: EventContext::with_correlation(None),
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let names = vec![SenderName::new("primary")];
+        let stats = adapter.get_stats(&names, i64::MAX).await.unwrap();
+        assert_eq!(stats[0].sent_in_range, 0);
+    }
+
+    #[tokio::test]
+    async fn get_stats_empty_names_returns_empty() {
+        let adapter = fresh_adapter().await;
+        let stats = adapter.get_stats(&[], 0).await.unwrap();
+        assert!(stats.is_empty());
     }
 }
