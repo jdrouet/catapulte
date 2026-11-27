@@ -1808,10 +1808,12 @@ mod tests {
         let token = adapter.try_dequeue().await.unwrap().unwrap().token;
         expire_claim(&adapter, &token).await;
 
+        // Taken before the renewal, so a slow machine cannot shrink the margin.
+        let before = super::now_ms();
         adapter.in_progress(&token).await.unwrap();
 
         let (claimed_until, attempts) = claim_state(&adapter, &token).await;
-        assert!(claimed_until >= super::now_ms() + 299_000);
+        assert!(claimed_until >= before + 300_000);
         assert_eq!(attempts, 1);
         assert_eq!(
             adapter.renew_interval(),
