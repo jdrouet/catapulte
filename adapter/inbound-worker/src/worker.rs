@@ -2546,7 +2546,9 @@ mod tests {
             .with_max_level(tracing::Level::TRACE)
             .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
             .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
+        // Global, not scoped: sibling tests hit the same callsites with no subscriber and
+        // would otherwise cache a never-enabled interest before this capture is installed.
+        tracing::subscriber::set_global_default(subscriber).unwrap();
 
         let publisher = CapturingEventPublisher::default();
         let retry_id = EmailId::default();
@@ -2572,15 +2574,27 @@ mod tests {
 
         let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
         assert!(!logs.contains("MARKER-849"), "relay reply leaked: {logs}");
+        let ids = [
+            retry_id.as_uuid().to_string(),
+            terminal_id.as_uuid().to_string(),
+        ];
+        assert_eq!(
+            logs.lines()
+                .filter(|l| l.contains("failed to process email")
+                    && ids.iter().any(|id| l.contains(id.as_str())))
+                .count(),
+            2,
+            "expected exactly two failed-to-process events: {logs}"
+        );
         for (class, id) in [("delivery", retry_id), ("rejected", terminal_id)] {
             let line = logs
                 .lines()
                 .find(|l| {
                     l.contains("failed to process email")
+                        && l.contains(&id.as_uuid().to_string())
                         && l.contains(&format!("error_class=\"{class}\""))
                 })
                 .unwrap_or_else(|| panic!("no failed-to-process line for {class}: {logs}"));
-            assert!(line.contains(&id.as_uuid().to_string()), "{line}");
             assert!(line.contains("attempt=1"), "{line}");
         }
 
