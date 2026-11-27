@@ -110,6 +110,10 @@ impl EventPublisher for StorageAdapter {
             Self::Postgres(a) => a.publish(event).await,
         }
     }
+
+    async fn publish_recorded(&self, _event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+        Ok(())
+    }
 }
 
 impl EventRepository for StorageAdapter {

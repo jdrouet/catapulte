@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
+use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
 use catapulte_domain::port::email_queue::{
-    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome,
+    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, FinishOutcome,
 };
 use catapulte_outbound_nats::{NatsAdapter, NatsConfig};
 use catapulte_outbound_postgres::PostgresAdapter;
@@ -104,6 +105,19 @@ impl EmailQueue for QueueAdapter {
         }
     }
 
+    async fn finish(
+        &self,
+        token: AckToken,
+        event: &LifecycleEvent,
+    ) -> Result<FinishOutcome, EmailQueueError> {
+        match self {
+            Self::Sqlite(a) => a.finish(token, event).await,
+            Self::Postgres(a) => a.finish(token, event).await,
+            Self::Memory(q) => q.finish(token, event).await,
+            Self::Nats(a) => a.finish(token, event).await,
+        }
+    }
+
     async fn nack(&self, token: AckToken, delay: Duration) -> Result<(), EmailQueueError> {
         match self {
             Self::Sqlite(a) => a.nack(token, delay).await,
@@ -184,5 +198,51 @@ impl QueueBackendConfig {
                 Ok(QueueAdapter::Nats(adapter))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use catapulte_domain::entity::body::{BodySource, Plain};
+    use catapulte_domain::entity::email::EmailId;
+    use catapulte_domain::entity::envelope::Envelope;
+    use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
+    use catapulte_domain::entity::sender::SenderName;
+    use catapulte_domain::port::email_queue::{EmailQueue, FinishOutcome};
+    use catapulte_domain::port::email_repository::EmailRepository;
+    use catapulte_outbound_sqlite::SqliteAdapter;
+
+    use super::QueueAdapter;
+
+    #[tokio::test]
+    async fn storage_queue_finish_records_the_event() {
+        let sqlite = SqliteAdapter::connect(":memory:").await.unwrap();
+        sqlite.migrate().await.unwrap();
+        let queue = QueueAdapter::Sqlite(sqlite.clone());
+        let id = EmailId::default();
+        let envelope = Envelope::new(
+            "sender@example.com",
+            vec![],
+            BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
+        );
+        sqlite.save(id, &envelope).await.unwrap();
+        queue.enqueue(id, &envelope).await.unwrap();
+        let dequeued = queue.dequeue().await.unwrap();
+
+        let outcome = queue
+            .finish(
+                dequeued.token,
+                &LifecycleEvent::Sent {
+                    id,
+                    sender_name: SenderName::new("primary"),
+                    context: EventContext::with_correlation(None),
+                    smtp_response: None,
+                    message_id: "<test@example.com>".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, FinishOutcome::Recorded);
     }
 }

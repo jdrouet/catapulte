@@ -19,4 +19,16 @@ pub trait EventPublisher: Send + Sync + 'static {
         &self,
         event: &LifecycleEvent,
     ) -> impl std::future::Future<Output = Result<(), EventPublisherError>> + Send;
+
+    /// Publishes an event the storage already holds: every sink except storage receives it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `EventPublisherError` when the event cannot be published.
+    fn publish_recorded(
+        &self,
+        event: &LifecycleEvent,
+    ) -> impl std::future::Future<Output = Result<(), EventPublisherError>> + Send {
+        self.publish(event)
+    }
 }

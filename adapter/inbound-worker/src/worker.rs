@@ -1,7 +1,7 @@
 use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
 use catapulte_domain::port::attachment_store::AttachmentStore;
 use catapulte_domain::port::clock::{Clock, SystemClock};
-use catapulte_domain::port::email_queue::{AckToken, EmailQueue};
+use catapulte_domain::port::email_queue::{AckToken, EmailQueue, FinishOutcome};
 use catapulte_domain::port::email_repository::{DeliveryStart, EmailCancellation, EmailRepository};
 use catapulte_domain::port::event_publisher::EventPublisher;
 use catapulte_domain::use_case::process_queued_email::ProcessQueuedEmailUseCase;
@@ -261,10 +261,20 @@ async fn process_one<S: WorkerState>(
 
         match state.process_queued_email().execute(id, envelope).await {
             Ok(processed) => {
-                if let Err(e) = state.email_queue().ack(token).await {
-                    tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to ack email");
-                    return;
-                }
+                let sent = LifecycleEvent::Sent {
+                    id,
+                    sender_name: processed.sender_name,
+                    context: context.clone(),
+                    smtp_response: processed.smtp_response,
+                    message_id: processed.message_id,
+                };
+                let outcome = match state.email_queue().finish(token, &sent).await {
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        tracing::error!(error = %e, email_id = %id.as_uuid(), "failed to ack email");
+                        return;
+                    }
+                };
                 if let Err(e) = state.email_repository().set_attachments(id, &[]).await {
                     tracing::warn!(
                         error = %e,
@@ -281,17 +291,12 @@ async fn process_one<S: WorkerState>(
                         );
                     }
                 }
-                if let Err(e) = state
-                    .event_publisher()
-                    .publish(&LifecycleEvent::Sent {
-                        id,
-                        sender_name: processed.sender_name,
-                        context: context.clone(),
-                        smtp_response: processed.smtp_response,
-                        message_id: processed.message_id,
-                    })
-                    .await
-                {
+                let published = if outcome == FinishOutcome::Recorded {
+                    state.event_publisher().publish_recorded(&sent).await
+                } else {
+                    state.event_publisher().publish(&sent).await
+                };
+                if let Err(e) = published {
                     tracing::error!(error = %e, "failed to publish sent event");
                 }
                 if !processed.suppressed.is_empty()
@@ -321,12 +326,8 @@ async fn process_one<S: WorkerState>(
                 let reason = e.to_string().replace('\0', "");
                 let sender_name = e.sender_name().cloned();
                 let is_terminal = e.is_permanent() || attempt >= MAX_ATTEMPTS;
-                let event = if is_terminal {
-                    if let Err(ack_err) = state.email_queue().ack(token).await {
-                        tracing::error!(error = %ack_err, "failed to ack permanently failed email");
-                        return;
-                    }
-                    LifecycleEvent::Failed {
+                let (event, recorded) = if is_terminal {
+                    let event = LifecycleEvent::Failed {
                         id,
                         attempt,
                         reason,
@@ -334,6 +335,13 @@ async fn process_one<S: WorkerState>(
                         failure_category,
                         sender_name,
                         context: context.clone(),
+                    };
+                    match state.email_queue().finish(token, &event).await {
+                        Ok(outcome) => (event, outcome == FinishOutcome::Recorded),
+                        Err(ack_err) => {
+                            tracing::error!(error = %ack_err, "failed to ack permanently failed email");
+                            return;
+                        }
                     }
                 } else {
                     let delay = backoff(attempt);
@@ -344,7 +352,7 @@ async fn process_one<S: WorkerState>(
                         );
                         return;
                     }
-                    LifecycleEvent::Retrying {
+                    let event = LifecycleEvent::Retrying {
                         id,
                         attempt,
                         reason,
@@ -352,9 +360,15 @@ async fn process_one<S: WorkerState>(
                         failure_category,
                         sender_name,
                         context: context.clone(),
-                    }
+                    };
+                    (event, false)
                 };
-                if let Err(pub_err) = state.event_publisher().publish(&event).await {
+                let published = if recorded {
+                    state.event_publisher().publish_recorded(&event).await
+                } else {
+                    state.event_publisher().publish(&event).await
+                };
+                if let Err(pub_err) = published {
                     tracing::error!(error = %pub_err, "failed to publish lifecycle event");
                 }
             }
@@ -379,7 +393,8 @@ mod tests {
         AttachmentReader, AttachmentStore, AttachmentStoreError, PutResult,
     };
     use catapulte_domain::port::email_queue::{
-        AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, TraceCarrier,
+        AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, FinishOutcome,
+        TraceCarrier,
     };
     use catapulte_domain::port::email_repository::{
         CancelOutcome, DeliveryStart, EmailCancellation, EmailRecord, EmailRepository,
@@ -1939,6 +1954,161 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, LifecycleEvent::Retrying { .. }))
         );
+    }
+
+    #[derive(Clone, Default)]
+    struct Seen {
+        finished: Arc<Mutex<Vec<&'static str>>>,
+        published: Arc<Mutex<Vec<&'static str>>>,
+        recorded: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl EmailQueue for Seen {
+        async fn in_progress(&self, _: &AckToken) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        fn renew_interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+
+        async fn enqueue(
+            &self,
+            _: EmailId,
+            _: &Envelope,
+        ) -> Result<EnqueueOutcome, EmailQueueError> {
+            Ok(EnqueueOutcome::Inserted)
+        }
+
+        async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
+            std::future::pending().await
+        }
+
+        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+
+        async fn finish(
+            &self,
+            _: AckToken,
+            event: &LifecycleEvent,
+        ) -> Result<FinishOutcome, EmailQueueError> {
+            self.finished.lock().unwrap().push(event.event_type());
+            Ok(FinishOutcome::Recorded)
+        }
+
+        async fn nack(&self, _: AckToken, _: Duration) -> Result<(), EmailQueueError> {
+            Ok(())
+        }
+    }
+
+    impl EventPublisher for Seen {
+        async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+            self.published.lock().unwrap().push(event.event_type());
+            Ok(())
+        }
+
+        async fn publish_recorded(
+            &self,
+            event: &LifecycleEvent,
+        ) -> Result<(), EventPublisherError> {
+            self.recorded.lock().unwrap().push(event.event_type());
+            Ok(())
+        }
+    }
+
+    struct SuppressedProcessor;
+
+    impl ProcessQueuedEmailUseCase for SuppressedProcessor {
+        async fn execute(
+            &self,
+            _: EmailId,
+            _: Envelope,
+        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
+            Err(ProcessQueuedEmailError::AllRecipientsSuppressed)
+        }
+    }
+
+    #[derive(Clone)]
+    struct SeenState {
+        seen: Seen,
+        processor: SeenProcessor,
+    }
+
+    impl WorkerState for SeenState {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &self.processor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &self.seen
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &self.seen
+        }
+
+        fn attachment_store(&self) -> &impl AttachmentStore {
+            &NoopStore
+        }
+
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
+            &NoopRepository
+        }
+    }
+
+    #[derive(Clone)]
+    struct SeenProcessor(bool);
+
+    impl ProcessQueuedEmailUseCase for SeenProcessor {
+        async fn execute(
+            &self,
+            id: EmailId,
+            envelope: Envelope,
+        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
+            if self.0 {
+                SuppressedProcessor.execute(id, envelope).await
+            } else {
+                OkProcessor.execute(id, envelope).await
+            }
+        }
+    }
+
+    async fn run_once(fail: bool) -> Seen {
+        let state = SeenState {
+            seen: Seen::default(),
+            processor: SeenProcessor(fail),
+        };
+        process_one(
+            &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
+            EmailId::default(),
+            sample_envelope(),
+            1,
+            AckToken::new(vec![0u8; 8]),
+            TraceCarrier::default(),
+        )
+        .await;
+        state.seen
+    }
+
+    #[tokio::test]
+    async fn a_recorded_finish_forwards_sent_without_storing_it_again() {
+        let seen = run_once(false).await;
+
+        assert_eq!(*seen.finished.lock().unwrap(), ["delivery.succeeded"]);
+        assert_eq!(*seen.published.lock().unwrap(), ["sending"]);
+        assert_eq!(*seen.recorded.lock().unwrap(), ["delivery.succeeded"]);
+    }
+
+    #[tokio::test]
+    async fn a_recorded_finish_forwards_failed_without_storing_it_again() {
+        let seen = run_once(true).await;
+
+        assert_eq!(*seen.finished.lock().unwrap(), ["delivery.failed"]);
+        assert_eq!(*seen.published.lock().unwrap(), ["sending"]);
+        assert_eq!(*seen.recorded.lock().unwrap(), ["delivery.failed"]);
     }
 
     /// Wall clock that follows tokio's (paused) time, starting at `BASE_MS`.
