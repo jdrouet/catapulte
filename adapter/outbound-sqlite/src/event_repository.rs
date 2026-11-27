@@ -39,6 +39,10 @@ impl EventRepository for SqliteAdapter {
             qb.push(" AND error_class = ");
             qb.push_bind(error_class.as_str().to_owned());
         }
+        if let Some(category) = params.failure_category {
+            qb.push(" AND json_extract(payload, '$.failure_category') = ");
+            qb.push_bind(category.as_str().to_owned());
+        }
         if let Some(after) = params.after_ms {
             qb.push(" AND created_at > ");
             qb.push_bind(after);
@@ -126,6 +130,7 @@ mod tests {
             event_type: None,
             sender_name: None,
             error_class: None,
+            failure_category: None,
             after_ms: None,
             before_ms: None,
             limit: 20,
@@ -416,6 +421,54 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].error_class.as_deref(), Some("routing"));
+    }
+
+    #[tokio::test]
+    async fn list_events_filters_by_failure_category() {
+        use catapulte_domain::entity::error_class::ErrorClass;
+        use catapulte_domain::entity::failure_category::FailureCategory;
+
+        let id = EmailId::default();
+        let adapter = adapter_with_email(id).await;
+
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id,
+                attempt: 1,
+                reason: "delivery error".to_owned(),
+                error_class: ErrorClass::Delivery,
+                failure_category: FailureCategory::Tls,
+                sender_name: None,
+                context: EventContext::with_correlation(None),
+            })
+            .await
+            .unwrap();
+        adapter
+            .publish(&LifecycleEvent::Failed {
+                id,
+                attempt: 2,
+                reason: "routing error".to_owned(),
+                error_class: ErrorClass::Delivery,
+                failure_category: FailureCategory::Timeout,
+                sender_name: None,
+                context: EventContext::with_correlation(None),
+            })
+            .await
+            .unwrap();
+
+        let events = adapter
+            .list_events(ListEventsParams {
+                failure_category: Some(FailureCategory::Timeout),
+                ..default_params()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].error_class.as_deref(), Some("delivery"));
+        assert_eq!(
+            events[0].payload.as_ref().unwrap()["failure_category"],
+            "timeout"
+        );
     }
 
     #[tokio::test]

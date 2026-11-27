@@ -2384,6 +2384,7 @@ mod tests {
             event_type: None,
             sender_name: None,
             error_class: None,
+            failure_category: None,
             after_ms: None,
             before_ms: None,
             limit: 20,

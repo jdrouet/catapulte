@@ -307,6 +307,7 @@ impl Harness {
                 event_type: Some("queued".to_owned()),
                 sender_name: None,
                 error_class: None,
+                failure_category: None,
                 after_ms: None,
                 before_ms: None,
                 limit: 100,
