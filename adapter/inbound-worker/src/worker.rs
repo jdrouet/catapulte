@@ -1851,6 +1851,7 @@ mod tests {
                 catapulte_domain::port::email_sender::SendError::Send {
                     sender_name: SenderName::new("primary"),
                     permanent: true,
+                    category: catapulte_domain::entity::failure_category::FailureCategory::PermanentRejection,
                     source: anyhow::anyhow!(
                         "smtp send failed: permanent error (550): 5.1.1 no such user"
                     ),
@@ -2149,6 +2150,7 @@ mod tests {
                     catapulte_domain::port::email_sender::SendError::Send {
                         sender_name: SenderName::new("primary"),
                         permanent: false,
+                        category: catapulte_domain::entity::failure_category::FailureCategory::TemporaryRejection,
                         source: anyhow::anyhow!("temporary failure"),
                     },
                 ));
@@ -2487,6 +2489,11 @@ mod tests {
                 catapulte_domain::port::email_sender::SendError::Send {
                     sender_name: SenderName::new("relay"),
                     permanent: self.permanent,
+                    category: if self.permanent {
+                        catapulte_domain::entity::failure_category::FailureCategory::PermanentRejection
+                    } else {
+                        catapulte_domain::entity::failure_category::FailureCategory::TemporaryRejection
+                    },
                     source: anyhow::anyhow!("{RELAY_REPLY}"),
                 },
             ))

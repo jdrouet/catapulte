@@ -5,6 +5,7 @@ use crate::entity::attachment::{AttachmentRef, ResolvedAttachment};
 use crate::entity::email::EmailId;
 use crate::entity::envelope::Envelope;
 use crate::entity::error_class::ErrorClass;
+use crate::entity::failure_category::FailureCategory;
 use crate::entity::return_path::BounceConfig;
 use crate::entity::sender::SenderName;
 use crate::entity::suppression::suppression_key;
@@ -114,6 +115,14 @@ impl ProcessQueuedEmailError {
             Self::Send(SendError::Send { .. }) | Self::Suppression(_) => ErrorClass::Delivery,
             Self::Send(SendError::NoMatchingRoute { .. }) => ErrorClass::Routing,
             Self::AllRecipientsSuppressed => ErrorClass::Suppressed,
+        }
+    }
+
+    #[must_use]
+    pub fn failure_category(&self) -> FailureCategory {
+        match self {
+            Self::Send(SendError::Send { category, .. }) => *category,
+            _ => FailureCategory::Other,
         }
     }
 }
@@ -304,6 +313,30 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failure_category_comes_from_send_and_defaults_to_other() {
+        use super::ProcessQueuedEmailError;
+        use crate::entity::failure_category::FailureCategory;
+        use crate::entity::sender::SenderName;
+        use crate::port::email_sender::SendError;
+
+        let tls = ProcessQueuedEmailError::Send(SendError::Send {
+            sender_name: SenderName::new("x"),
+            permanent: false,
+            category: FailureCategory::Tls,
+            source: anyhow::anyhow!("boom"),
+        });
+        assert_eq!(tls.failure_category(), FailureCategory::Tls);
+        let no_route = ProcessQueuedEmailError::Send(SendError::NoMatchingRoute {
+            sender_domain: "x.test".to_owned(),
+        });
+        assert_eq!(no_route.failure_category(), FailureCategory::Other);
+        assert_eq!(
+            ProcessQueuedEmailError::AllRecipientsSuppressed.failure_category(),
+            FailureCategory::Other
+        );
+    }
+
     use std::sync::{Arc, Mutex};
 
     use serde_json::{Map, Value};
@@ -490,6 +523,7 @@ mod tests {
             Err(SendError::Send {
                 sender_name: SenderName::new("failing"),
                 permanent: false,
+                category: crate::entity::failure_category::FailureCategory::TemporaryRejection,
                 source: anyhow::anyhow!("connection refused"),
             })
         }
@@ -1110,6 +1144,7 @@ mod tests {
             Err(SendError::Send {
                 sender_name: SenderName::new("failing"),
                 permanent: true,
+                category: crate::entity::failure_category::FailureCategory::PermanentRejection,
                 source: anyhow::anyhow!("550 5.1.1 unknown user"),
             })
         }
@@ -1155,6 +1190,7 @@ mod tests {
             if size > self.max {
                 return Err(crate::port::email_transport::TransportError {
                     kind: crate::port::email_transport::TransportErrorKind::PermanentMessage,
+                    category: crate::entity::failure_category::FailureCategory::Other,
                     source: anyhow::anyhow!("rendered message exceeds CATAPULTE_MAX_MESSAGE_BYTES"),
                 });
             }
