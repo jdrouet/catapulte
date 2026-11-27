@@ -4,14 +4,16 @@ use crate::entity::email::EmailId;
 use crate::entity::error_class::ErrorClass;
 use crate::entity::sender::SenderName;
 
+/// Event type of a delivered email.
+pub const DELIVERY_SUCCEEDED: &str = "delivery.succeeded";
+
+/// Event type of an email that will not be delivered.
+pub const DELIVERY_FAILED: &str = "delivery.failed";
+
 /// Event types a worker emits; each proves the queue stored the message.
 /// Informational events (`queued`, `scheduled`, `cancelled`, `suppressed`, `bounced`, `complained`) do not.
-pub const WORKER_EVENT_TYPES: &[&str] = &[
-    "sending",
-    "retrying",
-    "delivery.succeeded",
-    "delivery.failed",
-];
+pub const WORKER_EVENT_TYPES: &[&str] =
+    &["sending", "retrying", DELIVERY_SUCCEEDED, DELIVERY_FAILED];
 
 /// Event types that belong to the delivery pipeline. Only these decide whether an email can
 /// still be delivered; any other event is informational.
@@ -19,12 +21,12 @@ pub const PIPELINE_EVENT_TYPES: &[&str] = &[
     "queued",
     "sending",
     "retrying",
-    "delivery.succeeded",
-    "delivery.failed",
+    DELIVERY_SUCCEEDED,
+    DELIVERY_FAILED,
 ];
 
 /// Event types that settle an email's status; every other event is informational.
-pub const TERMINAL_EVENT_TYPES: &[&str] = &["delivery.succeeded", "delivery.failed"];
+pub const TERMINAL_EVENT_TYPES: &[&str] = &[DELIVERY_SUCCEEDED, DELIVERY_FAILED];
 
 /// What every event of one email carries besides its own fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -143,9 +145,9 @@ impl LifecycleEvent {
             Self::Scheduled { .. } => "scheduled",
             Self::Cancelled { .. } => "cancelled",
             Self::Sending { .. } => "sending",
-            Self::Sent { .. } => "delivery.succeeded",
+            Self::Sent { .. } => DELIVERY_SUCCEEDED,
             Self::Retrying { .. } => "retrying",
-            Self::Failed { .. } => "delivery.failed",
+            Self::Failed { .. } => DELIVERY_FAILED,
             Self::Suppressed { .. } => "suppressed",
             Self::Bounced { .. } => "bounced",
             Self::Complained { .. } => "complained",
