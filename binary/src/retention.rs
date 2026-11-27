@@ -1,5 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use catapulte_domain::entity::sender::QuotaRange;
 use tokio_util::sync::CancellationToken;
 
 use crate::storage::StorageAdapter;
@@ -45,6 +46,32 @@ impl RetentionPurge {
     }
 }
 
+/// Returns the longest quota window when it is longer than the retention.
+fn uncovered_quota_window<'a>(
+    retention: Duration,
+    ranges: impl IntoIterator<Item = &'a QuotaRange>,
+) -> Option<Duration> {
+    ranges
+        .into_iter()
+        .map(QuotaRange::window)
+        .max()
+        .filter(|window| *window > retention)
+}
+
+/// Warns once when purging can delete events that a quota still counts; startup is not blocked.
+pub fn warn_if_shorter_than_quota<'a>(
+    retention: Duration,
+    ranges: impl IntoIterator<Item = &'a QuotaRange>,
+) {
+    if let Some(window) = uncovered_quota_window(retention, ranges) {
+        tracing::warn!(
+            retention_hours = retention.as_secs() / 3600,
+            quota_window_hours = window.as_secs() / 3600,
+            "CATAPULTE_RETENTION is shorter than the longest sender quota window, quotas can undercount"
+        );
+    }
+}
+
 /// Runs batches until one deletes nothing, fails, or the token is cancelled between batches;
 /// logs once.
 async fn sweep<F>(cancel: &CancellationToken, batch: u32, mut next: impl FnMut(u32) -> F) -> u64
@@ -87,7 +114,9 @@ mod tests {
     use catapulte_domain::port::event_publisher::EventPublisher;
     use tokio_util::sync::CancellationToken;
 
-    use super::{RetentionPurge, sweep};
+    use catapulte_domain::entity::sender::QuotaRange;
+
+    use super::{RetentionPurge, sweep, uncovered_quota_window, warn_if_shorter_than_quota};
     use crate::storage::StorageAdapter;
 
     #[derive(Clone, Default)]
@@ -219,6 +248,39 @@ mod tests {
         assert_eq!((total, calls), (4, 2));
         assert_eq!(logs.count("INFO"), 1);
         assert!(logs.text().contains("purged=4"));
+    }
+
+    #[test]
+    fn uncovered_quota_window_compares_with_the_longest_range() {
+        let week = Duration::from_hours(24 * 7);
+        let month = Duration::from_hours(24 * 30);
+        let ranges = [QuotaRange::Daily, QuotaRange::Monthly, QuotaRange::Weekly];
+
+        assert_eq!(uncovered_quota_window(week, &ranges), Some(month));
+        assert_eq!(uncovered_quota_window(month, &ranges), None);
+        assert_eq!(uncovered_quota_window(week, &[QuotaRange::Weekly]), None);
+        assert_eq!(uncovered_quota_window(Duration::ZERO, &[]), None);
+    }
+
+    #[test]
+    fn warn_if_shorter_than_quota_logs_one_line_with_both_values() {
+        let (logs, _guard) = Logs::capture();
+
+        let ranges = [QuotaRange::Monthly, QuotaRange::Monthly, QuotaRange::Daily];
+        warn_if_shorter_than_quota(Duration::from_hours(24 * 7), &ranges);
+
+        assert_eq!(logs.count("WARN"), 1);
+        let text = logs.text();
+        assert!(text.contains("retention_hours=168") && text.contains("quota_window_hours=720"));
+    }
+
+    #[test]
+    fn warn_if_shorter_than_quota_is_silent_when_retention_covers_the_window() {
+        let (logs, _guard) = Logs::capture();
+
+        warn_if_shorter_than_quota(Duration::from_hours(24 * 30), &[QuotaRange::Monthly]);
+
+        assert_eq!(logs.text(), "");
     }
 
     async fn fresh_sqlite() -> (StorageAdapter, tempfile::TempDir) {

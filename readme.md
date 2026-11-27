@@ -120,7 +120,7 @@ Effects of deleting an email:
 - Suppressions created from it stay in effect.
 - Bounce or complaint feedback for it can no longer be matched and is rejected as unknown.
 - Its idempotency key can be reused and creates a new email.
-- Sender quotas count lifecycle events, so a retention shorter than the longest quota range (monthly = 30 days) lets quotas undercount.
+- Sender quotas count lifecycle events, so a retention shorter than the longest quota range (monthly = 30 days) lets quotas undercount. In that case startup logs one WARN line with `retention_hours` and `quota_window_hours`; startup continues.
 
 Only the storage queue is supported: the memory and NATS queues cannot show whether a copy of an email is still waiting.
 
