@@ -96,7 +96,87 @@ fn init_tracing(telemetry: &catapulte_telemetry::telemetry::Telemetry) {
 
     tracing_subscriber::registry()
         .with(filter)
+        .with(nats_wire_trace_cap())
         .with(fmt_layer)
         .with(telemetry.tracing_layer())
         .init();
+}
+
+// async-nats logs raw wire frames (payload and headers) at TRACE on this target,
+// so they are dropped regardless of RUST_LOG.
+fn nats_wire_trace_cap()
+-> tracing_subscriber::filter::FilterFn<impl Fn(&tracing::Metadata<'_>) -> bool> {
+    tracing_subscriber::filter::filter_fn(|meta| {
+        let target = meta.target();
+        let wire =
+            target == "async_nats::connection" || target.starts_with("async_nats::connection::");
+        !(*meta.level() == tracing::Level::TRACE && wire)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    use tracing::{debug, trace};
+    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt as _, registry};
+
+    use super::nats_wire_trace_cap;
+
+    #[derive(Clone)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for Buf {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn emit() {
+        trace!(target: "async_nats::connection", op = "CONN_TRACE_MARKER", "wire");
+        debug!(target: "async_nats::connection", op = "CONN_DEBUG_MARKER", "wire");
+        trace!(target: "async_nats::jetstream", op = "JS_TRACE_MARKER", "js");
+    }
+
+    #[test]
+    fn nats_wire_trace_is_dropped_whatever_the_env_filter_says() {
+        let cases = [
+            ("trace", [false, true, true]),
+            ("async_nats=trace", [false, true, true]),
+            ("async_nats::connection=trace", [false, true, false]),
+            (
+                "trace,async_nats::connection[{op}]=trace",
+                [false, true, true],
+            ),
+            ("warn", [false, false, false]),
+        ];
+        let markers = ["CONN_TRACE_MARKER", "CONN_DEBUG_MARKER", "JS_TRACE_MARKER"];
+        for (input, expected) in cases {
+            let buf = Buf(Arc::default());
+            let writer = buf.clone();
+            let subscriber = registry()
+                .with(EnvFilter::try_new(input).unwrap())
+                .with(nats_wire_trace_cap())
+                .with(
+                    fmt::layer()
+                        .with_writer(move || writer.clone())
+                        .with_ansi(false),
+                );
+            tracing::subscriber::with_default(subscriber, emit);
+            let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+            for (marker, want) in markers.iter().zip(expected) {
+                assert_eq!(
+                    out.contains(marker),
+                    want,
+                    "input {input:?}, marker {marker}"
+                );
+            }
+        }
+    }
 }
