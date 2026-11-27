@@ -308,14 +308,15 @@ async fn process_one<S: WorkerState>(
                 }
             }
             Err(e) => {
+                let error_class = e.error_class();
+                // Relay replies can echo recipient PII; the full reason goes to lifecycle events only.
                 tracing::error!(
-                    error = ?e,
+                    error_class = error_class.as_str(),
                     email_id = %id.as_uuid(),
                     attempt,
                     "failed to process email"
                 );
                 let reason = e.to_string().replace('\0', "");
-                let error_class = e.error_class();
                 let sender_name = e.sender_name().cloned();
                 let is_terminal = e.is_permanent() || attempt >= MAX_ATTEMPTS;
                 let event = if is_terminal {
@@ -2467,5 +2468,130 @@ mod tests {
         assert_eq!(state.queue.acks(), 0);
         assert_eq!(state.nacks(), [] as [std::time::Duration; 0]);
         assert_eq!(state.starts(), 0);
+    }
+
+    #[derive(Clone)]
+    struct RelayErrProcessor {
+        permanent: bool,
+    }
+
+    const RELAY_REPLY: &str = "permanent error (550): 5.1.1 <MARKER-849@example.com> user unknown";
+
+    impl ProcessQueuedEmailUseCase for RelayErrProcessor {
+        async fn execute(
+            &self,
+            _: EmailId,
+            _: Envelope,
+        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
+            Err(ProcessQueuedEmailError::Send(
+                catapulte_domain::port::email_sender::SendError::Send {
+                    sender_name: SenderName::new("relay"),
+                    permanent: self.permanent,
+                    source: anyhow::anyhow!("{RELAY_REPLY}"),
+                },
+            ))
+        }
+    }
+
+    #[derive(Clone)]
+    struct RelayErrState {
+        processor: RelayErrProcessor,
+        queue: TrackingQueue,
+        publisher: CapturingEventPublisher,
+    }
+
+    impl WorkerState for RelayErrState {
+        fn process_queued_email(&self) -> &impl ProcessQueuedEmailUseCase {
+            &self.processor
+        }
+
+        fn email_queue(&self) -> &impl EmailQueue {
+            &self.queue
+        }
+
+        fn event_publisher(&self) -> &impl EventPublisher {
+            &self.publisher
+        }
+
+        fn attachment_store(&self) -> &impl AttachmentStore {
+            &NoopStore
+        }
+
+        fn email_repository(&self) -> &(impl EmailRepository + EmailCancellation) {
+            &NoopRepository
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_reply_never_reaches_logs() {
+        let buf = SharedBuf::default();
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let publisher = CapturingEventPublisher::default();
+        let retry_id = EmailId::default();
+        let terminal_id = EmailId::default();
+        for (permanent, id) in [(false, retry_id), (true, terminal_id)] {
+            let state = RelayErrState {
+                processor: RelayErrProcessor { permanent },
+                queue: TrackingQueue::default(),
+                publisher: publisher.clone(),
+            };
+            process_one(
+                &state,
+                &SystemClock,
+                &tokio_util::sync::CancellationToken::new(),
+                id,
+                sample_envelope(),
+                1,
+                AckToken::new(vec![0u8; 8]),
+                TraceCarrier::default(),
+            )
+            .await;
+        }
+
+        let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(!logs.contains("MARKER-849"), "relay reply leaked: {logs}");
+        for (class, id) in [("delivery", retry_id), ("rejected", terminal_id)] {
+            let line = logs
+                .lines()
+                .find(|l| {
+                    l.contains("failed to process email")
+                        && l.contains(&format!("error_class=\"{class}\""))
+                })
+                .unwrap_or_else(|| panic!("no failed-to-process line for {class}: {logs}"));
+            assert!(line.contains(&id.as_uuid().to_string()), "{line}");
+            assert!(line.contains("attempt=1"), "{line}");
+        }
+
+        let events = publisher.events.lock().unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LifecycleEvent::Retrying { reason, .. } if reason.contains("MARKER-849")
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LifecycleEvent::Failed { reason, .. } if reason.contains("MARKER-849")
+        )));
     }
 }
