@@ -84,6 +84,8 @@ mod tests {
                 attempt: 3,
                 reason: "smtp error".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("test")),
                 context: EventContext::with_correlation(None),
             })
@@ -108,6 +110,7 @@ mod tests {
         // sender_name and error_class are present in it, not only in their columns.
         assert_eq!(p["sender_name"], "test");
         assert_eq!(p["error_class"], "delivery");
+        assert_eq!(p["failure_category"], "other");
     }
 
     /// Queued without `correlation_id` now stores `{"correlation_id":null}` — an
@@ -193,6 +196,8 @@ mod tests {
                 attempt: 1,
                 reason: "timeout".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("test")),
                 context: EventContext::with_correlation(None),
             })
@@ -208,6 +213,7 @@ mod tests {
         assert_eq!(p["attempt"], 1);
         assert_eq!(p["reason"], "timeout");
         assert_eq!(p["error_class"], "delivery");
+        assert_eq!(p["failure_category"], "other");
     }
 
     #[tokio::test]
@@ -222,6 +228,8 @@ mod tests {
                 attempt: 2,
                 reason: "no route".to_owned(),
                 error_class: ErrorClass::Routing,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: None,
                 context: EventContext::with_correlation(None),
             })

@@ -102,11 +102,27 @@ All configuration is done via environment variables.
 |----------|-------------|---------|
 | `CATAPULTE_GC_SWEEP_INTERVAL_SECS` | Interval in seconds between garbage collection sweeps | `3600` |
 | `CATAPULTE_GC_GRACE_PERIOD_SECS` | Minimum age for data to be eligible for garbage collection | `3600` |
+| `CATAPULTE_RETENTION` | Once an hour, deletes finished emails (delivered, failed, or cancelled) and their lifecycle events once their last activity is older than this. Format `<n>d` or `<n>h` (e.g. `7d`, `168h`); any other value stops startup. Requires `CATAPULTE_QUEUE_BACKEND=storage`; setting it with `memory` or `nats` stops startup. See [Email retention](#email-retention) | unset (nothing is deleted) |
 | `CATAPULTE_BOUNCE_DOMAIN` | Domain of the signed return path (`bounces+{id}-{tag}@domain`) used as the SMTP `MAIL FROM`, so bounces can be tied to an email. Set together with `CATAPULTE_BOUNCE_SECRET`; setting only one stops startup. See [Bounce return path](#bounce-return-path) | unset (the sender address is used) |
 | `CATAPULTE_BOUNCE_INGEST_SECRET` | Enables `POST /inbound/feedback` and is its bearer secret, at least 32 bytes (`openssl rand -base64 48`). Unset leaves the route out (404). API keys never work on that route. See [Bounce and complaint ingestion](#bounce-and-complaint-ingestion) | unset |
 | `CATAPULTE_BOUNCE_SECRET` | Key that signs the return paths, at least 32 bytes; generate one with `openssl rand -base64 48`. Keep it stable: rotating it makes bounces for mail already sent unverifiable | unset |
 | `CATAPULTE_MAX_SCHEDULE_AHEAD_SECS` | Furthest `send_at_ms` accepted, in seconds, a positive integer. Applies to every queue. A NATS queue that cannot hold schedules (see [Scheduled sends on NATS](#scheduled-sends-on-nats)) refuses scheduled sends with `422`, and its stream `max_age` can lower the horizon | `2592000` (30 days) |
 | `CATAPULTE_ALLOWED_SENDER_DOMAINS` | Comma-separated sender domains the API accepts. Matching is exact (no subdomains), case-insensitive, and IDN domains are compared in punycode. Unset accepts any domain; set but empty denies every sender. An entry that is not a valid domain stops startup | unset |
+
+#### Email retention
+
+An email is deleted only when its creation, scheduled send time, finish (terminal event or cancellation) and latest lifecycle event are all older than the retention, and it has no queue row. Emails still waiting, being retried, or never finished are kept whatever their age. Attachments are left to the GC; other tables are not touched.
+
+Each purge runs in short batches and writes one INFO line with the number of emails deleted. The first purge runs one hour after start.
+
+Effects of deleting an email:
+
+- Suppressions created from it stay in effect.
+- Bounce or complaint feedback for it can no longer be matched and is rejected as unknown.
+- Its idempotency key can be reused and creates a new email.
+- Sender quotas count lifecycle events, so a retention shorter than the longest quota range (monthly = 30 days) lets quotas undercount.
+
+Only the storage queue is supported: the memory and NATS queues cannot show whether a copy of an email is still waiting.
 
 ### Storage Backend
 

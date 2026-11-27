@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use crate::entity::email::EmailId;
 use crate::entity::error_class::ErrorClass;
+use crate::entity::failure_category::FailureCategory;
 use crate::entity::sender::SenderName;
 
 #[derive(Clone, Debug)]
@@ -12,6 +13,7 @@ pub struct ListEventsParams {
     pub event_type: Option<String>,
     pub sender_name: Option<String>,
     pub error_class: Option<ErrorClass>,
+    pub failure_category: Option<FailureCategory>,
     pub after_ms: Option<i64>,
     pub before_ms: Option<i64>,
     pub limit: u32,

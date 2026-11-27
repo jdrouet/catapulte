@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use crate::entity::body::RenderedBody;
 use crate::entity::email::RecipientKind;
+use crate::entity::failure_category::FailureCategory;
 use crate::entity::sender::SenderName;
 
 #[derive(Debug, Error)]
@@ -11,6 +12,8 @@ pub enum SendError {
         sender_name: SenderName,
         /// Terminal message-level rejection; never set for route-level failures.
         permanent: bool,
+        /// Transport category of the last route tried.
+        category: FailureCategory,
         #[source]
         source: anyhow::Error,
     },

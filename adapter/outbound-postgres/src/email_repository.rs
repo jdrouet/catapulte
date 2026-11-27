@@ -3,7 +3,8 @@ use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::entity::lifecycle_event::{
-    EventContext, PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES,
+    DELIVERY_FAILED, DELIVERY_SUCCEEDED, EventContext, PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES,
+    WORKER_EVENT_TYPES,
 };
 use catapulte_domain::port::email_repository::{
     CancelOutcome, DeliveryStart, DuplicateState, EmailCancellation, EmailRecord, EmailRepository,
@@ -34,9 +35,9 @@ fn list_query(prefix: &str, params: ListEmailsParams) -> QueryBuilder<sqlx::Post
                 created_at, send_at_ms, \
                 CASE \
                     WHEN cancelled_at_ms IS NOT NULL THEN 'cancelled' \
-                    WHEN terminal_event_type = 'delivery.succeeded' THEN 'sent' \
-                    WHEN terminal_event_type = 'delivery.failed' THEN 'failed' \
-                    WHEN send_at_ms > "
+                    WHEN terminal_event_type = '{DELIVERY_SUCCEEDED}' THEN 'sent' \
+                    WHEN terminal_event_type = '{DELIVERY_FAILED}' THEN 'failed' \
+                    WHEN send_at_ms > ",
     ));
     qb.push_bind(now);
     qb.push(
@@ -85,10 +86,14 @@ fn list_query(prefix: &str, params: ListEmailsParams) -> QueryBuilder<sqlx::Post
     match params.status {
         None => {}
         Some(EmailStatus::Sent) => {
-            qb.push(" AND terminal_event_type = 'delivery.succeeded' AND cancelled_at_ms IS NULL");
+            qb.push(format!(
+                " AND terminal_event_type = '{DELIVERY_SUCCEEDED}' AND cancelled_at_ms IS NULL"
+            ));
         }
         Some(EmailStatus::Failed) => {
-            qb.push(" AND terminal_event_type = 'delivery.failed' AND cancelled_at_ms IS NULL");
+            qb.push(format!(
+                " AND terminal_event_type = '{DELIVERY_FAILED}' AND cancelled_at_ms IS NULL"
+            ));
         }
         Some(EmailStatus::Cancelled) => {
             qb.push(" AND cancelled_at_ms IS NOT NULL");
@@ -525,6 +530,78 @@ impl PostgresAdapter {
             send_at_ms,
         })
     }
+
+    /// Deletes up to `limit` finished emails whose last activity is before `cutoff_ms`, with their events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any statement of the purge transaction fails, or if the
+    /// delete removes fewer emails than were validated.
+    pub async fn purge_expired(&self, cutoff_ms: i64, limit: u32) -> anyhow::Result<u64> {
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .context("starting purge transaction")?;
+        // The predicate keeps unfinished, rescheduled, or recently active emails.
+        let candidates: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT id FROM emails \
+             WHERE created_at < $1 \
+               AND (send_at_ms IS NULL OR send_at_ms < $1) \
+               AND ((terminal_event_type <> '' AND terminal_event_at_ms < $1) \
+                    OR (cancelled_at_ms IS NOT NULL AND cancelled_at_ms < $1)) \
+               AND NOT EXISTS (SELECT 1 FROM email_queue q WHERE q.email_id = emails.id) \
+               AND NOT EXISTS (SELECT 1 FROM lifecycle_events le \
+                               WHERE le.email_id = emails.id AND le.created_at >= $1) \
+             ORDER BY created_at, id LIMIT $2 \
+             FOR UPDATE SKIP LOCKED",
+        )
+        .bind(cutoff_ms)
+        .bind(i64::from(limit))
+        .fetch_all(&mut *tx)
+        .await
+        .context("selecting expired emails")?;
+        if candidates.is_empty() {
+            tx.commit().await.context("committing purge transaction")?;
+            return Ok(0);
+        }
+        // A fresh statement sees queue rows and events committed after the first one chose
+        // its candidates; the row locks now block any newer ones until commit.
+        let validated: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT id FROM emails \
+             WHERE id = ANY($1) \
+               AND NOT EXISTS (SELECT 1 FROM email_queue q WHERE q.email_id = emails.id) \
+               AND NOT EXISTS (SELECT 1 FROM lifecycle_events le \
+                               WHERE le.email_id = emails.id AND le.created_at >= $2)",
+        )
+        .bind(&candidates)
+        .bind(cutoff_ms)
+        .fetch_all(&mut *tx)
+        .await
+        .context("rechecking expired emails")?;
+        if validated.is_empty() {
+            tx.commit().await.context("committing purge transaction")?;
+            return Ok(0);
+        }
+        sqlx::query("DELETE FROM lifecycle_events WHERE email_id = ANY($1)")
+            .bind(&validated)
+            .execute(&mut *tx)
+            .await
+            .context("deleting expired events")?;
+        let deleted = sqlx::query("DELETE FROM emails WHERE id = ANY($1)")
+            .bind(&validated)
+            .execute(&mut *tx)
+            .await
+            .context("deleting expired emails")?
+            .rows_affected();
+        anyhow::ensure!(
+            deleted == validated.len() as u64,
+            "purge deleted {deleted} emails, expected {}",
+            validated.len()
+        );
+        tx.commit().await.context("committing purge transaction")?;
+        Ok(deleted)
+    }
 }
 
 impl PostgresAdapter {
@@ -631,6 +708,7 @@ mod tests {
         EventContext, LifecycleEvent, TERMINAL_EVENT_TYPES,
     };
     use catapulte_domain::entity::sender::SenderName;
+    use catapulte_domain::port::email_queue::EmailQueue;
     use catapulte_domain::port::email_repository::{
         DuplicateState, EmailRepository, EmailRepositoryError, EmailStatus, EnqueueState,
         ListEmailsParams, SaveResult,
@@ -916,6 +994,8 @@ mod tests {
                 attempt: 3,
                 reason: "err".into(),
                 error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("test")),
                 context: EventContext::with_correlation(None),
             })
@@ -1437,6 +1517,8 @@ mod tests {
                 attempt: 3,
                 reason: "err".into(),
                 error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: None,
                 context: EventContext::with_correlation(None),
             })
@@ -2380,6 +2462,7 @@ mod tests {
             event_type: None,
             sender_name: None,
             error_class: None,
+            failure_category: None,
             after_ms: None,
             before_ms: None,
             limit: 20,
@@ -2565,6 +2648,8 @@ mod tests {
                 attempt: 1,
                 reason: "r".to_owned(),
                 error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: None,
                 context: EventContext::with_correlation(None),
             })
@@ -2738,5 +2823,161 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(state_of(&adapter, id).await, "publishable");
+    }
+
+    const CUTOFF: i64 = 1_000_000;
+
+    /// Saved email created and finished long before the cutoff, with a non-terminal and a terminal event.
+    async fn old_finished_email(adapter: &PostgresAdapter) -> EmailId {
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        set_ms(adapter, id, "created_at", 1_000).await;
+        add_event_at(adapter, id, "delivery.started", 2_000).await;
+        add_event_at(adapter, id, "delivery.succeeded", 3_000).await;
+        id
+    }
+
+    async fn set_ms(adapter: &PostgresAdapter, id: EmailId, column: &str, value: i64) {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE emails SET {column} = $1 WHERE id = $2"
+        )))
+        .bind(value)
+        .bind(id.as_uuid())
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+    }
+
+    async fn row_count(adapter: &PostgresAdapter, table: &str) -> i64 {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn purge_expired_deletes_old_finished_emails_and_their_events() {
+        let adapter = fresh_adapter().await;
+        old_finished_email(&adapter).await;
+
+        assert_eq!(adapter.purge_expired(CUTOFF, 10).await.unwrap(), 1);
+
+        assert_eq!(row_count(&adapter, "emails").await, 0);
+        assert_eq!(row_count(&adapter, "lifecycle_events").await, 0);
+    }
+
+    #[tokio::test]
+    async fn purge_expired_deletes_old_cancelled_emails() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        set_ms(&adapter, id, "created_at", 1_000).await;
+        set_ms(&adapter, id, "cancelled_at_ms", 3_000).await;
+
+        assert_eq!(adapter.purge_expired(CUTOFF, 10).await.unwrap(), 1);
+        assert_eq!(row_count(&adapter, "emails").await, 0);
+    }
+
+    #[tokio::test]
+    async fn purge_expired_keeps_young_emails() {
+        let adapter = fresh_adapter().await;
+        let id = old_finished_email(&adapter).await;
+        set_ms(&adapter, id, "created_at", CUTOFF).await;
+
+        assert_eq!(adapter.purge_expired(CUTOFF, 10).await.unwrap(), 0);
+        assert_eq!(row_count(&adapter, "emails").await, 1);
+    }
+
+    #[tokio::test]
+    async fn purge_expired_keeps_emails_with_a_queue_row() {
+        let adapter = fresh_adapter().await;
+        let id = old_finished_email(&adapter).await;
+        adapter.enqueue(id, &sample_envelope()).await.unwrap();
+
+        assert_eq!(adapter.purge_expired(CUTOFF, 10).await.unwrap(), 0);
+        assert_eq!(row_count(&adapter, "emails").await, 1);
+        assert_eq!(row_count(&adapter, "email_queue").await, 1);
+    }
+
+    #[tokio::test]
+    async fn purge_expired_keeps_unfinished_emails() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        set_ms(&adapter, id, "created_at", 1_000).await;
+        add_event_at(&adapter, id, "delivery.started", 2_000).await;
+
+        assert_eq!(adapter.purge_expired(CUTOFF, 10).await.unwrap(), 0);
+        assert_eq!(row_count(&adapter, "emails").await, 1);
+    }
+
+    #[tokio::test]
+    async fn purge_expired_keeps_emails_scheduled_after_the_cutoff() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        adapter.save(id, &sample_envelope()).await.unwrap();
+        set_ms(&adapter, id, "created_at", 1_000).await;
+        set_ms(&adapter, id, "cancelled_at_ms", 3_000).await;
+        set_ms(&adapter, id, "send_at_ms", CUTOFF).await;
+
+        assert_eq!(adapter.purge_expired(CUTOFF, 10).await.unwrap(), 0);
+        assert_eq!(row_count(&adapter, "emails").await, 1);
+    }
+
+    #[tokio::test]
+    async fn purge_expired_keeps_emails_finished_after_the_cutoff() {
+        let adapter = fresh_adapter().await;
+        let id = old_finished_email(&adapter).await;
+        set_ms(&adapter, id, "terminal_event_at_ms", CUTOFF).await;
+
+        assert_eq!(adapter.purge_expired(CUTOFF, 10).await.unwrap(), 0);
+        assert_eq!(row_count(&adapter, "emails").await, 1);
+    }
+
+    #[tokio::test]
+    async fn purge_expired_keeps_emails_with_a_recent_event() {
+        let adapter = fresh_adapter().await;
+        let id = old_finished_email(&adapter).await;
+        add_event_at(&adapter, id, "delivery.started", CUTOFF).await;
+
+        assert_eq!(adapter.purge_expired(CUTOFF, 10).await.unwrap(), 0);
+        assert_eq!(row_count(&adapter, "emails").await, 1);
+        assert_eq!(row_count(&adapter, "lifecycle_events").await, 3);
+    }
+
+    #[tokio::test]
+    async fn purge_expired_respects_the_batch_limit() {
+        let adapter = fresh_adapter().await;
+        for _ in 0..3 {
+            old_finished_email(&adapter).await;
+        }
+
+        assert_eq!(adapter.purge_expired(CUTOFF, 2).await.unwrap(), 2);
+        assert_eq!(row_count(&adapter, "emails").await, 1);
+        assert_eq!(adapter.purge_expired(CUTOFF, 2).await.unwrap(), 1);
+        assert_eq!(row_count(&adapter, "emails").await, 0);
+    }
+
+    #[tokio::test]
+    async fn purge_expired_skips_emails_locked_by_a_concurrent_event_insert() {
+        let adapter = fresh_adapter().await;
+        let id = old_finished_email(&adapter).await;
+        let mut other = adapter.pool().begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO lifecycle_events (id, email_id, event_type, created_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(id.as_uuid())
+        .bind("delivery.started")
+        .bind(CUTOFF)
+        .execute(&mut *other)
+        .await
+        .unwrap();
+
+        assert_eq!(adapter.purge_expired(CUTOFF, 10).await.unwrap(), 0);
+        other.commit().await.unwrap();
+        assert_eq!(adapter.purge_expired(CUTOFF, 10).await.unwrap(), 0);
+        assert_eq!(row_count(&adapter, "emails").await, 1);
+        assert_eq!(row_count(&adapter, "lifecycle_events").await, 3);
     }
 }

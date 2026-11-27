@@ -731,6 +731,7 @@ dependencies = [
  "anyhow",
  "catapulte-domain",
  "catapulte-telemetry",
+ "percent-encoding",
  "serde",
  "serde_json",
  "sqlx",

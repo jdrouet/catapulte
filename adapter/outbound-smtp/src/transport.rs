@@ -3,6 +3,7 @@ use catapulte_domain::entity::attachment::ResolvedAttachment;
 use catapulte_domain::entity::body::RenderedBody;
 use catapulte_domain::entity::email::RecipientKind;
 use catapulte_domain::entity::envelope::Unsubscribe;
+use catapulte_domain::entity::failure_category::FailureCategory;
 
 use crate::dkim::{DkimSigners, normalize_domain};
 use catapulte_domain::port::email_sender::OutboundEmail;
@@ -383,10 +384,42 @@ fn format_smtp_response<'a>(
     truncate_reply(&format!("{code} {joined}"))
 }
 
+fn failure_category(e: &lettre::transport::smtp::Error) -> FailureCategory {
+    if e.is_timeout() {
+        return FailureCategory::Timeout;
+    }
+    // ponytail: assumes only rustls produces io InvalidData on this stream, so a TLS backend
+    // change silently breaks `tls`; a direct rustls dependency plus a downcast would be exact.
+    if e.is_tls() || first_io_kind(e) == Some(std::io::ErrorKind::InvalidData) {
+        return FailureCategory::Tls;
+    }
+    if e.is_permanent() {
+        FailureCategory::PermanentRejection
+    } else if e.is_transient() {
+        FailureCategory::TemporaryRejection
+    } else if e.is_response() || e.is_client() || e.is_transport_shutdown() {
+        FailureCategory::Other
+    } else {
+        FailureCategory::Connection
+    }
+}
+
+fn first_io_kind(e: &lettre::transport::smtp::Error) -> Option<std::io::ErrorKind> {
+    let mut source = std::error::Error::source(e);
+    while let Some(err) = source {
+        if let Some(io) = err.downcast_ref::<std::io::Error>() {
+            return Some(io.kind());
+        }
+        source = err.source();
+    }
+    None
+}
+
 /// Classifies on the full text, then caps what is kept, so truncation cannot hide the code.
-fn smtp_text_error(permanent: bool, text: &str) -> TransportError {
+fn smtp_text_error(permanent: bool, text: &str, category: FailureCategory) -> TransportError {
     TransportError {
         kind: classify(permanent, text),
+        category,
         source: anyhow::anyhow!("{}", truncate_reply(text)),
     }
 }
@@ -394,6 +427,7 @@ fn smtp_text_error(permanent: bool, text: &str) -> TransportError {
 fn message_error(e: anyhow::Error) -> TransportError {
     TransportError {
         kind: TransportErrorKind::PermanentMessage,
+        category: FailureCategory::Other,
         source: e,
     }
 }
@@ -504,7 +538,7 @@ impl SmtpTransport {
             .transport
             .send_raw(&envelope, &raw)
             .await
-            .map_err(|e| smtp_text_error(e.is_permanent(), &e.to_string()))?;
+            .map_err(|e| smtp_text_error(e.is_permanent(), &e.to_string(), failure_category(&e)))?;
         Ok(DeliveryReceipt {
             smtp_response: Some(format_smtp_response(response.code(), response.message())),
         })
@@ -550,6 +584,7 @@ mod tests {
     use catapulte_domain::entity::attachment::ResolvedAttachment;
     use catapulte_domain::entity::body::{Plain, RenderedBody};
     use catapulte_domain::entity::email::RecipientKind;
+    use catapulte_domain::entity::failure_category::FailureCategory;
     use lettre::Address;
 
     use super::{
@@ -938,6 +973,7 @@ mod tests {
     fn message_build_errors_are_permanent_message() {
         let err = message_error(anyhow::anyhow!("invalid address"));
         assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
+        assert_eq!(err.category, FailureCategory::Other);
     }
 
     #[test]
@@ -947,7 +983,11 @@ mod tests {
             super::format_smtp_response(250, ["queued \0as", "1\0"].into_iter()),
             "250 queued as 1"
         );
-        let err = smtp_text_error(false, "temporary error (451): try\0 later");
+        let err = smtp_text_error(
+            false,
+            "temporary error (451): try\0 later",
+            FailureCategory::Other,
+        );
         assert_eq!(err.source.to_string(), "temporary error (451): try later");
     }
 
@@ -966,10 +1006,76 @@ mod tests {
     fn classification_uses_the_full_text_before_truncation() {
         let text = format!("{}): 5.1.1 no such user", "x".repeat(300));
 
-        let err = smtp_text_error(true, &text);
+        let err = smtp_text_error(true, &text, FailureCategory::Other);
 
         assert_eq!(err.kind, TransportErrorKind::PermanentMessage);
         assert_eq!(err.source.to_string().chars().count(), 256);
+    }
+
+    async fn deliver_against(tls: SmtpTls, reply: Option<&'static str>) -> FailureCategory {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        if let Some(reply) = reply {
+            tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                socket.write_all(reply.as_bytes()).await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            });
+        } else {
+            drop(listener);
+        }
+        let transport = SmtpConfig {
+            host: "127.0.0.1".into(),
+            port,
+            username: None,
+            password: None,
+            tls,
+        }
+        .build()
+        .unwrap();
+        let email = email_with_attachment(1, RecipientKind::To);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            transport.send_inner(&email),
+        )
+        .await
+        .expect("send_inner timed out")
+        .unwrap_err()
+        .category
+    }
+
+    #[tokio::test]
+    async fn refused_connection_is_connection() {
+        assert_eq!(
+            deliver_against(SmtpTls::None, None).await,
+            FailureCategory::Connection
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_554_is_permanent_rejection() {
+        assert_eq!(
+            deliver_against(SmtpTls::None, Some("554 no\r\n")).await,
+            FailureCategory::PermanentRejection
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_421_is_temporary_rejection() {
+        assert_eq!(
+            deliver_against(SmtpTls::None, Some("421 busy\r\n")).await,
+            FailureCategory::TemporaryRejection
+        );
+    }
+
+    #[tokio::test]
+    async fn plaintext_on_tls_port_is_tls() {
+        assert_eq!(
+            deliver_against(SmtpTls::Tls, Some("220 hi\r\n")).await,
+            FailureCategory::Tls
+        );
     }
 
     fn local_transport(max: Option<u64>) -> super::SmtpTransport {

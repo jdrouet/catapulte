@@ -51,6 +51,8 @@ pub enum AppError {
     InvalidEmailId,
     #[error("invalid error_class value")]
     InvalidErrorClass,
+    #[error("invalid failure_category value")]
+    InvalidFailureCategory,
     #[error("email can no longer be cancelled")]
     NotCancellable,
 }
@@ -77,6 +79,7 @@ impl IntoResponse for AppError {
             | Self::BadRequestRaw(_)
             | Self::InvalidEmailId
             | Self::InvalidErrorClass
+            | Self::InvalidFailureCategory
             | Self::Submit(
                 SubmitEmailError::AttachmentFetch { .. } | SubmitEmailError::MessageTooLarge { .. },
             ) => (StatusCode::BAD_REQUEST, "invalid request"),
