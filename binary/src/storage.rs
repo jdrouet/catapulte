@@ -288,6 +288,13 @@ impl StorageAdapter {
             Self::Postgres(_) => "postgres",
         }
     }
+
+    pub(crate) async fn purge_expired(&self, cutoff_ms: i64, limit: u32) -> anyhow::Result<u64> {
+        match self {
+            Self::Sqlite(a) => a.purge_expired(cutoff_ms, limit).await,
+            Self::Postgres(a) => a.purge_expired(cutoff_ms, limit).await,
+        }
+    }
 }
 
 pub enum StorageBackendConfig {
