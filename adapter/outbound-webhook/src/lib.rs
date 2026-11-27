@@ -182,7 +182,9 @@ mod tests {
     use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
 
-    use super::{WebhookConfig, WebhookPublisher};
+    use std::time::Duration;
+
+    use super::{WebhookConfig, WebhookPublisher, failure_kind};
 
     fn publisher_for(server: &MockServer) -> WebhookPublisher {
         let url = url::Url::parse(&server.uri()).unwrap();
@@ -501,5 +503,110 @@ mod tests {
         for request in &requests {
             assert_signed(request, "s3cret");
         }
+    }
+
+    const SHORT: Duration = Duration::from_millis(200);
+
+    async fn status_error(status: u16) -> reqwest::Error {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        reqwest::Client::new()
+            .post(server.uri())
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn failure_kind_timeout_when_server_never_answers() {
+        // The kernel completes the handshake, but nothing ever reads or replies.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = reqwest::Client::builder().timeout(SHORT).build().unwrap();
+
+        let err = client
+            .post(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(!err.is_connect());
+        assert_eq!(failure_kind(&err), "timeout");
+    }
+
+    #[tokio::test]
+    async fn failure_kind_connect_when_port_is_refused() {
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let client = reqwest::Client::builder().timeout(SHORT).build().unwrap();
+
+        let err = client
+            .post(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(!err.is_timeout());
+        assert_eq!(failure_kind(&err), "connect");
+    }
+
+    #[tokio::test]
+    async fn failure_kind_client_error_on_4xx() {
+        assert_eq!(failure_kind(&status_error(404).await), "client_error");
+    }
+
+    #[tokio::test]
+    async fn failure_kind_server_error_on_5xx() {
+        assert_eq!(failure_kind(&status_error(503).await), "server_error");
+    }
+
+    #[tokio::test]
+    async fn failure_kind_request_when_request_is_invalid() {
+        let err = reqwest::Client::new()
+            .post("not a url")
+            .send()
+            .await
+            .unwrap_err();
+
+        assert_eq!(failure_kind(&err), "request");
+    }
+
+    #[tokio::test]
+    async fn failure_kind_prefers_timeout_over_connect() {
+        // Once the accept queue is full, Linux drops new SYNs, so the next
+        // connect hangs until the connect timeout fires.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = socket.listen(1).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut held = Vec::new();
+        for _ in 0..16 {
+            let connect = tokio::net::TcpStream::connect(addr);
+            match tokio::time::timeout(Duration::from_millis(100), connect).await {
+                Ok(stream) => held.push(stream.unwrap()),
+                Err(_) => break,
+            }
+        }
+        let client = reqwest::Client::builder()
+            .connect_timeout(SHORT)
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+
+        let err = client
+            .post(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(err.is_timeout() && err.is_connect(), "{err:?}");
+        assert_eq!(failure_kind(&err), "timeout");
     }
 }
