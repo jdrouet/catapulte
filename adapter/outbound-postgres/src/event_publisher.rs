@@ -5,37 +5,50 @@ use catapulte_domain::port::event_publisher::{EventPublisher, EventPublisherErro
 
 use crate::PostgresAdapter;
 
+/// Writes one lifecycle event row on the given connection or transaction.
+pub(crate) async fn insert_lifecycle_event<'e>(
+    exec: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    event: &LifecycleEvent,
+) -> anyhow::Result<()> {
+    let event_id = uuid::Uuid::now_v7();
+    let email_id_uuid = event.email_id().as_uuid();
+    // payload is always written as a JSON object so new rows are consistent
+    // with the pushed (webhook/NATS) payload. The column remains nullable so
+    // rows written before this change keep their NULL value; do not add NOT
+    // NULL to the column without a data migration.
+    let payload = event.payload();
+    let sender_name = event.sender_name().map(SenderName::as_str);
+    let error_class = event
+        .error_class()
+        .map(catapulte_domain::entity::error_class::ErrorClass::as_str);
+
+    sqlx::query(
+        "INSERT INTO lifecycle_events (id, email_id, event_type, payload, sender_name, error_class) VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(event_id)
+    .bind(email_id_uuid)
+    .bind(event.event_type())
+    .bind(Some(payload))
+    .bind(sender_name)
+    .bind(error_class)
+    .execute(exec)
+    .await
+    .context("inserting lifecycle event")?;
+
+    Ok(())
+}
+
 impl EventPublisher for PostgresAdapter {
     /// # Errors
     ///
     /// Returns `EventPublisherError::Publish` when the database insert fails.
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-        let event_id = uuid::Uuid::now_v7();
-        let email_id_uuid = event.email_id().as_uuid();
-        // payload is always written as a JSON object so new rows are consistent
-        // with the pushed (webhook/NATS) payload. The column remains nullable so
-        // rows written before this change keep their NULL value; do not add NOT
-        // NULL to the column without a data migration.
-        let payload = event.payload();
-        let sender_name = event.sender_name().map(SenderName::as_str);
-        let error_class = event
-            .error_class()
-            .map(catapulte_domain::entity::error_class::ErrorClass::as_str);
+        insert_lifecycle_event(self.pool(), event)
+            .await
+            .map_err(|source| EventPublisherError::Publish { source })
+    }
 
-        sqlx::query(
-            "INSERT INTO lifecycle_events (id, email_id, event_type, payload, sender_name, error_class) VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(event_id)
-        .bind(email_id_uuid)
-        .bind(event.event_type())
-        .bind(Some(payload))
-        .bind(sender_name)
-        .bind(error_class)
-        .execute(self.pool())
-        .await
-        .context("inserting lifecycle event")
-        .map_err(|source| EventPublisherError::Publish { source })?;
-
+    async fn publish_recorded(&self, _event: &LifecycleEvent) -> Result<(), EventPublisherError> {
         Ok(())
     }
 }

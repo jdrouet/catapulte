@@ -3,12 +3,15 @@ use std::time::Duration;
 use anyhow::Context;
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
+use catapulte_domain::entity::lifecycle_event::LifecycleEvent;
 use catapulte_domain::port::email_queue::{
-    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, TraceCarrier,
+    AckToken, DequeuedEmail, EmailQueue, EmailQueueError, EnqueueOutcome, FinishOutcome,
+    TraceCarrier,
 };
 
 use crate::SqliteAdapter;
 use crate::dto::{EnvelopeBodyDtoDeser, EnvelopeExtrasDto, RecipientDto, recipients_from_dto};
+use crate::event_publisher::insert_lifecycle_event;
 
 use catapulte_domain::entity::body::BodySource;
 
@@ -344,6 +347,39 @@ impl EmailQueue for SqliteAdapter {
         Ok(())
     }
 
+    async fn finish(
+        &self,
+        token: AckToken,
+        event: &LifecycleEvent,
+    ) -> Result<FinishOutcome, EmailQueueError> {
+        let (entry_id, attempt) = token_parts(&token)?;
+        let storage = |source| EmailQueueError::Storage { source };
+        let mut tx = self
+            .pool()
+            .begin()
+            .await
+            .context("starting finish transaction")
+            .map_err(storage)?;
+        let deleted = sqlx::query("DELETE FROM email_queue WHERE id = ? AND attempt_count = ?")
+            .bind(entry_id)
+            .bind(i64::from(attempt))
+            .execute(&mut *tx)
+            .await
+            .context("deleting from email_queue")
+            .map_err(storage)?
+            .rows_affected();
+        if deleted == 0 {
+            return Err(claim_lost());
+        }
+        insert_lifecycle_event(&mut *tx, event)
+            .await
+            .map_err(storage)?;
+        tx.commit().await.map_err(|e| EmailQueueError::Uncertain {
+            source: anyhow::Error::new(e).context("committing finish transaction"),
+        })?;
+        Ok(FinishOutcome::Recorded)
+    }
+
     async fn nack(&self, token: AckToken, delay: Duration) -> Result<(), EmailQueueError> {
         let now = now_ms();
         let delay_ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
@@ -396,7 +432,11 @@ mod tests {
     use catapulte_domain::entity::body::{BodySource, Plain};
     use catapulte_domain::entity::email::EmailId;
     use catapulte_domain::entity::envelope::Envelope;
-    use catapulte_domain::port::email_queue::{EmailQueue, EmailQueueError, EnqueueOutcome};
+    use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
+    use catapulte_domain::entity::sender::SenderName;
+    use catapulte_domain::port::email_queue::{
+        EmailQueue, EmailQueueError, EnqueueOutcome, FinishOutcome,
+    };
     use catapulte_domain::port::email_repository::{
         CancelOutcome, DuplicateState, EmailCancellation, EmailRepository, EmailStatus,
         EnqueueState, ListEmailsParams, SaveResult,
@@ -755,6 +795,95 @@ mod tests {
         assert!(matches!(err, EmailQueueError::Storage { .. }), "{err:?}");
         assert_eq!(state_of(&adapter, id).await, "reserved");
         assert_eq!(queue_rows(&adapter, id).await, 0);
+    }
+
+    fn sent_event(id: EmailId) -> LifecycleEvent {
+        LifecycleEvent::Sent {
+            id,
+            sender_name: SenderName::new("primary"),
+            context: EventContext::with_correlation(None),
+            smtp_response: None,
+            message_id: "<test@example.com>".to_owned(),
+        }
+    }
+
+    async fn terminal_type(adapter: &SqliteAdapter, id: EmailId) -> String {
+        sqlx::query_scalar("SELECT terminal_event_type FROM emails WHERE id = ?")
+            .bind(id.as_uuid().as_bytes().to_vec())
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn succeeded_events(adapter: &SqliteAdapter, id: EmailId) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM lifecycle_events WHERE email_id = ? AND event_type = 'delivery.succeeded'",
+        )
+        .bind(id.as_uuid().as_bytes().to_vec())
+        .fetch_one(adapter.pool())
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn finish_removes_the_row_and_records_the_terminal_event() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+        let dequeued = adapter.dequeue().await.unwrap();
+
+        let outcome = adapter
+            .finish(dequeued.token, &sent_event(id))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, FinishOutcome::Recorded);
+        assert_eq!(queue_rows(&adapter, id).await, 0);
+        assert_eq!(terminal_type(&adapter, id).await, "delivery.succeeded");
+        assert_eq!(succeeded_events(&adapter, id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn finish_with_a_lost_claim_records_nothing() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+        let first = adapter.dequeue().await.unwrap().token;
+        sqlx::query("UPDATE email_queue SET claimed_until = 0")
+            .execute(adapter.pool())
+            .await
+            .unwrap();
+        adapter.dequeue().await.unwrap();
+
+        adapter.finish(first, &sent_event(id)).await.unwrap_err();
+
+        assert_eq!(queue_rows(&adapter, id).await, 1);
+        assert_eq!(terminal_type(&adapter, id).await, "");
+        assert_eq!(succeeded_events(&adapter, id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn finish_keeps_the_row_when_the_event_insert_fails() {
+        let adapter = fresh_adapter().await;
+        let id = EmailId::default();
+        save_and_enqueue(&adapter, id).await;
+        let dequeued = adapter.dequeue().await.unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_event BEFORE INSERT ON lifecycle_events \
+             BEGIN SELECT RAISE(ABORT, 'injected'); END",
+        )
+        .execute(adapter.pool())
+        .await
+        .unwrap();
+
+        let err = adapter
+            .finish(dequeued.token, &sent_event(id))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, EmailQueueError::Storage { .. }), "{err:?}");
+        assert_eq!(queue_rows(&adapter, id).await, 1);
+        assert_eq!(terminal_type(&adapter, id).await, "");
     }
 
     #[test]

@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::entity::email::EmailId;
 use crate::entity::envelope::Envelope;
+use crate::entity::lifecycle_event::LifecycleEvent;
 
 /// Opaque token returned by `dequeue` and passed back to `ack`/`nack`.
 /// Each backend encodes whatever it needs (e.g. a UUID for SQL, a reply
@@ -92,6 +93,15 @@ pub enum EnqueueOutcome {
     Published,
 }
 
+/// Result of a successful [`EmailQueue::finish`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishOutcome {
+    /// The queue stored the terminal event in the same commit as the removal.
+    Recorded,
+    /// The item was only removed; the caller must publish the event to every sink.
+    Acked,
+}
+
 pub trait EmailQueue: Send + Sync + 'static {
     /// # Errors
     ///
@@ -125,6 +135,20 @@ pub trait EmailQueue: Send + Sync + 'static {
         &self,
         token: AckToken,
     ) -> impl std::future::Future<Output = Result<(), EmailQueueError>> + Send;
+
+    /// Removes the item after its terminal event. A queue that can store the event in the
+    /// same commit does so and returns [`FinishOutcome::Recorded`]; the default only acks.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`EmailQueue::ack`], including a lost claim.
+    fn finish(
+        &self,
+        token: AckToken,
+        _event: &LifecycleEvent,
+    ) -> impl std::future::Future<Output = Result<FinishOutcome, EmailQueueError>> + Send {
+        async move { self.ack(token).await.map(|()| FinishOutcome::Acked) }
+    }
 
     /// Negatively acknowledges a transient failure. The item will become
     /// visible again after `delay`.

@@ -84,6 +84,32 @@ impl EventPublisher for PublisherAdapter {
             }
         }
     }
+
+    async fn publish_recorded(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+        match self {
+            Self::Storage(_) => {}
+            Self::StorageWebhook(_, w) => {
+                if let Err(e) = w.publish(event).await {
+                    tracing::warn!(error = %e, "webhook event delivery failed");
+                }
+            }
+            Self::StorageNats(_, n) => {
+                if let Err(e) = n.publish(event).await {
+                    tracing::warn!(error = %e, "NATS event delivery failed");
+                }
+            }
+            Self::StorageBoth(_, w, n) => {
+                let (wr, nr) = tokio::join!(w.publish(event), n.publish(event));
+                if let Err(e) = wr {
+                    tracing::warn!(error = %e, "webhook event delivery failed");
+                }
+                if let Err(e) = nr {
+                    tracing::warn!(error = %e, "NATS event delivery failed");
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 pub struct PublisherAdapterConfig {
@@ -147,5 +173,62 @@ impl PublisherAdapterConfig {
             (Some(w), Some(n)) => PublisherAdapter::StorageBoth(storage, w, n),
         };
         Ok(adapter)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use catapulte_domain::entity::body::{BodySource, Plain};
+    use catapulte_domain::entity::email::EmailId;
+    use catapulte_domain::entity::envelope::Envelope;
+    use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
+    use catapulte_domain::entity::sender::SenderName;
+    use catapulte_domain::port::email_repository::EmailRepository;
+    use catapulte_domain::port::event_publisher::EventPublisher;
+    use catapulte_domain::port::event_repository::{EventRepository, ListEventsParams};
+    use catapulte_outbound_sqlite::SqliteAdapter;
+
+    use super::PublisherAdapter;
+    use crate::storage::StorageAdapter;
+
+    #[tokio::test]
+    async fn publish_recorded_writes_no_storage_row() {
+        let sqlite = SqliteAdapter::connect(":memory:").await.unwrap();
+        sqlite.migrate().await.unwrap();
+        let storage = StorageAdapter::Sqlite(sqlite.clone());
+        let id = EmailId::default();
+        let envelope = Envelope::new(
+            "sender@example.com",
+            vec![],
+            BodySource::Plain(Plain::try_new(Some("hello".to_owned()), None).unwrap()),
+        );
+        sqlite.save(id, &envelope).await.unwrap();
+
+        PublisherAdapter::Storage(storage.clone())
+            .publish_recorded(&LifecycleEvent::Sent {
+                id,
+                sender_name: SenderName::new("primary"),
+                context: EventContext::with_correlation(None),
+                smtp_response: None,
+                message_id: "<test@example.com>".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let events = storage
+            .list_events(ListEventsParams {
+                owner: None,
+                email_id: Some(id),
+                event_type: None,
+                sender_name: None,
+                error_class: None,
+                after_ms: None,
+                before_ms: None,
+                limit: 10,
+                offset: 0,
+            })
+            .await
+            .unwrap();
+        assert!(events.is_empty(), "{events:?}");
     }
 }
