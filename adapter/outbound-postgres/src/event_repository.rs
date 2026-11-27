@@ -321,6 +321,8 @@ mod tests {
                 attempt: 1,
                 reason: "send error".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("primary")),
                 context: EventContext::with_correlation(None),
             })
@@ -332,6 +334,8 @@ mod tests {
                 attempt: 2,
                 reason: "send error".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("backup")),
                 context: EventContext::with_correlation(None),
             })
@@ -368,6 +372,8 @@ mod tests {
                 attempt: 1,
                 reason: "delivery error".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: None,
                 context: EventContext::with_correlation(None),
             })
@@ -379,6 +385,8 @@ mod tests {
                 attempt: 2,
                 reason: "routing error".to_owned(),
                 error_class: ErrorClass::Routing,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: None,
                 context: EventContext::with_correlation(None),
             })
@@ -409,6 +417,8 @@ mod tests {
                 attempt: 1,
                 reason: "template error".to_owned(),
                 error_class: ErrorClass::TemplateResolve,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: None,
                 context: EventContext::with_correlation(None),
             })

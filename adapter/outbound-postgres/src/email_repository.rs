@@ -916,6 +916,8 @@ mod tests {
                 attempt: 3,
                 reason: "err".into(),
                 error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("test")),
                 context: EventContext::with_correlation(None),
             })
@@ -1437,6 +1439,8 @@ mod tests {
                 attempt: 3,
                 reason: "err".into(),
                 error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: None,
                 context: EventContext::with_correlation(None),
             })
@@ -2565,6 +2569,8 @@ mod tests {
                 attempt: 1,
                 reason: "r".to_owned(),
                 error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: None,
                 context: EventContext::with_correlation(None),
             })
