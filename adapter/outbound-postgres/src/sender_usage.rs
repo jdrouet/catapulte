@@ -13,6 +13,7 @@ impl catapulte_domain::port::sender_usage::SenderUsage for PostgresAdapter {
         Vec<catapulte_domain::port::sender_usage::SenderStats>,
         catapulte_domain::port::sender_usage::SenderUsageError,
     > {
+        use catapulte_domain::entity::lifecycle_event::{DELIVERY_FAILED, DELIVERY_SUCCEEDED};
         use catapulte_domain::port::sender_usage::{
             SenderStats as UsageSenderStats, SenderUsageError,
         };
@@ -21,14 +22,14 @@ impl catapulte_domain::port::sender_usage::SenderUsage for PostgresAdapter {
             return Ok(vec![]);
         }
 
-        let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
+        let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(format!(
             "SELECT sender_name, \
-             SUM(CASE WHEN event_type = 'delivery.succeeded' THEN 1 ELSE 0 END) AS sent_count, \
-             SUM(CASE WHEN event_type = 'delivery.failed' THEN 1 ELSE 0 END) AS failed_count \
+             SUM(CASE WHEN event_type = '{DELIVERY_SUCCEEDED}' THEN 1 ELSE 0 END) AS sent_count, \
+             SUM(CASE WHEN event_type = '{DELIVERY_FAILED}' THEN 1 ELSE 0 END) AS failed_count \
              FROM lifecycle_events \
-             WHERE event_type IN ('delivery.succeeded', 'delivery.failed') \
-             AND sender_name IN (",
-        );
+             WHERE event_type IN ('{DELIVERY_SUCCEEDED}', '{DELIVERY_FAILED}') \
+             AND sender_name IN ("
+        ));
         let mut sep = qb.separated(", ");
         for name in names {
             sep.push_bind(name.as_str().to_owned());

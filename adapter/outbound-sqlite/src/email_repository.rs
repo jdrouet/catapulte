@@ -3,7 +3,8 @@ use catapulte_domain::entity::attachment::{AttachmentRef, BlobRef};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::envelope::Envelope;
 use catapulte_domain::entity::lifecycle_event::{
-    EventContext, PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES, WORKER_EVENT_TYPES,
+    DELIVERY_FAILED, DELIVERY_SUCCEEDED, EventContext, PIPELINE_EVENT_TYPES, TERMINAL_EVENT_TYPES,
+    WORKER_EVENT_TYPES,
 };
 use catapulte_domain::port::email_repository::{
     CancelOutcome, DeliveryStart, DuplicateState, EmailCancellation, EmailRecord, EmailRepository,
@@ -35,9 +36,9 @@ fn list_query(prefix: &str, params: ListEmailsParams) -> QueryBuilder<Sqlite> {
                 created_at_ms, send_at_ms, \
                 CASE \
                     WHEN cancelled_at_ms IS NOT NULL THEN 'cancelled' \
-                    WHEN terminal_event_type = 'delivery.succeeded' THEN 'sent' \
-                    WHEN terminal_event_type = 'delivery.failed' THEN 'failed' \
-                    WHEN send_at_ms > "
+                    WHEN terminal_event_type = '{DELIVERY_SUCCEEDED}' THEN 'sent' \
+                    WHEN terminal_event_type = '{DELIVERY_FAILED}' THEN 'failed' \
+                    WHEN send_at_ms > ",
     ));
     qb.push_bind(now);
     qb.push(
@@ -86,10 +87,14 @@ fn list_query(prefix: &str, params: ListEmailsParams) -> QueryBuilder<Sqlite> {
     match params.status {
         None => {}
         Some(EmailStatus::Sent) => {
-            qb.push(" AND terminal_event_type = 'delivery.succeeded' AND cancelled_at_ms IS NULL");
+            qb.push(format!(
+                " AND terminal_event_type = '{DELIVERY_SUCCEEDED}' AND cancelled_at_ms IS NULL"
+            ));
         }
         Some(EmailStatus::Failed) => {
-            qb.push(" AND terminal_event_type = 'delivery.failed' AND cancelled_at_ms IS NULL");
+            qb.push(format!(
+                " AND terminal_event_type = '{DELIVERY_FAILED}' AND cancelled_at_ms IS NULL"
+            ));
         }
         Some(EmailStatus::Cancelled) => {
             qb.push(" AND cancelled_at_ms IS NOT NULL");
