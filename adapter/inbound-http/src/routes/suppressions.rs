@@ -182,6 +182,7 @@ pub(crate) struct NoopManageSuppressions;
 
 #[cfg(test)]
 #[allow(async_fn_in_trait)]
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 impl ManageSuppressionsUseCase for NoopManageSuppressions {
     async fn list(
         &self,

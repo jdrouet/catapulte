@@ -38,6 +38,7 @@ pub(crate) async fn insert_lifecycle_event<'e>(
     Ok(())
 }
 
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 impl EventPublisher for SqliteAdapter {
     /// # Errors
     ///

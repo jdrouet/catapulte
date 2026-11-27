@@ -17,6 +17,7 @@ pub enum RoutedEmailSenderError {
 
 pub struct NoopSenderUsage;
 
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 impl SenderUsage for NoopSenderUsage {
     async fn get_stats(
         &self,
@@ -238,6 +239,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;

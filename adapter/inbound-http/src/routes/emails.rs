@@ -298,6 +298,7 @@ pub async fn cancel_email<S: HttpServerState>(
 pub(crate) struct NoopCancelEmail;
 
 #[cfg(test)]
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 impl CancelEmailUseCase for NoopCancelEmail {
     async fn execute(
         &self,
@@ -309,6 +310,7 @@ impl CancelEmailUseCase for NoopCancelEmail {
 }
 
 #[cfg(test)]
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 mod tests {
     use std::sync::{Arc, Mutex};
 

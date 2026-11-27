@@ -31,6 +31,7 @@ enum Outcome {
 #[derive(Clone)]
 struct StubProcessor(Outcome);
 
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 impl ProcessQueuedEmailUseCase for StubProcessor {
     async fn execute(
         &self,

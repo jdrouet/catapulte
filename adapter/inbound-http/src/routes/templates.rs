@@ -220,6 +220,7 @@ pub async fn preview_template<S: HttpServerState>(
 pub(crate) struct NoopManageTemplates;
 
 #[cfg(test)]
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 impl ManageTemplatesUseCase for NoopManageTemplates {
     async fn list(
         &self,

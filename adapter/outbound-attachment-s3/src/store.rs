@@ -73,7 +73,7 @@ impl S3AttachmentStoreConfig {
     /// endpoint, region, or credentials).
     // Keep `async` so callers can `.await` this just like the fs adapter's
     // `build`, even though no I/O is needed here.
-    #[allow(clippy::unused_async)]
+    #[allow(unknown_lints, clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn build(self) -> anyhow::Result<S3AttachmentStore> {
         S3AttachmentStore::from_config(self)
     }

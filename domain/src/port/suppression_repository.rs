@@ -65,6 +65,7 @@ pub trait SuppressionRepository: Send + Sync + 'static {
 /// Suppresses nothing; the default when no suppression list is wired in.
 pub struct NoopSuppressionList;
 
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 impl SuppressionRepository for NoopSuppressionList {
     async fn list(
         &self,

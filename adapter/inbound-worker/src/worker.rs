@@ -379,6 +379,7 @@ async fn process_one<S: WorkerState>(
 }
 
 #[cfg(test)]
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;

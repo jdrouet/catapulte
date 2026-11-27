@@ -62,6 +62,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 pub(crate) mod fakes {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};

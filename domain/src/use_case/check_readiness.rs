@@ -36,6 +36,7 @@ impl<H: HealthCheck> CheckReadinessUseCase for CheckReadinessService<H> {
 }
 
 #[cfg(test)]
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 mod tests {
     use super::{CheckReadinessService, CheckReadinessUseCase, Readiness};
     use crate::port::health::{HealthCheck, HealthCheckError};

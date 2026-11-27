@@ -87,6 +87,7 @@ impl Default for MemoryQueue {
     }
 }
 
+#[allow(unknown_lints, clippy::unused_async_trait_impl)] // lint is newer than the CI toolchain's clippy
 impl<C: Clock> EmailQueue for MemoryQueue<C> {
     async fn enqueue(
         &self,
