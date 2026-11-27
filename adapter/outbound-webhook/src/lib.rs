@@ -54,6 +54,20 @@ fn event_to_json(event: &LifecycleEvent) -> serde_json::Value {
     })
 }
 
+fn failure_kind(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connect"
+    } else if e.status().is_some_and(|s| s.is_client_error()) {
+        "client_error"
+    } else if e.status().is_some_and(|s| s.is_server_error()) {
+        "server_error"
+    } else {
+        "request"
+    }
+}
+
 impl EventPublisher for WebhookPublisher {
     async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
         let body = serde_json::to_vec(&event_to_json(event))
@@ -83,15 +97,23 @@ impl EventPublisher for WebhookPublisher {
                 .body(body.clone())
                 .send()
                 .await
-                .context("sending webhook request")
-                .and_then(|r| {
-                    r.error_for_status()
-                        .context("webhook returned error status")
-                }) {
+                .and_then(reqwest::Response::error_for_status)
+            {
                 Ok(_) => return Ok(()),
                 Err(e) => {
-                    tracing::warn!(error = %e, attempt, "webhook delivery failed");
-                    last_err = Some(e);
+                    // Remote replies and the URL (may embed a token) stay out of logs.
+                    tracing::warn!(
+                        email_id = %event.email_id().as_uuid(),
+                        attempt,
+                        error_kind = failure_kind(&e),
+                        "webhook delivery failed"
+                    );
+                    let context = if e.is_status() {
+                        "webhook returned error status"
+                    } else {
+                        "sending webhook request"
+                    };
+                    last_err = Some(anyhow::Error::new(e).context(context));
                 }
             }
         }
@@ -257,6 +279,8 @@ mod tests {
                 attempt: 3,
                 reason: "smtp error".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("test")),
                 context: EventContext::with_correlation(Some("corr-xyz".into())),
             })
@@ -269,6 +293,7 @@ mod tests {
         assert_eq!(body["payload"]["attempt"], 3);
         assert_eq!(body["payload"]["correlation_id"], "corr-xyz");
         assert_eq!(body["payload"]["error_class"], "delivery");
+        assert_eq!(body["payload"]["failure_category"], "other");
     }
 
     /// Contract-lock: full body for a Sent event matches the canonical shape.
@@ -334,6 +359,8 @@ mod tests {
                 attempt: 3,
                 reason: "smtp error".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("primary")),
                 context: EventContext::with_correlation(Some("corr-fail".to_owned())),
             })
@@ -349,6 +376,7 @@ mod tests {
                 "attempt": 3,
                 "reason": "smtp error",
                 "error_class": "delivery",
+                "failure_category": "other",
                 "sender_name": "primary",
                 "correlation_id": "corr-fail",
             },

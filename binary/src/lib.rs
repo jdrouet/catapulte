@@ -21,6 +21,7 @@ mod metrics;
 pub mod publisher;
 pub mod queue;
 pub mod render_sandbox;
+mod retention;
 mod state;
 pub mod storage;
 
@@ -48,6 +49,8 @@ pub struct AppConfig {
     pub render: RenderSandboxConfig,
     pub gc_sweep_interval: Duration,
     pub gc_grace_period: Duration,
+    /// `None` never deletes emails.
+    pub retention: Option<Duration>,
     /// Single limit shared by the submit-time estimate and the SMTP wire-size check.
     pub max_message_bytes: u64,
     /// Furthest `send_at_ms` accepted on queues that can delay delivery.
@@ -77,6 +80,51 @@ fn parse_bounce_config(
                 .with_context(|| format!("invalid {DOMAIN} or {SECRET}"))
         }
         _ => anyhow::bail!("{DOMAIN} and {SECRET} must be set together"),
+    }
+}
+
+fn parse_retention(
+    lookup: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> anyhow::Result<Option<Duration>> {
+    const KEY: &str = "CATAPULTE_RETENTION";
+    let raw = match lookup(KEY) {
+        Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!("{KEY} is not valid unicode"),
+        Ok(raw) => raw,
+    };
+    let trimmed = raw.trim();
+    let parsed = trimmed
+        .strip_suffix('h')
+        .map(|n| (n, 3600))
+        .or_else(|| trimmed.strip_suffix('d').map(|n| (n, 86_400)))
+        .filter(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|(n, unit)| n.parse::<u64>().ok()?.checked_mul(unit))
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs)
+        .filter(|d| i64::try_from(d.as_millis()).is_ok());
+    match parsed {
+        Some(d) => Ok(Some(d)),
+        None => anyhow::bail!(
+            "{KEY} must be a positive number of hours or days such as 7d or 168h, got {raw:?}"
+        ),
+    }
+}
+
+/// Purging is only safe when the storage queue proves that no copy of an email is still queued.
+/// Reads the raw backend value so the error shows before any queue-specific config is loaded.
+fn check_retention_queue(
+    retention: Option<Duration>,
+    lookup: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> anyhow::Result<()> {
+    if retention.is_none() {
+        return Ok(());
+    }
+    match lookup("CATAPULTE_QUEUE_BACKEND") {
+        Err(_) => Ok(()),
+        Ok(raw) if raw == "storage" => Ok(()),
+        Ok(raw) => anyhow::bail!(
+            "CATAPULTE_RETENTION requires CATAPULTE_QUEUE_BACKEND=storage, got {raw:?}"
+        ),
     }
 }
 
@@ -147,6 +195,8 @@ impl AppConfig {
         let resolver = TemplateResolverConfig::from_env("CATAPULTE_RESOLVER")
             .context("loading resolver config")?;
         let worker = WorkerConfig::from_env("CATAPULTE_WORKER").context("loading worker config")?;
+        let retention = parse_retention(|k| std::env::var(k))?;
+        check_retention_queue(retention, |k| std::env::var(k))?;
         let queue = queue::QueueBackendConfig::from_env("CATAPULTE_QUEUE")
             .context("loading queue backend config")?;
         let publisher = PublisherAdapterConfig::from_env().context("loading publisher config")?;
@@ -192,6 +242,7 @@ impl AppConfig {
             render,
             gc_sweep_interval,
             gc_grace_period,
+            retention,
             max_message_bytes,
             max_schedule_ahead,
             allowed_sender_domains,
@@ -204,6 +255,10 @@ impl AppConfig {
     /// Returns an error when an adapter fails to build.
     #[allow(clippy::too_many_lines)]
     pub async fn build(self) -> anyhow::Result<Application> {
+        anyhow::ensure!(
+            self.retention.is_none() || matches!(self.queue, queue::QueueBackendConfig::Storage),
+            "CATAPULTE_RETENTION requires CATAPULTE_QUEUE_BACKEND=storage"
+        );
         let storage = self
             .storage
             .build()
@@ -409,6 +464,10 @@ impl AppConfig {
             self.gc_grace_period,
         );
 
+        let retention = self
+            .retention
+            .map(|r| retention::RetentionPurge::new(storage.clone(), r));
+
         let inbound_nats_server = match self.inbound_nats {
             Some(cfg) => Some(cfg.build().await.context("building inbound NATS server")?),
             None => None,
@@ -420,6 +479,7 @@ impl AppConfig {
             inbound_nats_server,
             worker,
             gc,
+            retention,
             sandbox,
             metrics_enabled: false,
             metric_export_interval: Duration::from_mins(1),
@@ -433,6 +493,7 @@ pub struct Application {
     inbound_nats_server: Option<InboundNatsServer>,
     worker: Worker,
     gc: gc::AttachmentGc,
+    retention: Option<retention::RetentionPurge>,
     sandbox: RenderSandbox,
     metrics_enabled: bool,
     metric_export_interval: Duration,
@@ -499,6 +560,15 @@ impl Application {
             Ok(())
         });
 
+        // Retention purge (optional)
+        if let Some(purge) = self.retention {
+            let purge_cancel = cancel.clone();
+            tasks.spawn(async move {
+                purge.run(purge_cancel).await;
+                Ok(())
+            });
+        }
+
         // Inbound NATS (optional)
         if let Some(inbound) = self.inbound_nats_server {
             let inb_cancel = cancel.clone();
@@ -561,12 +631,61 @@ mod tests {
     use std::env::VarError;
 
     use super::{
-        parse_allowed_sender_domains, parse_bounce_config, parse_max_message_bytes,
-        parse_max_schedule_ahead,
+        check_retention_queue, parse_allowed_sender_domains, parse_bounce_config,
+        parse_max_message_bytes, parse_max_schedule_ahead, parse_retention,
     };
 
     fn lookup(value: Option<&'static str>) -> impl Fn(&str) -> Result<String, VarError> {
         move |_| value.map(str::to_owned).ok_or(VarError::NotPresent)
+    }
+
+    #[test]
+    fn retention_unset_means_never_delete() {
+        assert_eq!(parse_retention(lookup(None)).unwrap(), None);
+    }
+
+    #[test]
+    fn retention_parses_days_and_hours() {
+        let week = Some(std::time::Duration::from_hours(168));
+        assert_eq!(parse_retention(lookup(Some("7d"))).unwrap(), week);
+        assert_eq!(parse_retention(lookup(Some(" 168h "))).unwrap(), week);
+    }
+
+    #[test]
+    fn retention_rejects_invalid_values() {
+        for bad in [
+            "",
+            "abc",
+            "7x",
+            "7",
+            "0d",
+            "-1d",
+            "99999999999999999999d",
+            "106751991167301d",
+        ] {
+            let err = parse_retention(lookup(Some(bad))).unwrap_err();
+            assert!(err.to_string().contains("CATAPULTE_RETENTION"), "{bad:?}");
+        }
+        let non_unicode = |_: &str| Err(VarError::NotUnicode(std::ffi::OsString::from("x")));
+        let err = parse_retention(non_unicode).unwrap_err();
+        assert!(err.to_string().contains("CATAPULTE_RETENTION"));
+    }
+
+    #[test]
+    fn retention_requires_the_storage_queue() {
+        let week = Some(std::time::Duration::from_hours(168));
+        for bad in ["nats", "memory"] {
+            let msg = check_retention_queue(week, lookup(Some(bad)))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                msg.contains("CATAPULTE_RETENTION") && msg.contains("CATAPULTE_QUEUE_BACKEND"),
+                "{bad}"
+            );
+        }
+        check_retention_queue(week, lookup(None)).unwrap();
+        check_retention_queue(week, lookup(Some("storage"))).unwrap();
+        check_retention_queue(None, lookup(Some("nats"))).unwrap();
     }
 
     #[test]

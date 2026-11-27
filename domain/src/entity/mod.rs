@@ -3,6 +3,7 @@ pub mod body;
 pub mod email;
 pub mod envelope;
 pub mod error_class;
+pub mod failure_category;
 pub mod lifecycle_event;
 pub mod return_path;
 pub mod sender;

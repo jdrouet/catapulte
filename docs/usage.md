@@ -369,12 +369,12 @@ them in real time.
 ### Reading events
 
 - `GET /events` — across all emails. Filters: `email_id`, `event_type`,
-  `sender_name` (the upstream SMTP server), `error_class`, `after_ms`,
-  `before_ms`, `limit`, `offset`.
+  `sender_name` (the upstream SMTP server), `error_class`, `failure_category`,
+  `after_ms`, `before_ms`, `limit`, `offset`.
 - `GET /emails/{id}/events` — events for one email (same filters).
 
-`error_class` is validated against the vocabulary below — an unknown value
-returns `400`. `event_type` and `sender_name` are free-form.
+`error_class` and `failure_category` are validated against the vocabularies below — an
+unknown value returns `400`. `event_type` and `sender_name` are free-form.
 
 ```bash
 curl "http://localhost:3000/emails/018f4e3c-2d1a-7b3c-8f00-1234567890ab/events"
@@ -428,8 +428,8 @@ each event as JSON:
 | `cancelled` | a scheduled email was cancelled before any worker touched it; informational | `correlation_id` |
 | `sending` | a delivery attempt is starting | `attempt`, `correlation_id` |
 | `delivery.succeeded` | accepted by the upstream SMTP server | `sender_name`, `correlation_id`, `smtp_response`, `message_id` |
-| `retrying` | attempt failed, will retry | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
-| `delivery.failed` | retries exhausted, or no recipient left after suppression (`error_class` `suppressed`) | `attempt`, `reason`, `error_class`, `sender_name`, `correlation_id` |
+| `retrying` | attempt failed, will retry | `attempt`, `reason`, `error_class`, `failure_category`, `sender_name`, `correlation_id` |
+| `delivery.failed` | retries exhausted, or no recipient left after suppression (`error_class` `suppressed`) | `attempt`, `reason`, `error_class`, `failure_category`, `sender_name`, `correlation_id` |
 | `bounced` | a remote server reported a bounce (see [ingestion](../readme.md#bounce-and-complaint-ingestion)); informational, never changes the status | `hard`, `recipient`, `diagnostic_code`, `correlation_id` |
 | `complained` | a mailbox provider reported a spam complaint; `verified` is true only when the report carried a valid signed return path; informational | `recipient`, `verified`, `correlation_id` |
 | `suppressed` | recipients were dropped because they are on the suppression list; informational, never changes the status | `addresses`, `correlation_id` |
@@ -456,13 +456,37 @@ server refuses, or a message that cannot be built locally (which has no SMTP cod
 not retried or sent to other routes, but it can follow earlier transient attempts.
 Route-level failures (authentication, policy, size limits) fall back to other routes,
 retry, and end as `delivery`.
+
+`failure_category` is also present on `retrying` / `delivery.failed` only. It says how
+the last route tried failed, so you can tell a relay outage from a bad recipient:
+
+| `failure_category` | Meaning |
+|--------------------|---------|
+| `connection` | the relay could not be reached: DNS failure, connection refused or reset, network error |
+| `timeout` | connecting to the relay timed out |
+| `tls` | the TLS session with the relay failed, for example an invalid certificate or a non-TLS reply |
+| `permanent_rejection` | the relay answered with a 5xx reply |
+| `temporary_rejection` | the relay answered with a 4xx reply |
+| `other` | anything else: template, attachment, routing or suppression failures, a message that cannot be built locally, or an SMTP protocol error |
+
+The category is a fixed value and never contains the relay's reply. It does not replace
+`error_class`: for example, a route-level 5xx is `delivery` with `permanent_rejection`.
+Limits: `timeout` covers connecting only; a TLS handshake that the relay closes early is
+`connection`, a relay that closes the connection without replying is `other`, and a relay
+that does not offer a required STARTTLS is `other`. Events
+recorded before this field existed have no `failure_category`, so the filter does not
+match them.
 (The pushed payload has no timestamp; the stored events from `GET /events` carry
 `created_at_ms`.) Webhooks are retried a few times on a non-2xx response.
 
 The worker's failed-send log line (`failed to process email`) carries only `error_class`,
-the email id and `attempt`. It never includes the mail relay's reply, which can echo
+`failure_category`, the email id and `attempt`. It never includes the mail relay's reply, which can echo
 recipient addresses. The recorded failure reason is the `reason` field of `retrying` and
 `delivery.failed` events, available from `GET /events` or the configured event sinks.
+
+Webhook and NATS delivery failure logs carry only the email id, the event type and, for
+webhooks, a fixed `error_kind` (`timeout`, `connect`, `client_error`, `server_error`,
+`request`). These log lines never include the receiver's response or the webhook URL.
 
 #### Verifying webhook signatures
 

@@ -169,6 +169,7 @@ async fn assert_finished_once(
             event_type: Some(event.to_owned()),
             sender_name: None,
             error_class: None,
+            failure_category: None,
             after_ms: None,
             before_ms: None,
             limit: 10,

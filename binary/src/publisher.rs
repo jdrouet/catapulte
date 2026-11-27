@@ -35,10 +35,14 @@ impl EventPublisher for PublisherAdapter {
                 );
                 storage_span.record("outcome", if sr.is_ok() { "ok" } else { "error" });
                 webhook_span.record("outcome", if wr.is_ok() { "ok" } else { "error" });
-                sr?;
-                if let Err(e) = wr {
-                    tracing::warn!(error = %e, "webhook event delivery failed");
+                if wr.is_err() {
+                    tracing::warn!(
+                        email_id = %event.email_id().as_uuid(),
+                        event = event.event_type(),
+                        "webhook event delivery failed"
+                    );
                 }
+                sr?;
                 Ok(())
             }
             Self::StorageNats(s, n) => {
@@ -52,10 +56,14 @@ impl EventPublisher for PublisherAdapter {
                 );
                 storage_span.record("outcome", if sr.is_ok() { "ok" } else { "error" });
                 nats_span.record("outcome", if nr.is_ok() { "ok" } else { "error" });
-                sr?;
-                if let Err(e) = nr {
-                    tracing::warn!(error = %e, "NATS event delivery failed");
+                if nr.is_err() {
+                    tracing::warn!(
+                        email_id = %event.email_id().as_uuid(),
+                        event = event.event_type(),
+                        "NATS event delivery failed"
+                    );
                 }
+                sr?;
                 Ok(())
             }
             Self::StorageBoth(s, w, n) => {
@@ -73,13 +81,21 @@ impl EventPublisher for PublisherAdapter {
                 storage_span.record("outcome", if sr.is_ok() { "ok" } else { "error" });
                 webhook_span.record("outcome", if wr.is_ok() { "ok" } else { "error" });
                 nats_span.record("outcome", if nr.is_ok() { "ok" } else { "error" });
+                if wr.is_err() {
+                    tracing::warn!(
+                        email_id = %event.email_id().as_uuid(),
+                        event = event.event_type(),
+                        "webhook event delivery failed"
+                    );
+                }
+                if nr.is_err() {
+                    tracing::warn!(
+                        email_id = %event.email_id().as_uuid(),
+                        event = event.event_type(),
+                        "NATS event delivery failed"
+                    );
+                }
                 sr?;
-                if let Err(e) = wr {
-                    tracing::warn!(error = %e, "webhook event delivery failed");
-                }
-                if let Err(e) = nr {
-                    tracing::warn!(error = %e, "NATS event delivery failed");
-                }
                 Ok(())
             }
         }
@@ -178,8 +194,10 @@ impl PublisherAdapterConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use catapulte_domain::entity::body::{BodySource, Plain};
-    use catapulte_domain::entity::email::EmailId;
+    use catapulte_domain::entity::email::{EmailId, RecipientKind};
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
     use catapulte_domain::entity::sender::SenderName;
@@ -187,6 +205,9 @@ mod tests {
     use catapulte_domain::port::event_publisher::EventPublisher;
     use catapulte_domain::port::event_repository::{EventRepository, ListEventsParams};
     use catapulte_outbound_sqlite::SqliteAdapter;
+    use catapulte_outbound_webhook::WebhookPublisher;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::PublisherAdapter;
     use crate::storage::StorageAdapter;
@@ -222,6 +243,7 @@ mod tests {
                 event_type: None,
                 sender_name: None,
                 error_class: None,
+                failure_category: None,
                 after_ms: None,
                 before_ms: None,
                 limit: 10,
@@ -230,5 +252,121 @@ mod tests {
             .await
             .unwrap();
         assert!(events.is_empty(), "{events:?}");
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    async fn fresh_sqlite() -> (StorageAdapter, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("test.db");
+        let config = catapulte_outbound_sqlite::SqliteConfig {
+            url: format!("sqlite:{}", db_path.display()),
+        };
+        let adapter = config.build().await.expect("sqlite build");
+        adapter.migrate().await.expect("sqlite migrate");
+        (StorageAdapter::Sqlite(adapter), dir)
+    }
+
+    // Capture needs a process-global subscriber installed before any other test hits the
+    // callsites, so it runs in a child process of its own.
+    #[test]
+    fn webhook_failure_never_leaks_remote_reply_or_url() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "publisher::tests::webhook_failure_capture_in_isolated_process",
+                "--ignored",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "child failed: {text}");
+        assert!(text.contains("1 passed"), "child ran no test: {text}");
+    }
+
+    #[tokio::test]
+    #[ignore = "run in its own process by webhook_failure_never_leaks_remote_reply_or_url"]
+    async fn webhook_failure_capture_in_isolated_process() {
+        let buf = SharedBuf::default();
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+
+        let (storage, _dir) = fresh_sqlite().await;
+        let id = EmailId::default();
+        let envelope = Envelope::new(
+            "sender@example.com",
+            vec![(RecipientKind::To, "to@example.com".to_owned())],
+            BodySource::Plain(Plain::try_new(Some("hi".to_owned()), None).unwrap()),
+        );
+        storage.save(id, &envelope).await.unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/hook/URLMARKER-857"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("BODYMARKER-857 <victim@example.com>"),
+            )
+            .expect(3)
+            .mount(&server)
+            .await;
+        let url = reqwest::Url::parse(&format!("{}/hook/URLMARKER-857", server.uri())).unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let publisher =
+            PublisherAdapter::StorageWebhook(storage, WebhookPublisher::new(client, url));
+
+        publisher
+            .publish(&LifecycleEvent::Queued {
+                id,
+                context: EventContext::with_correlation(None),
+            })
+            .await
+            .unwrap();
+        server.verify().await;
+
+        let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        for marker in ["BODYMARKER-857", "URLMARKER-857", "victim@example.com"] {
+            assert!(!logs.contains(marker), "{marker} leaked: {logs}");
+        }
+        let id = id.as_uuid().to_string();
+        assert_eq!(
+            logs.lines()
+                .filter(|l| l.contains("webhook delivery failed")
+                    && l.contains(&id)
+                    && l.contains("error_kind=\"server_error\""))
+                .count(),
+            3,
+            "expected three webhook delivery failures: {logs}"
+        );
+        assert_eq!(
+            logs.lines()
+                .filter(|l| l.contains("webhook event delivery failed") && l.contains(&id))
+                .count(),
+            1,
+            "expected one event delivery failure: {logs}"
+        );
     }
 }

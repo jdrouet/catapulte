@@ -11,15 +11,38 @@ pub mod template_repository;
 
 use std::str::FromStr;
 
-use sqlx::SqlitePool;
+use percent_encoding::percent_decode_str;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::{ConnectOptions, SqlitePool};
 
-fn is_in_memory(url: &str) -> bool {
-    let rest = url
-        .strip_prefix("sqlite:")
-        .map_or(url, |r| r.strip_prefix("//").unwrap_or(r));
-    let (db, query) = rest.split_once('?').unwrap_or((rest, ""));
-    db == ":memory:" || query.split('&').any(|kv| kv == "mode=memory")
+// Mirrors how sqlx hands the name to SQLite: `vfs` or `immutable` wrap it in a
+// `file:` URI, otherwise a `file:` name is itself a URI. Rebuilding a URL
+// panics on names like `file::memory:`, hence the placeholder filename.
+fn is_in_memory(opts: &SqliteConnectOptions) -> bool {
+    let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
+    let memory_pair = |k: &str, v: &str| matches!((k, v), ("mode", "memory") | ("vfs", "memdb"));
+    let url = opts.clone().filename("db").to_url_lossy();
+    let mut wrapped = false;
+    for (k, v) in url.query_pairs() {
+        if memory_pair(&k, &v) {
+            return true;
+        }
+        wrapped |= k == "vfs" || k == "immutable";
+    }
+    let filename = opts.get_filename().to_string_lossy();
+    if filename == ":memory:" {
+        return true;
+    }
+    let Some(uri) = filename.strip_prefix("file:").filter(|_| !wrapped) else {
+        return false;
+    };
+    let uri = uri.split('#').next().unwrap_or_default();
+    let (path, query) = uri.split_once('?').unwrap_or((uri, ""));
+    decode(path) == ":memory:"
+        || query.split('&').any(|kv| {
+            let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+            memory_pair(&decode(k), &decode(v))
+        })
 }
 
 /// An in-memory database vanishes with its last connection, so the single
@@ -49,7 +72,7 @@ impl SqliteAdapter {
         let opts = SqliteConnectOptions::from_str(url)
             .context("invalid sqlite url")?
             .create_if_missing(true);
-        let pool = pool_options(SqlitePoolOptions::new(), is_in_memory(url))
+        let pool = pool_options(SqlitePoolOptions::new(), is_in_memory(&opts))
             .connect_with(opts)
             .await
             .context("failed to open sqlite pool")?;
@@ -110,16 +133,34 @@ mod tests {
             "sqlite://:memory:",
             "sqlite://foo.db?mode=memory",
             "sqlite:foo?mode=memory&cache=shared",
+            "sqlite:file::memory:",
+            "sqlite://file::memory:?cache=shared",
+            "sqlite://foo.db?vfs=memdb",
+            "sqlite://foo.db?mode=%6Demory",
+            "sqlite://foo.db?mo%64e=memory",
+            "sqlite:file:foo%3Fmode%3Dmemory",
+            "sqlite://%3Amemory%3A",
+            "sqlite:file:%253Amemory%253A",
+            "sqlite:file::memory:#x",
+            "sqlite://%3Amemory%3A?vfs=unix",
         ] {
-            assert!(is_in_memory(url), "{url}");
+            let opts = SqliteConnectOptions::from_str(url).unwrap();
+            assert!(is_in_memory(&opts), "{url}");
         }
         for url in [
             "//:memory:",
             "sqlite://catapulte.db",
             "sqlite://memory.db",
             "sqlite://foo.db?mode=rwc",
+            "sqlite://file:foo.db",
+            "sqlite://foo.db?vfs=unix",
+            "sqlite:file:memory.db",
+            "sqlite:file::memory:?vfs=unix",
+            "sqlite:file::memory:?immutable=true",
+            "sqlite:FILE::memory:",
         ] {
-            assert!(!is_in_memory(url), "{url}");
+            let opts = SqliteConnectOptions::from_str(url).unwrap();
+            assert!(!is_in_memory(&opts), "{url}");
         }
     }
 
@@ -166,7 +207,12 @@ mod tests {
         assert!(!o.get_test_before_acquire());
 
         let path = std::env::temp_dir().join(format!("catapulte-{}.db", uuid::Uuid::now_v7()));
-        let file = SqliteAdapter::connect(&format!("sqlite://{}", path.display()))
+        let encoded = path
+            .display()
+            .to_string()
+            .replace('%', "%25")
+            .replace('?', "%3F");
+        let file = SqliteAdapter::connect(&format!("sqlite://{encoded}"))
             .await
             .unwrap();
         let o = file.pool().options();
@@ -175,5 +221,22 @@ mod tests {
         assert!(o.get_test_before_acquire());
         drop(file);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn alternate_in_memory_urls_get_in_memory_options() {
+        for url in [
+            "sqlite://file::memory:",
+            "sqlite://foo.db?vfs=memdb",
+            "sqlite://foo.db?mode=%6Demory",
+            "sqlite://%3Amemory%3A",
+        ] {
+            let adapter = SqliteAdapter::connect(url).await.unwrap();
+            let o = adapter.pool().options();
+            assert_eq!(o.get_idle_timeout(), None, "{url}");
+            assert_eq!(o.get_max_lifetime(), None, "{url}");
+            assert!(!o.get_test_before_acquire(), "{url}");
+            adapter.migrate().await.unwrap();
+        }
     }
 }
