@@ -461,7 +461,7 @@ retry, and end as `delivery`.
 
 The worker's failed-send log line (`failed to process email`) carries only `error_class`,
 the email id and `attempt`. It never includes the mail relay's reply, which can echo
-recipient addresses. The full failure text is the `reason` field of `retrying` and
+recipient addresses. The recorded failure reason is the `reason` field of `retrying` and
 `delivery.failed` events, available from `GET /events` or the configured event sinks.
 
 #### Verifying webhook signatures
