@@ -111,19 +111,21 @@ fn parse_retention(
 }
 
 /// Purging is only safe when the storage queue proves that no copy of an email is still queued.
+/// Reads the raw backend value so the error shows before any queue-specific config is loaded.
 fn check_retention_queue(
     retention: Option<Duration>,
-    queue: &queue::QueueBackendConfig,
+    lookup: impl Fn(&str) -> Result<String, std::env::VarError>,
 ) -> anyhow::Result<()> {
-    let backend = match queue {
-        queue::QueueBackendConfig::Storage => return Ok(()),
-        queue::QueueBackendConfig::Memory => "memory",
-        queue::QueueBackendConfig::Nats(_) => "nats",
-    };
     if retention.is_none() {
         return Ok(());
     }
-    anyhow::bail!("CATAPULTE_RETENTION requires CATAPULTE_QUEUE_BACKEND=storage, got {backend}")
+    match lookup("CATAPULTE_QUEUE_BACKEND") {
+        Err(_) => Ok(()),
+        Ok(raw) if raw == "storage" => Ok(()),
+        Ok(raw) => anyhow::bail!(
+            "CATAPULTE_RETENTION requires CATAPULTE_QUEUE_BACKEND=storage, got {raw:?}"
+        ),
+    }
 }
 
 const DEFAULT_MAX_MESSAGE_BYTES: u64 = 25 * 1024 * 1024;
@@ -193,10 +195,10 @@ impl AppConfig {
         let resolver = TemplateResolverConfig::from_env("CATAPULTE_RESOLVER")
             .context("loading resolver config")?;
         let worker = WorkerConfig::from_env("CATAPULTE_WORKER").context("loading worker config")?;
+        let retention = parse_retention(|k| std::env::var(k))?;
+        check_retention_queue(retention, |k| std::env::var(k))?;
         let queue = queue::QueueBackendConfig::from_env("CATAPULTE_QUEUE")
             .context("loading queue backend config")?;
-        let retention = parse_retention(|k| std::env::var(k))?;
-        check_retention_queue(retention, &queue)?;
         let publisher = PublisherAdapterConfig::from_env().context("loading publisher config")?;
         let attachment_store = attachment_store::AttachmentStoreBackendConfig::from_env()
             .context("loading attachment store config")?;
@@ -253,6 +255,10 @@ impl AppConfig {
     /// Returns an error when an adapter fails to build.
     #[allow(clippy::too_many_lines)]
     pub async fn build(self) -> anyhow::Result<Application> {
+        anyhow::ensure!(
+            self.retention.is_none() || matches!(self.queue, queue::QueueBackendConfig::Storage),
+            "CATAPULTE_RETENTION requires CATAPULTE_QUEUE_BACKEND=storage"
+        );
         let storage = self
             .storage
             .build()
@@ -628,7 +634,6 @@ mod tests {
         check_retention_queue, parse_allowed_sender_domains, parse_bounce_config,
         parse_max_message_bytes, parse_max_schedule_ahead, parse_retention,
     };
-    use crate::queue::QueueBackendConfig;
 
     fn lookup(value: Option<&'static str>) -> impl Fn(&str) -> Result<String, VarError> {
         move |_| value.map(str::to_owned).ok_or(VarError::NotPresent)
@@ -669,11 +674,18 @@ mod tests {
     #[test]
     fn retention_requires_the_storage_queue() {
         let week = Some(std::time::Duration::from_hours(168));
-        let err = check_retention_queue(week, &QueueBackendConfig::Memory).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("CATAPULTE_RETENTION") && msg.contains("CATAPULTE_QUEUE_BACKEND"));
-        check_retention_queue(None, &QueueBackendConfig::Memory).unwrap();
-        check_retention_queue(week, &QueueBackendConfig::Storage).unwrap();
+        for bad in ["nats", "memory"] {
+            let msg = check_retention_queue(week, lookup(Some(bad)))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                msg.contains("CATAPULTE_RETENTION") && msg.contains("CATAPULTE_QUEUE_BACKEND"),
+                "{bad}"
+            );
+        }
+        check_retention_queue(week, lookup(None)).unwrap();
+        check_retention_queue(week, lookup(Some("storage"))).unwrap();
+        check_retention_queue(None, lookup(Some("nats"))).unwrap();
     }
 
     #[test]

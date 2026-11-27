@@ -45,17 +45,23 @@ impl RetentionPurge {
     }
 }
 
-/// Runs batches until one comes back short, fails, or the token is cancelled; logs once.
+/// Runs batches until one deletes nothing, fails, or the token is cancelled; logs once.
+/// A batch in flight at cancellation is dropped, so its transaction rolls back.
 async fn sweep<F>(cancel: &CancellationToken, batch: u32, mut next: impl FnMut(u32) -> F) -> u64
 where
     F: Future<Output = anyhow::Result<u64>>,
 {
     let mut total = 0;
     while !cancel.is_cancelled() {
-        match next(batch).await {
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => break,
+            r = next(batch) => r,
+        };
+        match result {
             Ok(n) => {
                 total += n;
-                if n < u64::from(batch) {
+                if n == 0 {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -139,7 +145,7 @@ mod tests {
     #[tokio::test]
     async fn sweep_runs_multiple_batches() {
         let (logs, _guard) = Logs::capture();
-        let mut results = vec![1, 2, 2];
+        let mut results = vec![0, 1, 2];
         let mut calls = 0;
 
         let total = sweep(&CancellationToken::new(), 2, |_| {
@@ -148,9 +154,9 @@ mod tests {
         })
         .await;
 
-        assert_eq!((total, calls), (5, 3));
+        assert_eq!((total, calls), (3, 3));
         assert_eq!(logs.count("INFO"), 1);
-        assert!(logs.text().contains("purged=5"));
+        assert!(logs.text().contains("purged=3"));
     }
 
     #[tokio::test]
@@ -182,13 +188,41 @@ mod tests {
 
         let total = sweep(&cancel, 2, |_| {
             calls += 1;
-            cancel.cancel();
-            std::future::ready(Ok(2))
+            let cancel = cancel.clone();
+            async move {
+                cancel.cancel();
+                Ok(2)
+            }
         })
         .await;
 
         assert_eq!((total, calls), (2, 1));
         assert_eq!(logs.count("INFO"), 1);
+    }
+
+    #[tokio::test]
+    async fn sweep_logs_summary_when_cancelled_mid_batch() {
+        let (logs, _guard) = Logs::capture();
+        let cancel = CancellationToken::new();
+        let mut calls = 0;
+
+        let total = sweep(&cancel, 2, |_| {
+            calls += 1;
+            let first = calls == 1;
+            let cancel = cancel.clone();
+            async move {
+                if first {
+                    return Ok(2);
+                }
+                cancel.cancel();
+                std::future::pending().await
+            }
+        })
+        .await;
+
+        assert_eq!((total, calls), (2, 2));
+        assert_eq!(logs.count("INFO"), 1);
+        assert!(logs.text().contains("purged=2"));
     }
 
     async fn fresh_sqlite() -> (StorageAdapter, tempfile::TempDir) {
