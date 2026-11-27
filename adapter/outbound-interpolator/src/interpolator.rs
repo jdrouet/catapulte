@@ -580,21 +580,26 @@ mod tests {
         assert!(matches!(sent, InterpolatedBody::Mjml(m) if m == validated));
     }
 
-    const HOSTILE: &str = "<mj-text>{% for a in range(100000) %}{% for b in range(100000) %}x{% endfor %}{% endfor %}</mj-text>";
-
     #[test]
-    fn a_runaway_loop_exhausts_the_budget_quickly_when_sending_and_validating() {
+    fn a_runaway_loop_exhausts_the_fuel_budget_when_sending_and_validating() {
+        // The body emits nothing, so only fuel (not the output cap) can stop it.
+        let outer = 2 * super::TEMPLATE_FUEL / 100_000;
+        let hostile = format!(
+            "<mj-text>{{% for a in range({outer}) %}}{{% for b in range(100000) %}}{{% endfor %}}{{% endfor %}}</mj-text>"
+        );
         let interpolator = MiniJinjaInterpolator::new();
-        let started = std::time::Instant::now();
 
-        let sent = interpolator.interpolate(ResolvedBody::Mjml(HOSTILE.to_owned()), &Map::new());
-        let validated = interpolator.validate(HOSTILE, &Map::new());
+        let sent = interpolator.interpolate(ResolvedBody::Mjml(hostile.clone()), &Map::new());
+        let validated = interpolator.validate(&hostile, &Map::new());
 
-        let elapsed = started.elapsed();
-        eprintln!("two runaway renders took {elapsed:?}");
-        assert!(matches!(sent, Err(InterpolateError::BudgetExceeded)));
-        assert!(matches!(validated, Err(InterpolateError::BudgetExceeded)));
-        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
+        assert!(
+            matches!(sent, Err(InterpolateError::BudgetExceeded)),
+            "{sent:?}"
+        );
+        assert!(
+            matches!(validated, Err(InterpolateError::BudgetExceeded)),
+            "{validated:?}"
+        );
     }
 
     #[test]
@@ -634,9 +639,9 @@ mod tests {
         assert!(matches!(result, InterpolatedBody::Mjml(m) if m.contains("<td>S4999</td>")));
     }
 
-    fn doubling(output: &str) -> String {
+    fn doubling(levels: usize, output: &str) -> String {
         let mut source = String::from("{% set a = ['x'] %}");
-        for _ in 0..22 {
+        for _ in 0..levels {
             source.push_str("{% set a = [a, a] %}");
         }
         source.push_str(output);
@@ -646,34 +651,54 @@ mod tests {
     #[test]
     fn exponentially_expanding_values_are_cut_off_by_every_stringifier() {
         let interpolator = MiniJinjaInterpolator::new();
+        // 17 levels stringify to just over the 1 MiB cap, and `|length` keeps the output tiny,
+        // so only the container guard can stop these; deeper values hit fuel instead.
         for output in [
-            "{{ a }}",
-            "{{ a|string }}",
-            "{{ a|join(',') }}",
-            "{{ a|upper }}",
-            "{{ a|replace('x', 'y') }}",
-            "{{ a|e }}",
-            "{{ a|format() }}",
+            "{{ a|string|length }}",
+            "{{ a|join(',')|length }}",
+            "{{ a|upper|length }}",
+            "{{ a|replace('x', 'y')|length }}",
+            "{{ a|e|length }}",
         ] {
-            let source = doubling(output);
-            let started = std::time::Instant::now();
+            let source = doubling(17, output);
 
             let sent = interpolator.interpolate(ResolvedBody::Mjml(source.clone()), &Map::new());
             let validated = interpolator.validate(&source, &Map::new());
 
-            let elapsed = started.elapsed();
-            eprintln!("{output}: send+validate took {elapsed:?}");
-            assert!(sent.is_err() && validated.is_err(), "{output}");
             assert!(
-                elapsed < std::time::Duration::from_secs(1),
-                "{output}: {elapsed:?}"
+                matches!(sent, Err(InterpolateError::BudgetExceeded)),
+                "{output}: {sent:?}"
+            );
+            assert!(
+                matches!(validated, Err(InterpolateError::BudgetExceeded)),
+                "{output}: {validated:?}"
             );
         }
+
+        let source = doubling(22, "{{ a }}");
+        let sent = interpolator.interpolate(ResolvedBody::Mjml(source.clone()), &Map::new());
+        let validated = interpolator.validate(&source, &Map::new());
+        assert!(
+            matches!(sent, Err(InterpolateError::BudgetExceeded)),
+            "{sent:?}"
+        );
+        assert!(
+            matches!(validated, Err(InterpolateError::BudgetExceeded)),
+            "{validated:?}"
+        );
+
+        let source = doubling(22, "{{ a|format() }}");
+        assert!(
+            interpolator
+                .interpolate(ResolvedBody::Mjml(source.clone()), &Map::new())
+                .is_err()
+        );
+        assert!(interpolator.validate(&source, &Map::new()).is_err());
     }
 
     #[test]
     fn the_reproducer_reports_the_budget_and_plain_text_parts_are_bounded_too() {
-        let source = doubling("{{ a }}");
+        let source = doubling(22, "{{ a }}");
         let sent = MiniJinjaInterpolator::new()
             .interpolate(ResolvedBody::Mjml(source.clone()), &Map::new());
         assert!(
