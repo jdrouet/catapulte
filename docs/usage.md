@@ -464,6 +464,10 @@ the email id and `attempt`. It never includes the mail relay's reply, which can 
 recipient addresses. The recorded failure reason is the `reason` field of `retrying` and
 `delivery.failed` events, available from `GET /events` or the configured event sinks.
 
+Webhook and NATS delivery failure logs carry only the email id, the event type and, for
+webhooks, a fixed `error_kind` (`timeout`, `connect`, `client_error`, `server_error`,
+`request`). These log lines never include the receiver's response or the webhook URL.
+
 #### Verifying webhook signatures
 
 When the operator sets `CATAPULTE_WEBHOOK_SECRET`, each webhook request carries
