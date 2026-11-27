@@ -15,18 +15,21 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 fn is_in_memory(url: &str) -> bool {
-    let rest = url.strip_prefix("sqlite:").unwrap_or(url);
-    let rest = rest.strip_prefix("//").unwrap_or(rest);
+    let rest = url
+        .strip_prefix("sqlite:")
+        .map_or(url, |r| r.strip_prefix("//").unwrap_or(r));
     let (db, query) = rest.split_once('?').unwrap_or((rest, ""));
     db == ":memory:" || query.split('&').any(|kv| kv == "mode=memory")
 }
 
 /// An in-memory database vanishes with its last connection, so the single
-/// connection must never be reaped.
+/// connection must never be reaped, nor dropped by a cancelled checkout ping.
 fn pool_options(base: SqlitePoolOptions, in_memory: bool) -> SqlitePoolOptions {
     let opts = base.max_connections(1);
     if in_memory {
-        opts.idle_timeout(None).max_lifetime(None)
+        opts.idle_timeout(None)
+            .max_lifetime(None)
+            .test_before_acquire(false)
     } else {
         opts
     }
@@ -111,6 +114,7 @@ mod tests {
             assert!(is_in_memory(url), "{url}");
         }
         for url in [
+            "//:memory:",
             "sqlite://catapulte.db",
             "sqlite://memory.db",
             "sqlite://foo.db?mode=rwc",
@@ -136,5 +140,40 @@ mod tests {
             .fetch_one(adapter.pool())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn in_memory_database_survives_cancelled_checkouts() {
+        let adapter = SqliteAdapter::connect("sqlite::memory:").await.unwrap();
+        adapter.migrate().await.unwrap();
+
+        for _ in 0..100 {
+            drop(tokio::time::timeout(Duration::ZERO, adapter.pool().acquire()).await);
+        }
+
+        sqlx::query("SELECT count(*) FROM emails")
+            .fetch_one(adapter.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_sets_pool_options_by_url_kind() {
+        let mem = SqliteAdapter::connect("sqlite::memory:").await.unwrap();
+        let o = mem.pool().options();
+        assert_eq!(o.get_idle_timeout(), None);
+        assert_eq!(o.get_max_lifetime(), None);
+        assert!(!o.get_test_before_acquire());
+
+        let path = std::env::temp_dir().join(format!("catapulte-{}.db", uuid::Uuid::now_v7()));
+        let file = SqliteAdapter::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .unwrap();
+        let o = file.pool().options();
+        assert!(o.get_idle_timeout().is_some());
+        assert!(o.get_max_lifetime().is_some());
+        assert!(o.get_test_before_acquire());
+        drop(file);
+        std::fs::remove_file(&path).unwrap();
     }
 }
