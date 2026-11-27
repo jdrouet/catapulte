@@ -2617,7 +2617,15 @@ mod tests {
                         && l.contains(&format!("error_class=\"{class}\""))
                 })
                 .unwrap_or_else(|| panic!("no failed-to-process line for {class}: {logs}"));
-            assert!(line.contains("attempt=1"), "{line}");
+            // The enclosing span prints the same id and attempt; only fields after the message
+            // belong to the event itself.
+            let (_, fields) = line.split_once("failed to process email").unwrap();
+            let fields: Vec<&str> = fields.split_whitespace().collect();
+            assert!(
+                fields.contains(&format!("email_id={}", id.as_uuid()).as_str()),
+                "{line}"
+            );
+            assert!(fields.contains(&"attempt=1"), "{line}");
         }
 
         let events = publisher.events.lock().unwrap();
