@@ -487,12 +487,18 @@ mod tests {
 
     #[tokio::test]
     async fn all_senders_fail_returns_last_error() {
-        let sender = RoutedEmailSender::new(
-            vec![fail_route("first", 0, None), fail_route("second", 1, None)],
-            NoopSenderUsage,
-            SystemClock,
-        )
-        .unwrap();
+        // The first route's category differs, so the assertion proves the last one wins.
+        let sender = router(vec![
+            counted_route(
+                "first",
+                0,
+                FakeTransport::FailWith(
+                    TransportErrorKind::PermanentRoute,
+                    Arc::new(AtomicUsize::new(0)),
+                ),
+            ),
+            fail_route("second", 1, None),
+        ]);
         let result = sender.send(make_email()).await;
         assert!(result.is_err());
         let err = result.unwrap_err();

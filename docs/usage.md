@@ -472,7 +472,8 @@ the last route tried failed, so you can tell a relay outage from a bad recipient
 The category is a fixed value and never contains the relay's reply. It does not replace
 `error_class`: for example, a route-level 5xx is `delivery` with `permanent_rejection`.
 Limits: `timeout` covers connecting only; a TLS handshake that the relay closes early is
-`connection`, and a relay that does not offer a required STARTTLS is `other`. Events
+`connection`, a relay that closes the connection without replying is `other`, and a relay
+that does not offer a required STARTTLS is `other`. Events
 recorded before this field existed have no `failure_category`, so the filter does not
 match them.
 (The pushed payload has no timestamp; the stored events from `GET /events` carry

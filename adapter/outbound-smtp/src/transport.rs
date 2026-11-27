@@ -388,8 +388,8 @@ fn failure_category(e: &lettre::transport::smtp::Error) -> FailureCategory {
     if e.is_timeout() {
         return FailureCategory::Timeout;
     }
-    // ponytail: rustls handshake errors surface as io InvalidData, so any InvalidData counts as
-    // TLS; a direct rustls dependency plus a downcast to rustls::Error would be exact.
+    // ponytail: assumes only rustls produces io InvalidData on this stream, so a TLS backend
+    // change silently breaks `tls`; a direct rustls dependency plus a downcast would be exact.
     if e.is_tls() || first_io_kind(e) == Some(std::io::ErrorKind::InvalidData) {
         return FailureCategory::Tls;
     }
