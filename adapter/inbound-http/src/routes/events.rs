@@ -5,6 +5,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use catapulte_domain::entity::email::EmailId;
 use catapulte_domain::entity::error_class::ErrorClass;
+use catapulte_domain::entity::failure_category::FailureCategory;
 use catapulte_domain::port::event_repository::ListEventsParams;
 use catapulte_domain::use_case::list_events::ListEventsUseCase;
 
@@ -24,10 +25,20 @@ fn parse_error_class(raw: Option<&str>) -> Result<Option<ErrorClass>, AppError> 
     }
 }
 
+fn parse_failure_category(raw: Option<&str>) -> Result<Option<FailureCategory>, AppError> {
+    match raw {
+        Some(s) => FailureCategory::from_str(s)
+            .map(Some)
+            .map_err(|_| AppError::InvalidFailureCategory),
+        None => Ok(None),
+    }
+}
+
 /// # Errors
 ///
 /// Returns `AppError::InvalidEmailId` when the `email_id` query param is not a valid UUID.
 /// Returns `AppError::InvalidErrorClass` when `error_class` is not a recognised value.
+/// Returns `AppError::InvalidFailureCategory` when `failure_category` is not a recognised value.
 /// Returns `AppError::ListEvents` when the use case fails.
 #[tracing::instrument(skip_all)]
 pub async fn list_events<S: HttpServerState>(
@@ -42,6 +53,7 @@ pub async fn list_events<S: HttpServerState>(
         None => None,
     };
     let error_class = parse_error_class(query.error_class.as_deref())?;
+    let failure_category = parse_failure_category(query.failure_category.as_deref())?;
     let limit = query
         .limit
         .unwrap_or(DEFAULT_EVENTS_LIMIT)
@@ -53,6 +65,7 @@ pub async fn list_events<S: HttpServerState>(
         event_type: query.event_type,
         sender_name: query.sender_name,
         error_class,
+        failure_category,
         after_ms: query.after_ms,
         before_ms: query.before_ms,
         limit,
@@ -76,6 +89,7 @@ pub async fn list_events<S: HttpServerState>(
 ///
 /// Returns `AppError::InvalidEmailId` when the path segment is not a valid UUID.
 /// Returns `AppError::InvalidErrorClass` when `error_class` is not a recognised value.
+/// Returns `AppError::InvalidFailureCategory` when `failure_category` is not a recognised value.
 /// Returns `AppError::ListEvents` when the use case fails.
 #[tracing::instrument(skip_all, fields(email_id = %email_id))]
 pub async fn list_events_for_email<S: HttpServerState>(
@@ -86,6 +100,7 @@ pub async fn list_events_for_email<S: HttpServerState>(
 ) -> Result<Json<ListEventsResponse>, AppError> {
     let uuid = uuid::Uuid::parse_str(&email_id).map_err(|_| AppError::InvalidEmailId)?;
     let error_class = parse_error_class(query.error_class.as_deref())?;
+    let failure_category = parse_failure_category(query.failure_category.as_deref())?;
     let limit = query
         .limit
         .unwrap_or(DEFAULT_EVENTS_LIMIT)
@@ -97,6 +112,7 @@ pub async fn list_events_for_email<S: HttpServerState>(
         event_type: query.event_type,
         sender_name: query.sender_name,
         error_class,
+        failure_category,
         after_ms: query.after_ms,
         before_ms: query.before_ms,
         limit,
@@ -636,6 +652,48 @@ mod tests {
         );
         let response = app
             .oneshot(get_events(&valid_email_id(), "?error_class=bogus"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_events_forwards_failure_category_filter() {
+        use catapulte_domain::entity::failure_category::FailureCategory;
+
+        let list_events = Arc::new(FakeListEvents::new());
+        let captured = list_events.captured_params.clone();
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        app.oneshot(get_all_events("?failure_category=timeout"))
+            .await
+            .unwrap();
+        let params = captured.lock().unwrap();
+        assert_eq!(
+            params.as_ref().unwrap().failure_category,
+            Some(FailureCategory::Timeout)
+        );
+    }
+
+    #[tokio::test]
+    async fn list_events_invalid_failure_category_returns_400() {
+        let list_events = Arc::new(FakeListEvents::new());
+        let app = router(
+            TestState {
+                submit: Arc::new(FakeSubmit),
+                list_events,
+            },
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        let response = app
+            .oneshot(get_all_events("?failure_category=bogus"))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);

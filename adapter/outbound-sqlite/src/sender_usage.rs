@@ -144,6 +144,8 @@ mod tests {
                 attempt: 3,
                 reason: "err".to_owned(),
                 error_class: catapulte_domain::entity::error_class::ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("backup")),
                 context: EventContext::with_correlation(None),
             })

@@ -309,9 +309,11 @@ async fn process_one<S: WorkerState>(
             }
             Err(e) => {
                 let error_class = e.error_class();
+                let failure_category = e.failure_category();
                 // Relay replies can echo recipient PII; the full reason goes to lifecycle events only.
                 tracing::error!(
                     error_class = error_class.as_str(),
+                    failure_category = failure_category.as_str(),
                     email_id = %id.as_uuid(),
                     attempt,
                     "failed to process email"
@@ -329,6 +331,7 @@ async fn process_one<S: WorkerState>(
                         attempt,
                         reason,
                         error_class,
+                        failure_category,
                         sender_name,
                         context: context.clone(),
                     }
@@ -346,6 +349,7 @@ async fn process_one<S: WorkerState>(
                         attempt,
                         reason,
                         error_class,
+                        failure_category,
                         sender_name,
                         context: context.clone(),
                     }
@@ -1851,6 +1855,7 @@ mod tests {
                 catapulte_domain::port::email_sender::SendError::Send {
                     sender_name: SenderName::new("primary"),
                     permanent: true,
+                    category: catapulte_domain::entity::failure_category::FailureCategory::PermanentRejection,
                     source: anyhow::anyhow!(
                         "smtp send failed: permanent error (550): 5.1.1 no such user"
                     ),
@@ -2149,6 +2154,7 @@ mod tests {
                     catapulte_domain::port::email_sender::SendError::Send {
                         sender_name: SenderName::new("primary"),
                         permanent: false,
+                        category: catapulte_domain::entity::failure_category::FailureCategory::TemporaryRejection,
                         source: anyhow::anyhow!("temporary failure"),
                     },
                 ));
@@ -2487,6 +2493,11 @@ mod tests {
                 catapulte_domain::port::email_sender::SendError::Send {
                     sender_name: SenderName::new("relay"),
                     permanent: self.permanent,
+                    category: if self.permanent {
+                        catapulte_domain::entity::failure_category::FailureCategory::PermanentRejection
+                    } else {
+                        catapulte_domain::entity::failure_category::FailureCategory::TemporaryRejection
+                    },
                     source: anyhow::anyhow!("{RELAY_REPLY}"),
                 },
             ))
@@ -2636,6 +2647,83 @@ mod tests {
         assert!(events.iter().any(|e| matches!(
             e,
             LifecycleEvent::Failed { reason, .. } if reason.contains("MARKER-849")
+        )));
+    }
+
+    #[test]
+    fn failure_category_reaches_logs() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "worker::tests::failure_category_capture_in_isolated_process",
+                "--ignored",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "child failed: {text}");
+        assert!(text.contains("1 passed"), "child ran no test: {text}");
+    }
+
+    #[tokio::test]
+    #[ignore = "run in its own process by failure_category_reaches_logs"]
+    async fn failure_category_capture_in_isolated_process() {
+        let buf = SharedBuf::default();
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+
+        let publisher = CapturingEventPublisher::default();
+        let id = EmailId::default();
+        let state = RelayErrState {
+            processor: RelayErrProcessor { permanent: true },
+            queue: TrackingQueue::default(),
+            publisher: publisher.clone(),
+        };
+        process_one(
+            &state,
+            &SystemClock,
+            &tokio_util::sync::CancellationToken::new(),
+            id,
+            sample_envelope(),
+            1,
+            AckToken::new(vec![0u8; 8]),
+            TraceCarrier::default(),
+        )
+        .await;
+
+        let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(!logs.contains("MARKER-849"), "relay reply leaked: {logs}");
+        let line = logs
+            .lines()
+            .find(|l| {
+                l.contains("failed to process email") && l.contains(&id.as_uuid().to_string())
+            })
+            .unwrap_or_else(|| panic!("no failed-to-process line: {logs}"));
+        assert!(
+            line.contains("failure_category=\"permanent_rejection\""),
+            "{line}"
+        );
+        assert!(line.contains("error_class=\"rejected\""), "{line}");
+
+        let events = publisher.events.lock().unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LifecycleEvent::Failed {
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::PermanentRejection,
+                ..
+            }
         )));
     }
 }

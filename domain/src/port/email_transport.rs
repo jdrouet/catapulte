@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use crate::entity::failure_category::FailureCategory;
 use crate::port::email_sender::OutboundEmail;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +17,7 @@ pub enum TransportErrorKind {
 #[error("{source:#}")]
 pub struct TransportError {
     pub kind: TransportErrorKind,
+    pub category: FailureCategory,
     #[source]
     pub source: anyhow::Error,
 }

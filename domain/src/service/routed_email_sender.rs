@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
+use crate::entity::failure_category::FailureCategory;
 use crate::entity::sender::{SenderName, SenderQuota};
 use crate::port::clock::{Clock, SystemClock};
 use crate::port::email_sender::{EmailSender, OutboundEmail, SendError, SentEmail};
@@ -191,7 +192,7 @@ where
     ) -> Option<Result<SentEmail, SendError>> {
         use tracing::Instrument as _;
 
-        let mut last: Option<(SenderName, anyhow::Error)> = None;
+        let mut last: Option<(SenderName, FailureCategory, anyhow::Error)> = None;
         for route in routes {
             let deliver_span = tracing::info_span!(
                 "smtp.deliver",
@@ -217,17 +218,19 @@ where
                         return Some(Err(SendError::Send {
                             sender_name: route.name.clone(),
                             permanent: true,
+                            category: err.category,
                             source: err.source,
                         }));
                     }
-                    last = Some((route.name.clone(), err.source));
+                    last = Some((route.name.clone(), err.category, err.source));
                 }
             }
         }
-        last.map(|(sender_name, source)| {
+        last.map(|(sender_name, category, source)| {
             Err(SendError::Send {
                 sender_name,
                 permanent: false,
+                category,
                 source,
             })
         })
@@ -242,6 +245,7 @@ mod tests {
 
     use super::{NoopSenderUsage, RoutedEmailSender, SenderRoute};
     use crate::entity::body::{Plain, RenderedBody};
+    use crate::entity::failure_category::FailureCategory;
     use crate::entity::sender::{QuotaRange, SenderName, SenderQuota};
     use crate::port::clock::SystemClock;
     use crate::port::email_sender::{EmailSender, OutboundEmail, SentEmail};
@@ -276,6 +280,10 @@ mod tests {
         ) -> Result<DeliveryReceipt, TransportError> {
             let fail = |kind| TransportError {
                 kind,
+                category: match kind {
+                    TransportErrorKind::Transient => FailureCategory::TemporaryRejection,
+                    _ => FailureCategory::PermanentRejection,
+                },
                 source: anyhow::anyhow!("simulated failure"),
             };
             match self {
@@ -479,18 +487,29 @@ mod tests {
 
     #[tokio::test]
     async fn all_senders_fail_returns_last_error() {
-        let sender = RoutedEmailSender::new(
-            vec![fail_route("first", 0, None), fail_route("second", 1, None)],
-            NoopSenderUsage,
-            SystemClock,
-        )
-        .unwrap();
+        // The first route's category differs, so the assertion proves the last one wins.
+        let sender = router(vec![
+            counted_route(
+                "first",
+                0,
+                FakeTransport::FailWith(
+                    TransportErrorKind::PermanentRoute,
+                    Arc::new(AtomicUsize::new(0)),
+                ),
+            ),
+            fail_route("second", 1, None),
+        ]);
         let result = sender.send(make_email()).await;
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().sender_name().unwrap().as_str(),
-            "second"
-        );
+        let err = result.unwrap_err();
+        assert_eq!(err.sender_name().unwrap().as_str(), "second");
+        assert!(matches!(
+            err,
+            crate::port::email_sender::SendError::Send {
+                category: FailureCategory::TemporaryRejection,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -743,6 +762,7 @@ mod tests {
         let err = SendError::Send {
             sender_name: SenderName::new("x"),
             permanent: false,
+            category: FailureCategory::Other,
             source: anyhow::anyhow!("oops"),
         };
         assert!(err.is_transient());
@@ -754,6 +774,7 @@ mod tests {
         let err = SendError::Send {
             sender_name: SenderName::new("x"),
             permanent: true,
+            category: FailureCategory::PermanentRejection,
             source: anyhow::anyhow!("550 5.1.1"),
         };
         assert!(!err.is_transient());
@@ -806,7 +827,15 @@ mod tests {
             counted_route("second", 2, FakeTransport::OkCounting(second.clone())),
         ]);
 
-        let (name, permanent) = send_err(sender.send(make_email()).await);
+        let result = sender.send(make_email()).await;
+        assert!(matches!(
+            result,
+            Err(crate::port::email_sender::SendError::Send {
+                category: FailureCategory::PermanentRejection,
+                ..
+            })
+        ));
+        let (name, permanent) = send_err(result);
 
         assert_eq!((name.as_str(), permanent), ("first", true));
         assert_eq!(second.load(Ordering::SeqCst), 0);

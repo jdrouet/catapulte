@@ -279,6 +279,8 @@ mod tests {
                 attempt: 3,
                 reason: "smtp error".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("test")),
                 context: EventContext::with_correlation(Some("corr-xyz".into())),
             })
@@ -291,6 +293,7 @@ mod tests {
         assert_eq!(body["payload"]["attempt"], 3);
         assert_eq!(body["payload"]["correlation_id"], "corr-xyz");
         assert_eq!(body["payload"]["error_class"], "delivery");
+        assert_eq!(body["payload"]["failure_category"], "other");
     }
 
     /// Contract-lock: full body for a Sent event matches the canonical shape.
@@ -356,6 +359,8 @@ mod tests {
                 attempt: 3,
                 reason: "smtp error".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category:
+                    catapulte_domain::entity::failure_category::FailureCategory::Other,
                 sender_name: Some(SenderName::new("primary")),
                 context: EventContext::with_correlation(Some("corr-fail".to_owned())),
             })
@@ -371,6 +376,7 @@ mod tests {
                 "attempt": 3,
                 "reason": "smtp error",
                 "error_class": "delivery",
+                "failure_category": "other",
                 "sender_name": "primary",
                 "correlation_id": "corr-fail",
             },

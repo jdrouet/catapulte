@@ -1968,6 +1968,8 @@ pub struct ListEventsQuery {
     #[serde(default)]
     pub error_class: Option<String>,
     #[serde(default)]
+    pub failure_category: Option<String>,
+    #[serde(default)]
     pub after_ms: Option<i64>,
     #[serde(default)]
     pub before_ms: Option<i64>,

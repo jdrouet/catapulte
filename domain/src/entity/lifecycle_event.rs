@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::entity::email::EmailId;
 use crate::entity::error_class::ErrorClass;
+use crate::entity::failure_category::FailureCategory;
 use crate::entity::sender::SenderName;
 
 /// Event type of a delivered email.
@@ -101,6 +102,7 @@ pub enum LifecycleEvent {
         attempt: u32,
         reason: String,
         error_class: ErrorClass,
+        failure_category: FailureCategory,
         sender_name: Option<SenderName>,
         context: EventContext,
     },
@@ -109,6 +111,7 @@ pub enum LifecycleEvent {
         attempt: u32,
         reason: String,
         error_class: ErrorClass,
+        failure_category: FailureCategory,
         sender_name: Option<SenderName>,
         context: EventContext,
     },
@@ -265,6 +268,7 @@ impl LifecycleEvent {
                 attempt,
                 reason,
                 error_class,
+                failure_category,
                 sender_name,
                 context,
                 ..
@@ -273,6 +277,7 @@ impl LifecycleEvent {
                 attempt,
                 reason,
                 error_class,
+                failure_category,
                 sender_name,
                 context,
                 ..
@@ -281,6 +286,7 @@ impl LifecycleEvent {
                     "attempt": attempt,
                     "reason": reason,
                     "error_class": error_class.as_str(),
+                    "failure_category": failure_category.as_str(),
                     "sender_name": sender_name.as_ref().map(SenderName::as_str),
                 }),
                 context,
@@ -389,11 +395,12 @@ mod tests {
                     attempt: 1,
                     reason: "r".to_owned(),
                     error_class: ErrorClass::Delivery,
+                    failure_category: FailureCategory::Other,
                     sender_name: None,
                     context: ctx(),
                 },
                 serde_json::json!({
-                    "attempt": 1, "reason": "r", "error_class": "delivery",
+                    "attempt": 1, "reason": "r", "error_class": "delivery", "failure_category": "other",
                     "sender_name": null, "correlation_id": "c1"
                 }),
             ),
@@ -403,11 +410,12 @@ mod tests {
                     attempt: 3,
                     reason: "r".to_owned(),
                     error_class: ErrorClass::Rejected,
+                    failure_category: FailureCategory::Other,
                     sender_name: Some(SenderName::new("p")),
                     context: ctx(),
                 },
                 serde_json::json!({
-                    "attempt": 3, "reason": "r", "error_class": "rejected",
+                    "attempt": 3, "reason": "r", "error_class": "rejected", "failure_category": "other",
                     "sender_name": "p", "correlation_id": "c1"
                 }),
             ),
@@ -480,6 +488,7 @@ mod tests {
             attempt: 1,
             reason: "timeout".to_owned(),
             error_class: ErrorClass::Delivery,
+            failure_category: FailureCategory::Other,
             sender_name: None,
             context: EventContext::with_correlation(None),
         };
@@ -493,6 +502,7 @@ mod tests {
             attempt: 3,
             reason: "smtp error".to_owned(),
             error_class: ErrorClass::Delivery,
+            failure_category: FailureCategory::Other,
             sender_name: None,
             context: EventContext::with_correlation(None),
         };
@@ -524,6 +534,7 @@ mod tests {
                 attempt: 1,
                 reason: "r".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category: FailureCategory::Other,
                 sender_name: None,
                 context: EventContext::with_correlation(None),
             },
@@ -532,6 +543,7 @@ mod tests {
                 attempt: 1,
                 reason: "r".to_owned(),
                 error_class: ErrorClass::Delivery,
+                failure_category: FailureCategory::Other,
                 sender_name: None,
                 context: EventContext::with_correlation(None),
             },
@@ -584,6 +596,7 @@ mod tests {
             attempt: 1,
             reason: "r".to_owned(),
             error_class: ErrorClass::Delivery,
+            failure_category: FailureCategory::Other,
             sender_name: Some(SenderName::new("fallback")),
             context: EventContext::with_correlation(None),
         };
@@ -598,6 +611,7 @@ mod tests {
             attempt: 1,
             reason: "r".to_owned(),
             error_class: ErrorClass::Delivery,
+            failure_category: FailureCategory::Other,
             sender_name: None,
             context: EventContext::with_correlation(None),
         };
@@ -640,6 +654,7 @@ mod tests {
             attempt: 1,
             reason: "r".to_owned(),
             error_class: ErrorClass::Routing,
+            failure_category: FailureCategory::Other,
             sender_name: None,
             context: EventContext::with_correlation(None),
         }
@@ -709,6 +724,7 @@ mod tests {
             attempt: 1,
             reason: "timeout".to_owned(),
             error_class: ErrorClass::Delivery,
+            failure_category: FailureCategory::Other,
             sender_name: Some(SenderName::new("primary")),
             context: EventContext::with_correlation(Some("c".to_owned())),
         };
@@ -716,6 +732,7 @@ mod tests {
             "attempt": 1,
             "reason": "timeout",
             "error_class": "delivery",
+            "failure_category": "other",
             "sender_name": "primary",
             "correlation_id": "c",
         });
@@ -730,6 +747,7 @@ mod tests {
             attempt: 3,
             reason: "smtp error".to_owned(),
             error_class: ErrorClass::Delivery,
+            failure_category: FailureCategory::Other,
             sender_name: Some(SenderName::new("primary")),
             context: EventContext::with_correlation(Some("corr-xyz".to_owned())),
         };
@@ -737,6 +755,7 @@ mod tests {
             "attempt": 3,
             "reason": "smtp error",
             "error_class": "delivery",
+            "failure_category": "other",
             "sender_name": "primary",
             "correlation_id": "corr-xyz",
         });
@@ -751,6 +770,7 @@ mod tests {
             attempt: 1,
             reason: "no route".to_owned(),
             error_class: ErrorClass::Routing,
+            failure_category: FailureCategory::Other,
             sender_name: None,
             context: EventContext::with_correlation(None),
         };
@@ -758,6 +778,7 @@ mod tests {
             "attempt": 1,
             "reason": "no route",
             "error_class": "routing",
+            "failure_category": "other",
             "sender_name": null,
             "correlation_id": null,
         });
