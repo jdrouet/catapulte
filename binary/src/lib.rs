@@ -290,6 +290,14 @@ impl AppConfig {
                 match_sender_domain: e.match_sender_domain.clone(),
             })
             .collect();
+        if let Some(retention) = self.retention {
+            retention::warn_if_shorter_than_quota(
+                retention,
+                sender_configs
+                    .iter()
+                    .filter_map(|c| c.quota.as_ref().map(|q| &q.range)),
+            );
+        }
         let routes: Vec<
             catapulte_domain::service::routed_email_sender::SenderRoute<
                 catapulte_outbound_smtp::transport::SenderTransport,

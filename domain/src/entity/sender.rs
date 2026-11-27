@@ -1,4 +1,5 @@
 use std::fmt;
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SenderName(String);
@@ -41,16 +42,22 @@ impl fmt::Display for QuotaRange {
 }
 
 impl QuotaRange {
+    /// Length of the quota window; a month counts as 30 days.
+    #[must_use]
+    pub const fn window(&self) -> Duration {
+        match self {
+            Self::Hourly => Duration::from_hours(1),
+            Self::Daily => Duration::from_hours(24),
+            Self::Weekly => Duration::from_hours(24 * 7),
+            Self::Monthly => Duration::from_hours(24 * 30),
+        }
+    }
+
     /// Returns the Unix-epoch millisecond timestamp that marks the start of this
     /// quota window relative to `now_ms`.
     #[must_use]
     pub fn since_ms(&self, now_ms: i64) -> i64 {
-        let offset: i64 = match self {
-            Self::Hourly => 3_600_000,
-            Self::Daily => 86_400_000,
-            Self::Weekly => 604_800_000,
-            Self::Monthly => 2_592_000_000,
-        };
+        let offset = i64::try_from(self.window().as_millis()).unwrap_or(i64::MAX);
         now_ms.saturating_sub(offset).max(0)
     }
 }
