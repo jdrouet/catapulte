@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::storage::StorageAdapter;
 
-const PURGE_INTERVAL: Duration = Duration::from_secs(3600);
+const PURGE_INTERVAL: Duration = Duration::from_hours(1);
 const PURGE_BATCH: u32 = 500;
 
 pub struct RetentionPurge {
