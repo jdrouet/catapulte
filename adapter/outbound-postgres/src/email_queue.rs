@@ -518,7 +518,9 @@ mod tests {
                 .execute(&mut *conn)
                 .await
                 .unwrap();
-            sqlx::query("INSERT INTO email_queue (id, email_id) VALUES ($1, $2)")
+            // Due at epoch 0: the column default rounds to the nearest ms, so it can land
+            // after the truncated `now_ms()` of an immediate dequeue and skip the row.
+            sqlx::query("INSERT INTO email_queue (id, email_id, claimed_until) VALUES ($1, $2, 0)")
                 .bind(entry_id)
                 .bind(id.as_uuid())
                 .execute(&mut *conn)
