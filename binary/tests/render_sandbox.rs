@@ -22,8 +22,11 @@ const BIN: &str = env!("CARGO_BIN_EXE_catapulte");
 
 type Variables = Map<String, Value>;
 
+/// A deadline no load can reach, so only the limit a test checks can end a job; tests of
+/// the deadline set their own.
 fn config() -> RenderSandboxConfig {
     RenderSandboxConfig {
+        timeout: Duration::from_mins(1),
         concurrency: 2,
         ..RenderSandboxConfig::new(BIN.into())
     }
@@ -137,20 +140,23 @@ fn is_infra(result: &Result<String, InterpolateError>) -> bool {
 
 #[tokio::test]
 #[serial]
-async fn tilde_on_a_doubled_list_dies_by_the_cpu_limit_within_the_deadline() {
-    let started = Instant::now();
+async fn tilde_on_a_doubled_list_dies_by_the_cpu_limit() {
+    let job = serde_json::json!({ "Validate": { "source": tilde_template(), "variables": {} } });
 
+    let status = run_child_until_it_exits(&job.to_string());
     let result = sandbox()
         .interpolate(mjml(&tilde_template()), &Variables::new())
         .await;
 
-    let elapsed = started.elapsed();
-    eprintln!("tilde: {elapsed:?}");
+    assert_eq!(
+        status.signal(),
+        Some(rustix::process::Signal::XCPU.as_raw()),
+        "{status:?}"
+    );
     assert!(
         matches!(result, Err(InterpolateError::BudgetExceeded)),
         "{result:?}"
     );
-    assert!(elapsed < Duration::from_secs(8), "{elapsed:?}");
     wait_for_no_children().await;
 }
 
@@ -160,7 +166,6 @@ async fn comparing_two_towers_is_a_permanent_failure_for_every_job_kind() {
     let sandbox = sandbox();
     let source = eq_template();
 
-    let started = Instant::now();
     let mjml_result = sandbox.interpolate(mjml(&source), &Variables::new()).await;
     let plain = Plain::try_new(Some(source.clone()), None).unwrap();
     let plain_result = sandbox
@@ -168,15 +173,12 @@ async fn comparing_two_towers_is_a_permanent_failure_for_every_job_kind() {
         .await;
     let validated = validate(&sandbox, &source).await;
 
-    let elapsed = started.elapsed();
-    eprintln!("eq x3: {elapsed:?}");
     assert!(matches!(mjml_result, Err(InterpolateError::BudgetExceeded)));
     assert!(matches!(
         plain_result,
         Err(InterpolateError::BudgetExceeded)
     ));
     assert!(is_budget(&validated), "{validated:?}");
-    assert!(elapsed < Duration::from_secs(12), "{elapsed:?}");
 }
 
 #[tokio::test]
@@ -190,6 +192,8 @@ async fn a_repeated_list_is_cut_off_by_the_engine_budget() {
     assert!(is_budget(&result), "{result:?}");
 }
 
+/// The child overflows its stack and aborts, so a "has overflowed its stack" line on the
+/// inherited stderr is expected here.
 #[tokio::test]
 #[serial]
 async fn a_fifty_thousand_deep_document_does_not_take_the_parent_down() {
@@ -430,13 +434,12 @@ async fn a_typed_setup_failure_and_an_external_kill_are_infrastructure() {
 #[tokio::test]
 #[serial]
 async fn a_child_that_outlives_the_deadline_is_killed_and_the_job_is_permanent() {
+    // Left alone, the child exits silently, which is an infrastructure failure.
     let child = script("cat >/dev/null\nsleep 30");
-    let started = Instant::now();
 
     let result = validate(&scripted(&child, Duration::from_millis(300)), "x").await;
 
     assert!(is_budget(&result), "{result:?}");
-    assert!(started.elapsed() < Duration::from_millis(1300));
     wait_for_no_children().await;
 }
 
@@ -530,20 +533,23 @@ async fn a_waiter_serializes_its_request_only_after_it_is_admitted() {
 #[tokio::test]
 #[serial]
 async fn cancelling_while_waiting_for_the_exit_after_stdout_closed_stops_promptly() {
-    let child = script("cat >/dev/null\nprintf '{\"Validated\":\"x\"}'\nexec >&-\nsleep 30");
+    let dir = tempfile::tempdir().unwrap();
+    let closed = dir.path().join("closed");
+    let child = script(&format!(
+        "cat >/dev/null\nprintf '{{\"Validated\":\"x\"}}'\nexec >&-\ntouch {}\nsleep 30",
+        closed.display()
+    ));
     let sandbox = scripted(&child, Duration::from_secs(20));
     let running = sandbox.clone();
     let job = tokio::spawn(async move { validate(&running, "x").await });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    while !closed.exists() {
+        assert!(!job.is_finished(), "the job ended before closing stdout");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
-    let started = Instant::now();
     sandbox.shutdown().await;
 
-    assert!(
-        started.elapsed() < Duration::from_millis(1500),
-        "{:?}",
-        started.elapsed()
-    );
+    // Without the cancellation the job would run to its 20 s deadline and be a budget hit.
     assert!(is_infra(&job.await.unwrap()));
     assert_eq!(sandbox.in_flight(), 0);
     wait_for_no_children().await;
@@ -628,6 +634,41 @@ async fn the_child_starts_with_an_empty_environment_plus_the_allowlist() {
     }
 }
 
+/// Fails the test if the child is still running after a minute, so a missing limit cannot
+/// hang the suite.
+fn wait_or_kill(child: &mut std::process::Child) -> std::process::ExitStatus {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if started.elapsed() > Duration::from_mins(1) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the child was still running after a minute");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn run_child_until_it_exits(job: &str) -> std::process::ExitStatus {
+    use std::io::Write as _;
+    let mut child = Command::new(BIN)
+        .arg("__render-sandbox")
+        .args(["536870912", "2", "3", &std::process::id().to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(job.as_bytes())
+        .unwrap();
+    wait_or_kill(&mut child)
+}
+
 fn run_child_directly(args: &[&str], stdin: &str) -> (Option<i32>, String) {
     use std::io::Write as _;
     let mut child = Command::new(BIN)
@@ -685,26 +726,31 @@ fn a_malformed_request_is_a_setup_failure() {
 #[tokio::test]
 #[serial]
 async fn cancelling_a_job_kills_its_child_and_frees_the_slot() {
+    // A hanging job outlives every bound below unless the cancellation kills it.
+    let child =
+        script("case \"$(cat)\" in *hang*) exec sleep 30;; esac\nprintf '{\"Validated\":\"1\"}'");
     let sandbox = sandbox_with(RenderSandboxConfig {
+        timeout: Duration::from_mins(1),
         concurrency: 1,
-        ..config()
+        ..RenderSandboxConfig::new(child.path.clone())
     });
-    let hostile = eq_template();
+    let mut hanging = Box::pin(validate(&sandbox, "hang"));
 
-    let cancelled = tokio::time::timeout(
-        Duration::from_millis(100),
-        sandbox.validate(&hostile, &Variables::new()),
-    )
-    .await;
-
-    assert!(
-        cancelled.is_err(),
-        "the hostile job should still be running"
-    );
-    wait_for_no_children().await;
     let started = Instant::now();
-    assert_eq!(validate(&sandbox, "{{ 1 }}").await.unwrap(), "1");
-    assert!(started.elapsed() < Duration::from_secs(2));
+    while children().is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "no child started"
+        );
+        tokio::select! {
+            result = &mut hanging => panic!("the hanging job finished: {result:?}"),
+            () = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    }
+    drop(hanging);
+
+    wait_for_no_children().await;
+    assert_eq!(validate(&sandbox, "x").await.unwrap(), "1");
 }
 
 #[tokio::test]
@@ -760,8 +806,11 @@ fn a_child_dies_when_the_thread_that_spawned_it_exits() {
     })
     .join()
     .unwrap();
+    // `join` can return before the kernel sends the death signal; an open stdin keeps the
+    // child waiting for its request instead of failing setup on an empty one.
+    let _stdin = child.stdin.take();
 
-    let status = child.wait().unwrap();
+    let status = wait_or_kill(&mut child);
 
     assert_eq!(status.signal(), Some(9), "{status:?}");
 }
@@ -850,7 +899,8 @@ async fn spawn_latency_stays_far_below_the_deadline() {
     let median = samples[samples.len() / 2];
     let p99 = samples[samples.len() * 99 / 100];
     eprintln!("sandbox latency: median {median:?}, p99 {p99:?}");
-    assert!(median < Duration::from_millis(100), "{median:?}");
+    let deadline = RenderSandboxConfig::new(BIN.into()).timeout;
+    assert!(median < deadline / 10, "{median:?}");
 }
 
 fn peak_vm_kib(job: &str, memory: &str) -> u64 {
@@ -869,7 +919,9 @@ fn peak_vm_kib(job: &str, memory: &str) -> u64 {
     let drain = std::thread::spawn(move || std::io::copy(&mut stdout, &mut std::io::sink()));
     let mut peak = 0;
     while child.try_wait().unwrap().is_none() {
-        if let Ok(status) = std::fs::read_to_string(format!("/proc/{}/status", child.id()))
+        // Before its setup the child can still be the forked image of this process.
+        if child_set_up(child.id())
+            && let Ok(status) = std::fs::read_to_string(format!("/proc/{}/status", child.id()))
             && let Some(kib) = status
                 .lines()
                 .find_map(|l| l.strip_prefix("VmPeak:"))
@@ -957,7 +1009,11 @@ fn app_config(http_port: u16, dir: &tempfile::TempDir) -> catapulte::AppConfig {
         attachment_fetcher:
             catapulte_outbound_attachment_fetcher::fetcher::HttpAttachmentFetcherConfig::default(),
         include_loader: IncludeLoaderConfig::default(),
-        render: config(),
+        // The default deadline, which fits the HTTP timeout and the shutdown drain.
+        render: RenderSandboxConfig {
+            concurrency: 2,
+            ..RenderSandboxConfig::new(BIN.into())
+        },
         gc_sweep_interval: Duration::from_hours(1),
         gc_grace_period: Duration::from_hours(1),
         retention: None,
