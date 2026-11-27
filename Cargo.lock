@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-domain"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-inbound-http"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-inbound-nats"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-inbound-worker"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-attachment-fetcher"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-attachment-fs"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-attachment-redis"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-attachment-s3"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-interpolator"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-mjml"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-nats"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-postgres"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-queue-memory"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-resolver"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-smtp"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -726,7 +726,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-sqlite"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -741,7 +741,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-outbound-webhook"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "catapulte-domain",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "catapulte-telemetry"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "opentelemetry",
