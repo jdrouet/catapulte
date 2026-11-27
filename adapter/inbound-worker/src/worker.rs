@@ -2536,8 +2536,32 @@ mod tests {
         }
     }
 
+    // Capture needs a process-global subscriber installed before any other test hits the
+    // callsites, so it runs in a child process of its own.
+    #[test]
+    fn relay_reply_never_reaches_logs() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "worker::tests::relay_reply_capture_in_isolated_process",
+                "--ignored",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "child failed: {text}");
+        assert!(text.contains("1 passed"), "child ran no test: {text}");
+    }
+
     #[tokio::test]
-    async fn relay_reply_never_reaches_logs() {
+    #[ignore = "run in its own process by relay_reply_never_reaches_logs"]
+    async fn relay_reply_capture_in_isolated_process() {
         let buf = SharedBuf::default();
         let writer = buf.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -2546,8 +2570,6 @@ mod tests {
             .with_max_level(tracing::Level::TRACE)
             .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
             .finish();
-        // Global, not scoped: sibling tests hit the same callsites with no subscriber and
-        // would otherwise cache a never-enabled interest before this capture is installed.
         tracing::subscriber::set_global_default(subscriber).unwrap();
 
         let publisher = CapturingEventPublisher::default();
