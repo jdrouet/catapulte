@@ -45,20 +45,16 @@ impl RetentionPurge {
     }
 }
 
-/// Runs batches until one deletes nothing, fails, or the token is cancelled; logs once.
-/// A batch in flight at cancellation is dropped, so its transaction rolls back.
+/// Runs batches until one deletes nothing, fails, or the token is cancelled between batches;
+/// logs once.
 async fn sweep<F>(cancel: &CancellationToken, batch: u32, mut next: impl FnMut(u32) -> F) -> u64
 where
     F: Future<Output = anyhow::Result<u64>>,
 {
     let mut total = 0;
     while !cancel.is_cancelled() {
-        let result = tokio::select! {
-            biased;
-            () = cancel.cancelled() => break,
-            r = next(batch) => r,
-        };
-        match result {
+        // An in-flight batch is never dropped, so the logged count matches what was committed.
+        match next(batch).await {
             Ok(n) => {
                 total += n;
                 if n == 0 {
@@ -201,7 +197,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sweep_logs_summary_when_cancelled_mid_batch() {
+    async fn sweep_finishes_the_in_flight_batch_on_cancel() {
         let (logs, _guard) = Logs::capture();
         let cancel = CancellationToken::new();
         let mut calls = 0;
@@ -211,18 +207,18 @@ mod tests {
             let first = calls == 1;
             let cancel = cancel.clone();
             async move {
-                if first {
-                    return Ok(2);
+                if !first {
+                    cancel.cancel();
+                    tokio::task::yield_now().await;
                 }
-                cancel.cancel();
-                std::future::pending().await
+                Ok(2)
             }
         })
         .await;
 
-        assert_eq!((total, calls), (2, 2));
+        assert_eq!((total, calls), (4, 2));
         assert_eq!(logs.count("INFO"), 1);
-        assert!(logs.text().contains("purged=2"));
+        assert!(logs.text().contains("purged=4"));
     }
 
     async fn fresh_sqlite() -> (StorageAdapter, tempfile::TempDir) {
