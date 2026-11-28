@@ -99,13 +99,23 @@ jobs:
         if: steps.ver.outputs.release == 'true'
         env:
           BRANCH: release/${{ steps.ver.outputs.tag }}
+          # The changelog was computed on this commit; a commit landing after it
+          # would sit under the new tag but outside its changelog section.
+          BASE: ${{ github.sha }}
         run: |
           while :; do
+            # Read main before the PR state, so a move seen on an open PR is not its own merge.
+            MAIN="$(git ls-remote origin refs/heads/main | cut -f1)"
             STATE="$(gh pr view "$BRANCH" --json state --jq .state)"
             case "$STATE" in
               MERGED) break ;;
               CLOSED) echo "::error::release PR closed without merging"; exit 1 ;;
             esac
+            if [ "$MAIN" != "$BASE" ]; then
+              gh pr close "$BRANCH" --delete-branch
+              echo "::error::main moved since the release started ($BASE -> $MAIN); release PR closed, rerun the release"
+              exit 1
+            fi
             # Errors before required checks are reported; empty means none failed yet.
             FAILED="$(gh pr checks "$BRANCH" --required --json name,bucket \
               --jq '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | join(", ")' || true)"
@@ -117,8 +127,14 @@ jobs:
             fi
             sleep 30
           done
-          echo "sha=$(gh pr view "$BRANCH" --json mergeCommit --jq .mergeCommit.oid)" >> "$GITHUB_OUTPUT"
+          SHA="$(gh pr view "$BRANCH" --json mergeCommit --jq .mergeCommit.oid)"
           git push origin --delete "$BRANCH" || true
+          git fetch -q origin "$SHA"
+          if [ "$(git rev-parse "$SHA^")" != "$BASE" ]; then
+            echo "::error::a commit landed on main before the release commit; not tagging, rerun the release"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       # The tag is created only now, on the squash commit that is on main.
       - name: Create GitHub release
