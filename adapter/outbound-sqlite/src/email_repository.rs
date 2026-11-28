@@ -460,8 +460,8 @@ impl EmailCancellation for SqliteAdapter {
         Ok(CancelOutcome::Cancelled {
             context: EventContext {
                 correlation_id,
-                tags: tags.map(|j| j.0).unwrap_or_default(),
-                metadata: extras.map(|j| j.0.metadata).unwrap_or_default(),
+                tags: tags.map_or_default(|j| j.0),
+                metadata: extras.map_or_default(|j| j.0.metadata),
             },
         })
     }
@@ -533,8 +533,8 @@ impl SqliteAdapter {
             recipients: crate::dto::recipients_from_dto(recipients_json.0),
             created_at_ms,
             status,
-            tags: tags.map(|j| j.0).unwrap_or_default(),
-            metadata: extras.map(|j| j.0.metadata).unwrap_or_default(),
+            tags: tags.map_or_default(|j| j.0),
+            metadata: extras.map_or_default(|j| j.0.metadata),
             send_at_ms,
         })
     }

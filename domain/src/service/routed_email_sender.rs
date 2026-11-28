@@ -18,19 +18,20 @@ pub enum RoutedEmailSenderError {
 pub struct NoopSenderUsage;
 
 impl SenderUsage for NoopSenderUsage {
-    async fn get_stats(
+    fn get_stats(
         &self,
         names: &[SenderName],
         _since_ms: i64,
-    ) -> Result<Vec<SenderStats>, crate::port::sender_usage::SenderUsageError> {
-        Ok(names
+    ) -> impl Future<Output = Result<Vec<SenderStats>, crate::port::sender_usage::SenderUsageError>>
+    {
+        std::future::ready(Ok(names
             .iter()
             .map(|n| SenderStats {
                 name: n.clone(),
                 sent_in_range: 0,
                 failed_in_range: 0,
             })
-            .collect())
+            .collect()))
     }
 }
 
@@ -102,8 +103,7 @@ where
     async fn send(&self, email: OutboundEmail) -> Result<SentEmail, SendError> {
         let sender_domain = crate::entity::email::bare_address(&email.sender)
             .rsplit_once('@')
-            .map(|(_, domain)| normalize_domain(domain))
-            .unwrap_or_default();
+            .map_or_default(|(_, domain)| normalize_domain(domain));
 
         // Build ordered candidate list: domain-matched first, then catch-alls.
         // self.routes is already sorted by priority from construction.
@@ -274,10 +274,10 @@ mod tests {
     }
 
     impl EmailTransport for FakeTransport {
-        async fn deliver<'a>(
+        fn deliver<'a>(
             &'a self,
             email: &'a OutboundEmail,
-        ) -> Result<DeliveryReceipt, TransportError> {
+        ) -> impl Future<Output = Result<DeliveryReceipt, TransportError>> {
             let fail = |kind| TransportError {
                 kind,
                 category: match kind {
@@ -286,7 +286,7 @@ mod tests {
                 },
                 source: anyhow::anyhow!("simulated failure"),
             };
-            match self {
+            std::future::ready(match self {
                 Self::Ok => Ok(receipt()),
                 Self::Fail => Err(fail(TransportErrorKind::Transient)),
                 Self::FailWith(kind, calls) => {
@@ -307,7 +307,7 @@ mod tests {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(receipt())
                 }
-            }
+            })
         }
     }
 
@@ -385,33 +385,33 @@ mod tests {
     }
 
     impl SenderUsage for FakeSenderUsage {
-        async fn get_stats(
+        fn get_stats(
             &self,
             names: &[SenderName],
             _since_ms: i64,
-        ) -> Result<Vec<SenderStats>, SenderUsageError> {
-            Ok(names
+        ) -> impl Future<Output = Result<Vec<SenderStats>, SenderUsageError>> {
+            std::future::ready(Ok(names
                 .iter()
                 .map(|n| SenderStats {
                     name: n.clone(),
                     sent_in_range: self.stats.get(n.as_str()).copied().unwrap_or(0),
                     failed_in_range: 0,
                 })
-                .collect())
+                .collect()))
         }
     }
 
     struct ErrorSenderUsage;
 
     impl SenderUsage for ErrorSenderUsage {
-        async fn get_stats(
+        fn get_stats(
             &self,
             _names: &[SenderName],
             _since_ms: i64,
-        ) -> Result<Vec<SenderStats>, SenderUsageError> {
-            Err(SenderUsageError::Storage {
+        ) -> impl Future<Output = Result<Vec<SenderStats>, SenderUsageError>> {
+            std::future::ready(Err(SenderUsageError::Storage {
                 source: anyhow::anyhow!("db error"),
-            })
+            }))
         }
     }
 

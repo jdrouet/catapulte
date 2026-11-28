@@ -41,10 +41,11 @@ pub(crate) struct NoopIngestFeedback;
 
 #[cfg(test)]
 impl IngestFeedbackUseCase for NoopIngestFeedback {
-    async fn execute(
+    fn execute(
         &self,
         _: catapulte_domain::use_case::ingest_feedback::FeedbackReport,
-    ) -> Result<(), catapulte_domain::use_case::ingest_feedback::IngestFeedbackError> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), catapulte_domain::use_case::ingest_feedback::IngestFeedbackError>>
+    {
+        std::future::ready(Ok(()))
     }
 }

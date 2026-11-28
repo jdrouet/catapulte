@@ -428,12 +428,12 @@ mod tests {
     struct OkProcessor;
 
     impl ProcessQueuedEmailUseCase for OkProcessor {
-        async fn execute(
+        fn execute(
             &self,
             _: EmailId,
             _: Envelope,
-        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
-            Ok(processed("sender"))
+        ) -> impl Future<Output = Result<ProcessedEmail, ProcessQueuedEmailError>> {
+            std::future::ready(Ok(processed("sender")))
         }
     }
 
@@ -441,34 +441,41 @@ mod tests {
     struct FailingAckQueue;
 
     impl EmailQueue for FailingAckQueue {
-        async fn in_progress(&self, _token: &AckToken) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn in_progress(
+            &self,
+            _token: &AckToken,
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
 
         fn renew_interval(&self) -> Duration {
             Duration::from_secs(1)
         }
 
-        async fn enqueue(
+        fn enqueue(
             &self,
             _: EmailId,
             _: &Envelope,
-        ) -> Result<EnqueueOutcome, EmailQueueError> {
-            Ok(EnqueueOutcome::Inserted)
+        ) -> impl Future<Output = Result<EnqueueOutcome, EmailQueueError>> {
+            std::future::ready(Ok(EnqueueOutcome::Inserted))
         }
 
         async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
             unimplemented!()
         }
 
-        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
-            Err(EmailQueueError::Storage {
+        fn ack(&self, _: AckToken) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Err(EmailQueueError::Storage {
                 source: anyhow::anyhow!("ack failed"),
-            })
+            }))
         }
 
-        async fn nack(&self, _: AckToken, _: Duration) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn nack(
+            &self,
+            _: AckToken,
+            _: Duration,
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -478,9 +485,12 @@ mod tests {
     }
 
     impl EventPublisher for RecordingPublisher {
-        async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+        fn publish(
+            &self,
+            event: &LifecycleEvent,
+        ) -> impl Future<Output = Result<(), EventPublisherError>> {
             self.events.lock().unwrap().push(event.event_type());
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
@@ -525,10 +535,10 @@ mod tests {
             unimplemented!()
         }
 
-        async fn delete(&self, blob: &BlobRef) -> Result<(), AttachmentStoreError> {
+        fn delete(&self, blob: &BlobRef) -> impl Future<Output = Result<(), AttachmentStoreError>> {
             self.log.push(format!("delete:{}", blob.key));
             self.deleted.lock().unwrap().push(blob.clone());
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
@@ -563,22 +573,22 @@ mod tests {
             unimplemented!()
         }
 
-        async fn set_attachments(
+        fn set_attachments(
             &self,
             id: EmailId,
             _: &[AttachmentRef],
-        ) -> Result<(), EmailRepositoryError> {
+        ) -> impl Future<Output = Result<(), EmailRepositoryError>> {
             self.log.push(format!("set_attachments:{}", id.as_uuid()));
-            Ok(())
+            std::future::ready(Ok(()))
         }
 
-        async fn set_enqueue_state(
+        fn set_enqueue_state(
             &self,
             _: EmailId,
             _: &str,
             _: EnqueueState,
-        ) -> Result<bool, EmailRepositoryError> {
-            Ok(true)
+        ) -> impl Future<Output = Result<bool, EmailRepositoryError>> {
+            std::future::ready(Ok(true))
         }
 
         async fn delete(&self, _: EmailId) -> Result<(), EmailRepositoryError> {
@@ -595,8 +605,11 @@ mod tests {
             unimplemented!()
         }
 
-        async fn start_delivery(&self, _: EmailId) -> Result<DeliveryStart, EmailRepositoryError> {
-            Ok(DeliveryStart::Proceed)
+        fn start_delivery(
+            &self,
+            _: EmailId,
+        ) -> impl Future<Output = Result<DeliveryStart, EmailRepositoryError>> {
+            std::future::ready(Ok(DeliveryStart::Proceed))
         }
     }
 
@@ -623,21 +636,21 @@ mod tests {
             unimplemented!()
         }
 
-        async fn set_attachments(
+        fn set_attachments(
             &self,
             _: EmailId,
             _: &[AttachmentRef],
-        ) -> Result<(), EmailRepositoryError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), EmailRepositoryError>> {
+            std::future::ready(Ok(()))
         }
 
-        async fn set_enqueue_state(
+        fn set_enqueue_state(
             &self,
             _: EmailId,
             _: &str,
             _: EnqueueState,
-        ) -> Result<bool, EmailRepositoryError> {
-            Ok(true)
+        ) -> impl Future<Output = Result<bool, EmailRepositoryError>> {
+            std::future::ready(Ok(true))
         }
 
         async fn delete(&self, _: EmailId) -> Result<(), EmailRepositoryError> {
@@ -654,8 +667,11 @@ mod tests {
             unimplemented!()
         }
 
-        async fn start_delivery(&self, _: EmailId) -> Result<DeliveryStart, EmailRepositoryError> {
-            Ok(DeliveryStart::Proceed)
+        fn start_delivery(
+            &self,
+            _: EmailId,
+        ) -> impl Future<Output = Result<DeliveryStart, EmailRepositoryError>> {
+            std::future::ready(Ok(DeliveryStart::Proceed))
         }
     }
 
@@ -674,9 +690,9 @@ mod tests {
             unimplemented!()
         }
 
-        async fn delete(&self, blob: &BlobRef) -> Result<(), AttachmentStoreError> {
+        fn delete(&self, blob: &BlobRef) -> impl Future<Output = Result<(), AttachmentStoreError>> {
             self.deleted.lock().unwrap().push(blob.clone());
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
@@ -714,32 +730,39 @@ mod tests {
     struct NoopQueue;
 
     impl EmailQueue for NoopQueue {
-        async fn in_progress(&self, _token: &AckToken) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn in_progress(
+            &self,
+            _token: &AckToken,
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
 
         fn renew_interval(&self) -> Duration {
             Duration::from_secs(1)
         }
 
-        async fn enqueue(
+        fn enqueue(
             &self,
             _: EmailId,
             _: &Envelope,
-        ) -> Result<EnqueueOutcome, EmailQueueError> {
-            Ok(EnqueueOutcome::Inserted)
+        ) -> impl Future<Output = Result<EnqueueOutcome, EmailQueueError>> {
+            std::future::ready(Ok(EnqueueOutcome::Inserted))
         }
 
         async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
             std::future::pending().await
         }
 
-        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn ack(&self, _: AckToken) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
 
-        async fn nack(&self, _: AckToken, _: Duration) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn nack(
+            &self,
+            _: AckToken,
+            _: Duration,
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -747,8 +770,11 @@ mod tests {
     struct NoopPublisher;
 
     impl EventPublisher for NoopPublisher {
-        async fn publish(&self, _: &LifecycleEvent) -> Result<(), EventPublisherError> {
-            Ok(())
+        fn publish(
+            &self,
+            _: &LifecycleEvent,
+        ) -> impl Future<Output = Result<(), EventPublisherError>> {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -764,8 +790,8 @@ mod tests {
             unimplemented!()
         }
 
-        async fn delete(&self, _: &BlobRef) -> Result<(), AttachmentStoreError> {
-            Ok(())
+        fn delete(&self, _: &BlobRef) -> impl Future<Output = Result<(), AttachmentStoreError>> {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -985,16 +1011,16 @@ mod tests {
     struct NoMatchingRouteProcessor;
 
     impl ProcessQueuedEmailUseCase for NoMatchingRouteProcessor {
-        async fn execute(
+        fn execute(
             &self,
             _: EmailId,
             _: Envelope,
-        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
-            Err(ProcessQueuedEmailError::Send(
+        ) -> impl Future<Output = Result<ProcessedEmail, ProcessQueuedEmailError>> {
+            std::future::ready(Err(ProcessQueuedEmailError::Send(
                 catapulte_domain::port::email_sender::SendError::NoMatchingRoute {
                     sender_domain: "example.com".to_owned(),
                 },
-            ))
+            )))
         }
     }
 
@@ -1005,34 +1031,41 @@ mod tests {
     }
 
     impl EmailQueue for TrackingQueue {
-        async fn in_progress(&self, _token: &AckToken) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn in_progress(
+            &self,
+            _token: &AckToken,
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
 
         fn renew_interval(&self) -> Duration {
             Duration::from_secs(1)
         }
 
-        async fn enqueue(
+        fn enqueue(
             &self,
             _: EmailId,
             _: &Envelope,
-        ) -> Result<EnqueueOutcome, EmailQueueError> {
-            Ok(EnqueueOutcome::Inserted)
+        ) -> impl Future<Output = Result<EnqueueOutcome, EmailQueueError>> {
+            std::future::ready(Ok(EnqueueOutcome::Inserted))
         }
 
         async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
             std::future::pending().await
         }
 
-        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
+        fn ack(&self, _: AckToken) -> impl Future<Output = Result<(), EmailQueueError>> {
             *self.acked.lock().unwrap() += 1;
-            Ok(())
+            std::future::ready(Ok(()))
         }
 
-        async fn nack(&self, _: AckToken, _: Duration) -> Result<(), EmailQueueError> {
+        fn nack(
+            &self,
+            _: AckToken,
+            _: Duration,
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
             *self.nacked.lock().unwrap() += 1;
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
@@ -1117,9 +1150,12 @@ mod tests {
     }
 
     impl EventPublisher for CapturingEventPublisher {
-        async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+        fn publish(
+            &self,
+            event: &LifecycleEvent,
+        ) -> impl Future<Output = Result<(), EventPublisherError>> {
             self.events.lock().unwrap().push(event.clone());
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
@@ -1256,23 +1292,23 @@ mod tests {
     }
 
     impl ProcessQueuedEmailUseCase for ScriptedProcessor {
-        async fn execute(
+        fn execute(
             &self,
             _: EmailId,
             _: Envelope,
-        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
+        ) -> impl Future<Output = Result<ProcessedEmail, ProcessQueuedEmailError>> {
             if self.all_suppressed {
-                return Err(ProcessQueuedEmailError::AllRecipientsSuppressed);
+                return std::future::ready(Err(ProcessQueuedEmailError::AllRecipientsSuppressed));
             }
             if self.over_budget {
-                return Err(ProcessQueuedEmailError::Interpolate(
+                return std::future::ready(Err(ProcessQueuedEmailError::Interpolate(
                     catapulte_domain::port::template_interpolator::InterpolateError::BudgetExceeded,
-                ));
+                )));
             }
-            Ok(ProcessedEmail {
+            std::future::ready(Ok(ProcessedEmail {
                 suppressed: vec!["b@x.com".to_owned()],
                 ..processed("sender")
-            })
+            }))
         }
     }
 
@@ -1449,20 +1485,23 @@ mod tests {
     }
 
     impl EmailQueue for FiniteQueue {
-        async fn in_progress(&self, _token: &AckToken) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn in_progress(
+            &self,
+            _token: &AckToken,
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
 
         fn renew_interval(&self) -> Duration {
             Duration::from_secs(1)
         }
 
-        async fn enqueue(
+        fn enqueue(
             &self,
             _: EmailId,
             _: &Envelope,
-        ) -> Result<EnqueueOutcome, EmailQueueError> {
-            Ok(EnqueueOutcome::Inserted)
+        ) -> impl Future<Output = Result<EnqueueOutcome, EmailQueueError>> {
+            std::future::ready(Ok(EnqueueOutcome::Inserted))
         }
 
         async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
@@ -1484,13 +1523,17 @@ mod tests {
             std::future::pending().await
         }
 
-        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
+        fn ack(&self, _: AckToken) -> impl Future<Output = Result<(), EmailQueueError>> {
             *self.acked.lock().unwrap() += 1;
-            Ok(())
+            std::future::ready(Ok(()))
         }
 
-        async fn nack(&self, _: AckToken, _: Duration) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn nack(
+            &self,
+            _: AckToken,
+            _: Duration,
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -1861,12 +1904,12 @@ mod tests {
     struct PermanentSendProcessor;
 
     impl ProcessQueuedEmailUseCase for PermanentSendProcessor {
-        async fn execute(
+        fn execute(
             &self,
             _: EmailId,
             _: Envelope,
-        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
-            Err(ProcessQueuedEmailError::Send(
+        ) -> impl Future<Output = Result<ProcessedEmail, ProcessQueuedEmailError>> {
+            std::future::ready(Err(ProcessQueuedEmailError::Send(
                 catapulte_domain::port::email_sender::SendError::Send {
                     sender_name: SenderName::new("primary"),
                     permanent: true,
@@ -1875,7 +1918,7 @@ mod tests {
                         "smtp send failed: permanent error (550): 5.1.1 no such user"
                     ),
                 },
-            ))
+            )))
         }
     }
 
@@ -1964,68 +2007,75 @@ mod tests {
     }
 
     impl EmailQueue for Seen {
-        async fn in_progress(&self, _: &AckToken) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn in_progress(&self, _: &AckToken) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
 
         fn renew_interval(&self) -> Duration {
             Duration::from_secs(1)
         }
 
-        async fn enqueue(
+        fn enqueue(
             &self,
             _: EmailId,
             _: &Envelope,
-        ) -> Result<EnqueueOutcome, EmailQueueError> {
-            Ok(EnqueueOutcome::Inserted)
+        ) -> impl Future<Output = Result<EnqueueOutcome, EmailQueueError>> {
+            std::future::ready(Ok(EnqueueOutcome::Inserted))
         }
 
         async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
             std::future::pending().await
         }
 
-        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn ack(&self, _: AckToken) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
 
-        async fn finish(
+        fn finish(
             &self,
             _: AckToken,
             event: &LifecycleEvent,
-        ) -> Result<FinishOutcome, EmailQueueError> {
+        ) -> impl Future<Output = Result<FinishOutcome, EmailQueueError>> {
             self.finished.lock().unwrap().push(event.event_type());
-            Ok(FinishOutcome::Recorded)
+            std::future::ready(Ok(FinishOutcome::Recorded))
         }
 
-        async fn nack(&self, _: AckToken, _: Duration) -> Result<(), EmailQueueError> {
-            Ok(())
+        fn nack(
+            &self,
+            _: AckToken,
+            _: Duration,
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
     }
 
     impl EventPublisher for Seen {
-        async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-            self.published.lock().unwrap().push(event.event_type());
-            Ok(())
-        }
-
-        async fn publish_recorded(
+        fn publish(
             &self,
             event: &LifecycleEvent,
-        ) -> Result<(), EventPublisherError> {
+        ) -> impl Future<Output = Result<(), EventPublisherError>> {
+            self.published.lock().unwrap().push(event.event_type());
+            std::future::ready(Ok(()))
+        }
+
+        fn publish_recorded(
+            &self,
+            event: &LifecycleEvent,
+        ) -> impl Future<Output = Result<(), EventPublisherError>> {
             self.recorded.lock().unwrap().push(event.event_type());
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
     struct SuppressedProcessor;
 
     impl ProcessQueuedEmailUseCase for SuppressedProcessor {
-        async fn execute(
+        fn execute(
             &self,
             _: EmailId,
             _: Envelope,
-        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
-            Err(ProcessQueuedEmailError::AllRecipientsSuppressed)
+        ) -> impl Future<Output = Result<ProcessedEmail, ProcessQueuedEmailError>> {
+            std::future::ready(Err(ProcessQueuedEmailError::AllRecipientsSuppressed))
         }
     }
 
@@ -2206,25 +2256,29 @@ mod tests {
             std::future::pending().await
         }
 
-        async fn ack(&self, _: AckToken) -> Result<(), EmailQueueError> {
+        fn ack(&self, _: AckToken) -> impl Future<Output = Result<(), EmailQueueError>> {
             self.acks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
+            std::future::ready(Ok(()))
         }
 
-        async fn nack(&self, _: AckToken, delay: Duration) -> Result<(), EmailQueueError> {
+        fn nack(
+            &self,
+            _: AckToken,
+            delay: Duration,
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
             self.nacks.lock().unwrap().push(delay);
-            Ok(())
+            std::future::ready(Ok(()))
         }
 
-        async fn in_progress(&self, _: &AckToken) -> Result<(), EmailQueueError> {
+        fn in_progress(&self, _: &AckToken) -> impl Future<Output = Result<(), EmailQueueError>> {
             if self.fail_renewal.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(EmailQueueError::Storage {
+                return std::future::ready(Err(EmailQueueError::Storage {
                     source: anyhow::anyhow!("lease lost"),
-                });
+                }));
             }
             self.renewals
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
+            std::future::ready(Ok(()))
         }
 
         fn renew_interval(&self) -> Duration {
@@ -2261,21 +2315,21 @@ mod tests {
             unimplemented!()
         }
 
-        async fn set_attachments(
+        fn set_attachments(
             &self,
             _: EmailId,
             _: &[AttachmentRef],
-        ) -> Result<(), EmailRepositoryError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), EmailRepositoryError>> {
+            std::future::ready(Ok(()))
         }
 
-        async fn set_enqueue_state(
+        fn set_enqueue_state(
             &self,
             _: EmailId,
             _: &str,
             _: EnqueueState,
-        ) -> Result<bool, EmailRepositoryError> {
-            Ok(true)
+        ) -> impl Future<Output = Result<bool, EmailRepositoryError>> {
+            std::future::ready(Ok(true))
         }
 
         async fn delete(&self, _: EmailId) -> Result<(), EmailRepositoryError> {
@@ -2292,16 +2346,19 @@ mod tests {
             unimplemented!()
         }
 
-        async fn start_delivery(&self, _: EmailId) -> Result<DeliveryStart, EmailRepositoryError> {
+        fn start_delivery(
+            &self,
+            _: EmailId,
+        ) -> impl Future<Output = Result<DeliveryStart, EmailRepositoryError>> {
             self.starts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            match self.fence {
+            std::future::ready(match self.fence {
                 Fence::Proceed => Ok(DeliveryStart::Proceed),
                 Fence::Cancelled => Ok(DeliveryStart::Cancelled),
                 Fence::Failing => Err(EmailRepositoryError::Storage {
                     source: anyhow::anyhow!("db down"),
                 }),
-            }
+            })
         }
     }
 
@@ -2312,24 +2369,24 @@ mod tests {
     }
 
     impl ProcessQueuedEmailUseCase for CountingProcessor {
-        async fn execute(
+        fn execute(
             &self,
             _: EmailId,
             _: Envelope,
-        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
+        ) -> impl Future<Output = Result<ProcessedEmail, ProcessQueuedEmailError>> {
             self.executed
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.fail {
-                return Err(ProcessQueuedEmailError::Send(
+                return std::future::ready(Err(ProcessQueuedEmailError::Send(
                     catapulte_domain::port::email_sender::SendError::Send {
                         sender_name: SenderName::new("primary"),
                         permanent: false,
                         category: catapulte_domain::entity::failure_category::FailureCategory::TemporaryRejection,
                         source: anyhow::anyhow!("temporary failure"),
                     },
-                ));
+                )));
             }
-            Ok(processed("sender"))
+            std::future::ready(Ok(processed("sender")))
         }
     }
 
@@ -2654,12 +2711,12 @@ mod tests {
     const RELAY_REPLY: &str = "permanent error (550): 5.1.1 <MARKER-849@example.com> user unknown";
 
     impl ProcessQueuedEmailUseCase for RelayErrProcessor {
-        async fn execute(
+        fn execute(
             &self,
             _: EmailId,
             _: Envelope,
-        ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
-            Err(ProcessQueuedEmailError::Send(
+        ) -> impl Future<Output = Result<ProcessedEmail, ProcessQueuedEmailError>> {
+            std::future::ready(Err(ProcessQueuedEmailError::Send(
                 catapulte_domain::port::email_sender::SendError::Send {
                     sender_name: SenderName::new("relay"),
                     permanent: self.permanent,
@@ -2670,7 +2727,7 @@ mod tests {
                     },
                     source: anyhow::anyhow!("{RELAY_REPLY}"),
                 },
-            ))
+            )))
         }
     }
 

@@ -314,8 +314,8 @@ mod tests {
     }
 
     impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase for M {
-        async fn check_readiness(&self) -> Readiness {
-            Readiness::Ready
+        fn check_readiness(&self) -> impl Future<Output = Readiness> {
+            std::future::ready(Readiness::Ready)
         }
     }
 

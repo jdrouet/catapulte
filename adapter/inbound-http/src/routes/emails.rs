@@ -299,12 +299,14 @@ pub(crate) struct NoopCancelEmail;
 
 #[cfg(test)]
 impl CancelEmailUseCase for NoopCancelEmail {
-    async fn execute(
+    fn execute(
         &self,
         _id: EmailId,
         _owner: Option<String>,
-    ) -> Result<CancelOutcome, catapulte_domain::use_case::cancel_email::CancelEmailError> {
-        Ok(CancelOutcome::NotFound)
+    ) -> impl Future<
+        Output = Result<CancelOutcome, catapulte_domain::use_case::cancel_email::CancelEmailError>,
+    > {
+        std::future::ready(Ok(CancelOutcome::NotFound))
     }
 }
 
@@ -341,8 +343,8 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl ListSendersUseCase for NoopListSenders {
-        async fn execute(&self) -> Result<Vec<SenderSnapshot>, ListSendersError> {
-            Ok(vec![])
+        fn execute(&self) -> impl Future<Output = Result<Vec<SenderSnapshot>, ListSendersError>> {
+            std::future::ready(Ok(vec![]))
         }
     }
 
@@ -350,19 +352,21 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl ListEventsUseCase for NoopListEvents {
-        async fn execute(
+        fn execute(
             &self,
             _params: ListEventsParams,
-        ) -> Result<Vec<EventRecord>, ListEventsError> {
-            Ok(vec![])
+        ) -> impl Future<Output = Result<Vec<EventRecord>, ListEventsError>> {
+            std::future::ready(Ok(vec![]))
         }
     }
 
     struct NoopReadiness;
 
     impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase for NoopReadiness {
-        async fn check_readiness(&self) -> catapulte_domain::use_case::check_readiness::Readiness {
-            catapulte_domain::use_case::check_readiness::Readiness::Ready
+        fn check_readiness(
+            &self,
+        ) -> impl Future<Output = catapulte_domain::use_case::check_readiness::Readiness> {
+            std::future::ready(catapulte_domain::use_case::check_readiness::Readiness::Ready)
         }
     }
 
@@ -373,25 +377,30 @@ mod tests {
     }
 
     impl SubmitEmailUseCase for FakeSubmit {
-        async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
+        fn execute(
+            &self,
+            input: SubmitEmailInput,
+        ) -> impl Future<Output = Result<EmailId, SubmitEmailError>> {
             if input.subject.as_deref() == Some("too-large") {
-                return Err(SubmitEmailError::MessageTooLarge { max_bytes: 10 });
+                return std::future::ready(Err(SubmitEmailError::MessageTooLarge {
+                    max_bytes: 10,
+                }));
             }
             if input.subject.as_deref() == Some("denied-domain") {
-                return Err(SubmitEmailError::SenderDomainNotAllowed {
+                return std::future::ready(Err(SubmitEmailError::SenderDomainNotAllowed {
                     domain: "b.c".to_owned(),
-                });
+                }));
             }
             if input.subject.as_deref() == Some("send-at-out-of-range") {
-                return Err(SubmitEmailError::SendAtOutOfRange);
+                return std::future::ready(Err(SubmitEmailError::SendAtOutOfRange));
             }
             if input.subject.as_deref() == Some("scheduling-unavailable") {
-                return Err(SubmitEmailError::SchedulingUnavailable);
+                return std::future::ready(Err(SubmitEmailError::SchedulingUnavailable));
             }
             if input.subject.as_deref() == Some("incomplete") {
-                return Err(SubmitEmailError::ReservationIncomplete {
+                return std::future::ready(Err(SubmitEmailError::ReservationIncomplete {
                     id: EmailId::default(),
-                });
+                }));
             }
             for att in input.attachments {
                 if let catapulte_domain::use_case::submit_email::AttachmentInput::Inline {
@@ -406,7 +415,7 @@ mod tests {
                         .push((filename, content_type));
                 }
             }
-            Ok(EmailId::default())
+            std::future::ready(Ok(EmailId::default()))
         }
     }
 
@@ -414,10 +423,15 @@ mod tests {
     struct FailingSubmit;
 
     impl SubmitEmailUseCase for FailingSubmit {
-        async fn execute(&self, _input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
-            Err(SubmitEmailError::Persist(EmailRepositoryError::Storage {
-                source: anyhow::anyhow!("nope"),
-            }))
+        fn execute(
+            &self,
+            _input: SubmitEmailInput,
+        ) -> impl Future<Output = Result<EmailId, SubmitEmailError>> {
+            std::future::ready(Err(SubmitEmailError::Persist(
+                EmailRepositoryError::Storage {
+                    source: anyhow::anyhow!("nope"),
+                },
+            )))
         }
     }
 
@@ -445,12 +459,12 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl ListEmailsUseCase for FakeListEmails {
-        async fn execute(
+        fn execute(
             &self,
             params: ListEmailsParams,
-        ) -> Result<Vec<EmailRecord>, ListEmailsError> {
+        ) -> impl Future<Output = Result<Vec<EmailRecord>, ListEmailsError>> {
             *self.captured_params.lock().unwrap() = Some(params);
-            Ok((*self.result).clone())
+            std::future::ready(Ok((*self.result).clone()))
         }
     }
 
@@ -458,13 +472,15 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl ListEmailsUseCase for FailingListEmails {
-        async fn execute(
+        fn execute(
             &self,
             _params: ListEmailsParams,
-        ) -> Result<Vec<EmailRecord>, ListEmailsError> {
-            Err(ListEmailsError::Repository(EmailRepositoryError::Storage {
-                source: anyhow::anyhow!("db down"),
-            }))
+        ) -> impl Future<Output = Result<Vec<EmailRecord>, ListEmailsError>> {
+            std::future::ready(Err(ListEmailsError::Repository(
+                EmailRepositoryError::Storage {
+                    source: anyhow::anyhow!("db down"),
+                },
+            )))
         }
     }
 
@@ -1446,7 +1462,10 @@ mod tests {
     }
 
     impl SubmitEmailUseCase for CapturingSubmit {
-        async fn execute(&self, input: SubmitEmailInput) -> Result<EmailId, SubmitEmailError> {
+        fn execute(
+            &self,
+            input: SubmitEmailInput,
+        ) -> impl Future<Output = Result<EmailId, SubmitEmailError>> {
             use catapulte_domain::use_case::submit_email::AttachmentInput;
             self.send_at.lock().unwrap().push(input.send_at_ms);
             for att in input.attachments {
@@ -1454,7 +1473,7 @@ mod tests {
                     self.captured_bytes.lock().unwrap().push(bytes.to_vec());
                 }
             }
-            Ok(EmailId::default())
+            std::future::ready(Ok(EmailId::default()))
         }
     }
 
@@ -1473,14 +1492,18 @@ mod tests {
     }
 
     impl CancelEmailUseCase for ScriptedCancel {
-        async fn execute(
+        fn execute(
             &self,
             id: EmailId,
             owner: Option<String>,
-        ) -> Result<CancelOutcome, catapulte_domain::use_case::cancel_email::CancelEmailError>
-        {
+        ) -> impl Future<
+            Output = Result<
+                CancelOutcome,
+                catapulte_domain::use_case::cancel_email::CancelEmailError,
+            >,
+        > {
             self.owners.lock().unwrap().push(owner);
-            match id.as_uuid().as_u128() {
+            std::future::ready(match id.as_uuid().as_u128() {
                 1 => Ok(CancelOutcome::Cancelled {
                     context: catapulte_domain::entity::lifecycle_event::EventContext::default(),
                 }),
@@ -1494,7 +1517,7 @@ mod tests {
                     ),
                 ),
                 _ => Ok(CancelOutcome::NotFound),
-            }
+            })
         }
     }
 

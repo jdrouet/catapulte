@@ -264,48 +264,51 @@ mod tests {
     struct Validator;
 
     impl TemplateValidator for Validator {
-        async fn validate(
+        fn validate(
             &self,
             source: &str,
             _: &serde_json::Map<String, serde_json::Value>,
-        ) -> Result<String, InterpolateError> {
+        ) -> impl Future<Output = Result<String, InterpolateError>> {
             if source.contains("{% for") {
-                return Err(InterpolateError::BudgetExceeded);
+                return std::future::ready(Err(InterpolateError::BudgetExceeded));
             }
             if source.contains("{{ infra") {
-                return Err(InterpolateError::Infrastructure {
+                return std::future::ready(Err(InterpolateError::Infrastructure {
                     source: anyhow::anyhow!("sandbox died"),
-                });
+                }));
             }
             if source.contains("{{ boom") {
-                return Err(InterpolateError::Engine {
+                return std::future::ready(Err(InterpolateError::Engine {
                     source: anyhow::anyhow!("syntax error"),
-                });
+                }));
             }
-            Ok(source.to_owned())
+            std::future::ready(Ok(source.to_owned()))
         }
     }
 
     struct Interpolator;
 
     impl TemplateInterpolator for Interpolator {
-        async fn interpolate(
+        fn interpolate(
             &self,
             body: ResolvedBody,
             _: &serde_json::Map<String, serde_json::Value>,
-        ) -> Result<InterpolatedBody, InterpolateError> {
-            match body {
+        ) -> impl Future<Output = Result<InterpolatedBody, InterpolateError>> {
+            std::future::ready(match body {
                 ResolvedBody::Mjml(s) => Ok(InterpolatedBody::Mjml(s)),
                 ResolvedBody::Plain(p) => Ok(InterpolatedBody::Plain(p)),
-            }
+            })
         }
     }
 
     struct Renderer;
 
     impl TemplateRenderer for Renderer {
-        async fn render(&self, body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
-            match body {
+        fn render(
+            &self,
+            body: InterpolatedBody,
+        ) -> impl Future<Output = Result<RenderedBody, RenderError>> {
+            std::future::ready(match body {
                 InterpolatedBody::Mjml(s) if s.contains("<infra") => {
                     Err(RenderError::Infrastructure {
                         source: anyhow::anyhow!("sandbox died"),
@@ -321,7 +324,7 @@ mod tests {
                     Plain::try_new(Some("preview".to_owned()), Some(s)).unwrap(),
                 )),
                 InterpolatedBody::Plain(p) => Ok(RenderedBody::new(p)),
-            }
+            })
         }
     }
 

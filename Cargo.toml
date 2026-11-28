@@ -57,5 +57,3 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
-# Async trait impls (mocks, no-op adapters) keep `async fn` to mirror the trait.
-unused_async_trait_impl = "allow"

@@ -195,8 +195,7 @@ pub fn parse_report(raw: &[u8]) -> Result<FeedbackReport, NotAReport> {
     }
     let report_type = root
         .and_then(|ct| ct.attribute("report-type"))
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
+        .map_or_default(str::to_ascii_lowercase);
     let status_part = |subtype: &str| {
         message
             .parts

@@ -111,8 +111,11 @@ impl EventPublisher for StorageAdapter {
         }
     }
 
-    async fn publish_recorded(&self, _event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-        Ok(())
+    fn publish_recorded(
+        &self,
+        _event: &LifecycleEvent,
+    ) -> impl Future<Output = Result<(), EventPublisherError>> {
+        std::future::ready(Ok(()))
     }
 }
 

@@ -88,11 +88,11 @@ impl Default for MemoryQueue {
 }
 
 impl<C: Clock> EmailQueue for MemoryQueue<C> {
-    async fn enqueue(
+    fn enqueue(
         &self,
         id: EmailId,
         envelope: &Envelope,
-    ) -> Result<EnqueueOutcome, EmailQueueError> {
+    ) -> impl Future<Output = Result<EnqueueOutcome, EmailQueueError>> {
         let pairs = catapulte_telemetry::propagation::inject_current();
         let trace = TraceCarrier::new(pairs);
         if let Some(send_at_ms) = envelope.send_at_ms {
@@ -102,7 +102,7 @@ impl<C: Clock> EmailQueue for MemoryQueue<C> {
                     (id, envelope.clone(), 1, trace),
                     Duration::from_millis(wait_ms.unsigned_abs()),
                 );
-                return Ok(EnqueueOutcome::Published);
+                return std::future::ready(Ok(EnqueueOutcome::Published));
             }
         }
         // Increment before the send: a concurrent dequeue can only observe the
@@ -112,11 +112,11 @@ impl<C: Clock> EmailQueue for MemoryQueue<C> {
         self.ready_count.fetch_add(1, Ordering::Relaxed);
         if self.tx.send((id, envelope.clone(), 1, trace)).is_err() {
             self.ready_count.fetch_sub(1, Ordering::Relaxed);
-            return Err(EmailQueueError::Storage {
+            return std::future::ready(Err(EmailQueueError::Storage {
                 source: anyhow::anyhow!("memory queue channel closed"),
-            });
+            }));
         }
-        Ok(EnqueueOutcome::Published)
+        std::future::ready(Ok(EnqueueOutcome::Published))
     }
 
     async fn dequeue(&self) -> Result<DequeuedEmail, EmailQueueError> {
@@ -146,29 +146,37 @@ impl<C: Clock> EmailQueue for MemoryQueue<C> {
         })
     }
 
-    async fn ack(&self, token: AckToken) -> Result<(), EmailQueueError> {
-        let bytes: [u8; 8] = token.0.try_into().map_err(|_| EmailQueueError::Storage {
-            source: anyhow::anyhow!("invalid ack token length"),
-        })?;
+    fn ack(&self, token: AckToken) -> impl Future<Output = Result<(), EmailQueueError>> {
+        let Ok(bytes) = <[u8; 8]>::try_from(token.0) else {
+            return std::future::ready(Err(EmailQueueError::Storage {
+                source: anyhow::anyhow!("invalid ack token length"),
+            }));
+        };
         let token_id = u64::from_le_bytes(bytes);
         self.pending.lock().unwrap().remove(&token_id);
-        Ok(())
+        std::future::ready(Ok(()))
     }
 
-    async fn nack(&self, token: AckToken, delay: Duration) -> Result<(), EmailQueueError> {
-        let bytes: [u8; 8] = token.0.try_into().map_err(|_| EmailQueueError::Storage {
-            source: anyhow::anyhow!("invalid nack token length"),
-        })?;
+    fn nack(
+        &self,
+        token: AckToken,
+        delay: Duration,
+    ) -> impl Future<Output = Result<(), EmailQueueError>> {
+        let Ok(bytes) = <[u8; 8]>::try_from(token.0) else {
+            return std::future::ready(Err(EmailQueueError::Storage {
+                source: anyhow::anyhow!("invalid nack token length"),
+            }));
+        };
         let token_id = u64::from_le_bytes(bytes);
         let entry = self.pending.lock().unwrap().remove(&token_id);
         if let Some((id, envelope, attempt, trace)) = entry {
             self.send_later((id, envelope, attempt + 1, trace), delay);
         }
-        Ok(())
+        std::future::ready(Ok(()))
     }
 
-    async fn in_progress(&self, _token: &AckToken) -> Result<(), EmailQueueError> {
-        Ok(())
+    fn in_progress(&self, _token: &AckToken) -> impl Future<Output = Result<(), EmailQueueError>> {
+        std::future::ready(Ok(()))
     }
 
     fn renew_interval(&self) -> Duration {
