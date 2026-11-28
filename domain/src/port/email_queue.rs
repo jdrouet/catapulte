@@ -96,7 +96,7 @@ pub enum EnqueueOutcome {
 /// Result of a successful [`EmailQueue::finish`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinishOutcome {
-    /// The queue stored the terminal event in the same commit as the removal.
+    /// The queue stored the terminal event, in the same commit as the removal or before it.
     Recorded,
     /// The item was only removed; the caller must publish the event to every sink.
     Acked,
@@ -136,8 +136,8 @@ pub trait EmailQueue: Send + Sync + 'static {
         token: AckToken,
     ) -> impl std::future::Future<Output = Result<(), EmailQueueError>> + Send;
 
-    /// Removes the item after its terminal event. A queue that can store the event in the
-    /// same commit does so and returns [`FinishOutcome::Recorded`]; the default only acks.
+    /// Removes the item after its terminal event. A queue that can store the event itself
+    /// does so and returns [`FinishOutcome::Recorded`]; the default only acks.
     ///
     /// # Errors
     ///
