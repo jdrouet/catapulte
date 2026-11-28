@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
+  # Called by release.yml, whose GITHUB_TOKEN-created tag cannot trigger this.
+  workflow_call:
+    inputs:
+      version:
+        description: "Release version (X.Y.Z) used for the image tags."
+        type: string
+        required: true
+      ref:
+        description: "Commit to build."
+        type: string
+        required: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -36,6 +47,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Compute platform pair
         run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
@@ -109,10 +122,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=long
+            type=ref,event=branch,enable=${{ inputs.version == '' }}
+            type=semver,pattern={{version}},value=${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+            type=sha,format=long,enable=${{ inputs.version == '' }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3

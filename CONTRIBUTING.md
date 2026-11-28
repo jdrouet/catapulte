@@ -39,3 +39,17 @@ operator break.
 
 When a change is breaking, explain the migration in a `BREAKING CHANGE:` footer
 so it lands in the changelog and release notes.
+
+## Releasing
+
+Run the `release` workflow on `main` (Actions → release → Run workflow). It:
+
+1. computes the next version with `git-cliff` and updates `Cargo.toml`,
+   `Cargo.lock` and `CHANGELOG.md`;
+2. opens a `chore(release): vX.Y.Z` PR, runs the required checks on it and
+   enables squash auto-merge;
+3. once the PR is merged, tags the merge commit on `main`, creates the GitHub
+   release and publishes `ghcr.io/jdrouet/catapulte:X.Y.Z` and `:X.Y`.
+
+No manual step is needed. If the PR's checks fail, the run times out and no tag
+is created; fix the problem on `main` and run the workflow again.

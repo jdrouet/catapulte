@@ -3,8 +3,8 @@ name: release
 # Cut a release of the catapulte binary. The next version is derived from the
 # conventional commits since the last `vX.Y.Z` tag (see cliff.toml + CONTRIBUTING.md):
 # breaking -> major, feat -> minor, everything else -> patch. Nothing is published
-# to crates.io; the release is a git tag + GitHub release, and the Docker image is
-# built by docker.yml from the tag.
+# to crates.io; the release commit lands on main through a release PR, then the
+# tag, GitHub release and Docker image are made from the merged commit.
 on:
   workflow_dispatch:
     inputs:
@@ -15,6 +15,8 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
+  actions: write
 
 concurrency:
   group: release
@@ -22,7 +24,16 @@ concurrency:
 
 jobs:
   release:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Covers waiting for the release PR's required checks.
+    timeout-minutes: 120
+    outputs:
+      release: ${{ steps.ver.outputs.release }}
+      version: ${{ steps.ver.outputs.version }}
+      sha: ${{ steps.merge.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -63,21 +74,60 @@ jobs:
           git cliff --tag "${{ steps.ver.outputs.tag }}" -o CHANGELOG.md
           git cliff --unreleased --tag "${{ steps.ver.outputs.tag }}" --strip header -o RELEASE_NOTES.md
 
-      - name: Commit, tag, push
-        if: steps.ver.outputs.release == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock CHANGELOG.md
-          git commit -m "chore(release): ${{ steps.ver.outputs.tag }}"
-          git tag "${{ steps.ver.outputs.tag }}"
-          git push origin HEAD "${{ steps.ver.outputs.tag }}"
-
-      - name: Create GitHub release
+      # main requires signed commits and passing checks, so the release commit
+      # lands through a squash-merged PR (GitHub signs the squash commit).
+      - name: Open release PR
         if: steps.ver.outputs.release == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          BRANCH="release/$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -s -m "chore(release): $TAG"
+          git push --force origin "$BRANCH"
+          gh pr view "$BRANCH" --json number >/dev/null 2>&1 \
+            || gh pr create --base main --head "$BRANCH" --title "chore(release): $TAG" --body-file RELEASE_NOTES.md
+          # Events from GITHUB_TOKEN start no workflow runs except workflow_dispatch.
+          gh workflow run pre-pr.yml --ref "$BRANCH"
+          gh pr merge "$BRANCH" --auto --squash
+
+      - name: Wait for the release PR to merge
+        id: merge
+        if: steps.ver.outputs.release == 'true'
+        env:
+          BRANCH: release/${{ steps.ver.outputs.tag }}
+        run: |
+          while :; do
+            STATE="$(gh pr view "$BRANCH" --json state --jq .state)"
+            case "$STATE" in
+              MERGED) break ;;
+              CLOSED) echo "::error::release PR closed without merging"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "sha=$(gh pr view "$BRANCH" --json mergeCommit --jq .mergeCommit.oid)" >> "$GITHUB_OUTPUT"
+          git push origin --delete "$BRANCH" || true
+
+      # The tag is created only now, on the squash commit that is on main.
+      - name: Create GitHub release
+        if: steps.ver.outputs.release == 'true'
         run: |
           gh release create "${{ steps.ver.outputs.tag }}" \
+            --target "${{ steps.merge.outputs.sha }}" \
             --title "${{ steps.ver.outputs.tag }}" \
             --notes-file RELEASE_NOTES.md
+
+  # A tag created with GITHUB_TOKEN does not trigger docker.yml, so call it.
+  docker:
+    needs: release
+    if: needs.release.outputs.release == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+      ref: ${{ needs.release.outputs.sha }}
