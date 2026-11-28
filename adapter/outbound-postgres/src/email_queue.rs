@@ -48,7 +48,7 @@ pub(crate) fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Enve
     let sender = row.try_get("sender").context("reading sender")?;
     let extras: Option<sqlx::types::Json<EnvelopeExtrasDto>> =
         row.try_get("extras").context("reading extras")?;
-    let extras = extras.map(|j| j.0).unwrap_or_default();
+    let extras = extras.map_or_default(|j| j.0);
     let tags: Option<sqlx::types::Json<Vec<String>>> =
         row.try_get("tags").context("reading tags")?;
     let owner: String = row.try_get("api_key").context("reading api_key")?;
@@ -70,7 +70,7 @@ pub(crate) fn parse_envelope(row: &sqlx::postgres::PgRow) -> anyhow::Result<Enve
             .map(catapulte_domain::entity::envelope::Unsubscribe::try_from)
             .transpose()
             .context("parsing unsubscribe")?,
-        tags: tags.map(|j| j.0).unwrap_or_default(),
+        tags: tags.map_or_default(|j| j.0),
         metadata: extras.metadata,
         send_at_ms,
     })
@@ -122,9 +122,7 @@ fn deserialize_trace_context(raw: Option<String>) -> TraceCarrier {
     let Some(json) = raw else {
         return TraceCarrier::default();
     };
-    serde_json::from_str::<Vec<(String, String)>>(&json)
-        .map(TraceCarrier::new)
-        .unwrap_or_default()
+    serde_json::from_str::<Vec<(String, String)>>(&json).map_or_default(TraceCarrier::new)
 }
 
 impl PostgresAdapter {

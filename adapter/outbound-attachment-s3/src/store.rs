@@ -71,11 +71,10 @@ impl S3AttachmentStoreConfig {
     ///
     /// Returns an error when the S3 bucket handle cannot be constructed (invalid
     /// endpoint, region, or credentials).
-    // Keep `async` so callers can `.await` this just like the fs adapter's
+    // Returns a future so callers can `.await` this just like the fs adapter's
     // `build`, even though no I/O is needed here.
-    #[allow(clippy::unused_async)]
-    pub async fn build(self) -> anyhow::Result<S3AttachmentStore> {
-        S3AttachmentStore::from_config(self)
+    pub fn build(self) -> impl Future<Output = anyhow::Result<S3AttachmentStore>> {
+        std::future::ready(S3AttachmentStore::from_config(self))
     }
 }
 

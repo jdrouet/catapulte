@@ -66,25 +66,31 @@ pub trait SuppressionRepository: Send + Sync + 'static {
 pub struct NoopSuppressionList;
 
 impl SuppressionRepository for NoopSuppressionList {
-    async fn list(
+    fn list(
         &self,
         _params: ListSuppressionsParams,
-    ) -> Result<Vec<Suppression>, SuppressionRepositoryError> {
-        Ok(vec![])
+    ) -> impl Future<Output = Result<Vec<Suppression>, SuppressionRepositoryError>> {
+        std::future::ready(Ok(vec![]))
     }
 
-    async fn add(&self, _entries: &[Suppression]) -> Result<(), SuppressionRepositoryError> {
-        Ok(())
+    fn add(
+        &self,
+        _entries: &[Suppression],
+    ) -> impl Future<Output = Result<(), SuppressionRepositoryError>> {
+        std::future::ready(Ok(()))
     }
 
-    async fn delete(&self, _address: &str) -> Result<bool, SuppressionRepositoryError> {
-        Ok(false)
+    fn delete(
+        &self,
+        _address: &str,
+    ) -> impl Future<Output = Result<bool, SuppressionRepositoryError>> {
+        std::future::ready(Ok(false))
     }
 
-    async fn find_suppressed(
+    fn find_suppressed(
         &self,
         _addresses: &[String],
-    ) -> Result<HashSet<String>, SuppressionRepositoryError> {
-        Ok(HashSet::new())
+    ) -> impl Future<Output = Result<HashSet<String>, SuppressionRepositoryError>> {
+        std::future::ready(Ok(HashSet::new()))
     }
 }

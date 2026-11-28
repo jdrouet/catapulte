@@ -48,8 +48,11 @@ impl EventPublisher for PostgresAdapter {
             .map_err(|source| EventPublisherError::Publish { source })
     }
 
-    async fn publish_recorded(&self, _event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-        Ok(())
+    fn publish_recorded(
+        &self,
+        _event: &LifecycleEvent,
+    ) -> impl Future<Output = Result<(), EventPublisherError>> {
+        std::future::ready(Ok(()))
     }
 }
 

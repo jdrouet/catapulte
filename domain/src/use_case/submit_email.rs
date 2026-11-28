@@ -812,51 +812,54 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailRepository for FakeRepository {
-        async fn save(
+        fn save(
             &self,
             id: EmailId,
             envelope: &Envelope,
-        ) -> Result<SaveResult, EmailRepositoryError> {
+        ) -> impl Future<Output = Result<SaveResult, EmailRepositoryError>> {
             self.saved
                 .lock()
                 .unwrap()
                 .push((id, envelope.sender.clone()));
-            Ok(SaveResult::Created(id))
+            std::future::ready(Ok(SaveResult::Created(id)))
         }
 
-        async fn list_emails(
+        fn list_emails(
             &self,
             _params: crate::port::email_repository::ListEmailsParams,
-        ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
-            Ok(vec![])
+        ) -> impl Future<
+            Output = Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError>,
+        > {
+            std::future::ready(Ok(vec![]))
         }
 
-        async fn set_attachments(
+        fn set_attachments(
             &self,
             _id: EmailId,
             _attachments: &[AttachmentRef],
-        ) -> Result<(), EmailRepositoryError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), EmailRepositoryError>> {
+            std::future::ready(Ok(()))
         }
 
-        async fn delete(&self, id: EmailId) -> Result<(), EmailRepositoryError> {
+        fn delete(&self, id: EmailId) -> impl Future<Output = Result<(), EmailRepositoryError>> {
             self.deleted.lock().unwrap().push(id);
-            Ok(())
+            std::future::ready(Ok(()))
         }
 
-        async fn set_enqueue_state(
+        fn set_enqueue_state(
             &self,
             _id: EmailId,
             _owner: &str,
             _state: EnqueueState,
-        ) -> Result<bool, EmailRepositoryError> {
-            Ok(true)
+        ) -> impl Future<Output = Result<bool, EmailRepositoryError>> {
+            std::future::ready(Ok(true))
         }
 
-        async fn list_all_attachment_blobs(
+        fn list_all_attachment_blobs(
             &self,
-        ) -> Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError> {
-            Ok(vec![])
+        ) -> impl Future<Output = Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError>>
+        {
+            std::future::ready(Ok(vec![]))
         }
     }
 
@@ -864,52 +867,55 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailRepository for FailingRepository {
-        async fn save(
+        fn save(
             &self,
             _id: EmailId,
             _envelope: &Envelope,
-        ) -> Result<SaveResult, EmailRepositoryError> {
-            Err(EmailRepositoryError::Storage {
+        ) -> impl Future<Output = Result<SaveResult, EmailRepositoryError>> {
+            std::future::ready(Err(EmailRepositoryError::Storage {
                 source: anyhow::anyhow!("storage down"),
-            })
+            }))
         }
 
-        async fn list_emails(
+        fn list_emails(
             &self,
             _params: crate::port::email_repository::ListEmailsParams,
-        ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
-            Ok(vec![])
+        ) -> impl Future<
+            Output = Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError>,
+        > {
+            std::future::ready(Ok(vec![]))
         }
 
-        async fn set_attachments(
+        fn set_attachments(
             &self,
             _id: EmailId,
             _attachments: &[AttachmentRef],
-        ) -> Result<(), EmailRepositoryError> {
-            Err(EmailRepositoryError::Storage {
+        ) -> impl Future<Output = Result<(), EmailRepositoryError>> {
+            std::future::ready(Err(EmailRepositoryError::Storage {
                 source: anyhow::anyhow!("storage down"),
-            })
+            }))
         }
 
-        async fn delete(&self, _id: EmailId) -> Result<(), EmailRepositoryError> {
-            Err(EmailRepositoryError::Storage {
+        fn delete(&self, _id: EmailId) -> impl Future<Output = Result<(), EmailRepositoryError>> {
+            std::future::ready(Err(EmailRepositoryError::Storage {
                 source: anyhow::anyhow!("storage down"),
-            })
+            }))
         }
 
-        async fn set_enqueue_state(
+        fn set_enqueue_state(
             &self,
             _id: EmailId,
             _owner: &str,
             _state: EnqueueState,
-        ) -> Result<bool, EmailRepositoryError> {
-            Ok(true)
+        ) -> impl Future<Output = Result<bool, EmailRepositoryError>> {
+            std::future::ready(Ok(true))
         }
 
-        async fn list_all_attachment_blobs(
+        fn list_all_attachment_blobs(
             &self,
-        ) -> Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError> {
-            Ok(vec![])
+        ) -> impl Future<Output = Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError>>
+        {
+            std::future::ready(Ok(vec![]))
         }
     }
 
@@ -919,50 +925,53 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailRepository for DuplicatingRepository {
-        async fn save(
+        fn save(
             &self,
             _id: EmailId,
             _envelope: &Envelope,
-        ) -> Result<SaveResult, EmailRepositoryError> {
-            Ok(SaveResult::Duplicate {
+        ) -> impl Future<Output = Result<SaveResult, EmailRepositoryError>> {
+            std::future::ready(Ok(SaveResult::Duplicate {
                 id: self.existing_id,
                 state: DuplicateState::Complete,
                 recovery: None,
-            })
+            }))
         }
 
-        async fn list_emails(
+        fn list_emails(
             &self,
             _params: crate::port::email_repository::ListEmailsParams,
-        ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
-            Ok(vec![])
+        ) -> impl Future<
+            Output = Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError>,
+        > {
+            std::future::ready(Ok(vec![]))
         }
 
-        async fn set_attachments(
+        fn set_attachments(
             &self,
             _id: EmailId,
             _attachments: &[AttachmentRef],
-        ) -> Result<(), EmailRepositoryError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), EmailRepositoryError>> {
+            std::future::ready(Ok(()))
         }
 
-        async fn delete(&self, _id: EmailId) -> Result<(), EmailRepositoryError> {
-            Ok(())
+        fn delete(&self, _id: EmailId) -> impl Future<Output = Result<(), EmailRepositoryError>> {
+            std::future::ready(Ok(()))
         }
 
-        async fn set_enqueue_state(
+        fn set_enqueue_state(
             &self,
             _id: EmailId,
             _owner: &str,
             _state: EnqueueState,
-        ) -> Result<bool, EmailRepositoryError> {
-            Ok(true)
+        ) -> impl Future<Output = Result<bool, EmailRepositoryError>> {
+            std::future::ready(Ok(true))
         }
 
-        async fn list_all_attachment_blobs(
+        fn list_all_attachment_blobs(
             &self,
-        ) -> Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError> {
-            Ok(vec![])
+        ) -> impl Future<Output = Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError>>
+        {
+            std::future::ready(Ok(vec![]))
         }
     }
 
@@ -992,13 +1001,13 @@ mod tests {
             unimplemented!()
         }
 
-        async fn enqueue(
+        fn enqueue(
             &self,
             id: EmailId,
             _envelope: &Envelope,
-        ) -> Result<EnqueueOutcome, EmailQueueError> {
+        ) -> impl Future<Output = Result<EnqueueOutcome, EmailQueueError>> {
             self.enqueued.lock().unwrap().push(id);
-            Ok(EnqueueOutcome::Inserted)
+            std::future::ready(Ok(EnqueueOutcome::Inserted))
         }
 
         async fn dequeue(
@@ -1007,19 +1016,19 @@ mod tests {
             std::future::pending().await
         }
 
-        async fn ack(
+        fn ack(
             &self,
             _token: crate::port::email_queue::AckToken,
-        ) -> Result<(), EmailQueueError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
 
-        async fn nack(
+        fn nack(
             &self,
             _token: crate::port::email_queue::AckToken,
             _delay: std::time::Duration,
-        ) -> Result<(), EmailQueueError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -1038,14 +1047,14 @@ mod tests {
             unimplemented!()
         }
 
-        async fn enqueue(
+        fn enqueue(
             &self,
             _id: EmailId,
             _envelope: &Envelope,
-        ) -> Result<EnqueueOutcome, EmailQueueError> {
-            Err(EmailQueueError::Storage {
+        ) -> impl Future<Output = Result<EnqueueOutcome, EmailQueueError>> {
+            std::future::ready(Err(EmailQueueError::Storage {
                 source: anyhow::anyhow!("queue down"),
-            })
+            }))
         }
 
         async fn dequeue(
@@ -1054,19 +1063,19 @@ mod tests {
             std::future::pending().await
         }
 
-        async fn ack(
+        fn ack(
             &self,
             _token: crate::port::email_queue::AckToken,
-        ) -> Result<(), EmailQueueError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
 
-        async fn nack(
+        fn nack(
             &self,
             _token: crate::port::email_queue::AckToken,
             _delay: std::time::Duration,
-        ) -> Result<(), EmailQueueError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -1085,9 +1094,12 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EventPublisher for FakeEventPublisher {
-        async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+        fn publish(
+            &self,
+            event: &LifecycleEvent,
+        ) -> impl Future<Output = Result<(), EventPublisherError>> {
             self.published.lock().unwrap().push(event.clone());
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
@@ -1095,10 +1107,13 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EventPublisher for FailingEventPublisher {
-        async fn publish(&self, _event: &LifecycleEvent) -> Result<(), EventPublisherError> {
-            Err(EventPublisherError::Publish {
+        fn publish(
+            &self,
+            _event: &LifecycleEvent,
+        ) -> impl Future<Output = Result<(), EventPublisherError>> {
+            std::future::ready(Err(EventPublisherError::Publish {
                 source: anyhow::anyhow!("publish failed"),
-            })
+            }))
         }
     }
 
@@ -1148,19 +1163,21 @@ mod tests {
             })
         }
 
-        async fn get(
+        fn get(
             &self,
             _blob: &crate::entity::attachment::BlobRef,
-        ) -> Result<AttachmentReader, AttachmentStoreError> {
-            Ok(Box::pin(std::io::Cursor::new(b"fake content".to_vec())))
+        ) -> impl Future<Output = Result<AttachmentReader, AttachmentStoreError>> {
+            std::future::ready(Ok::<AttachmentReader, _>(Box::pin(std::io::Cursor::new(
+                b"fake content".to_vec(),
+            ))))
         }
 
-        async fn delete(
+        fn delete(
             &self,
             _blob: &crate::entity::attachment::BlobRef,
-        ) -> Result<(), AttachmentStoreError> {
+        ) -> impl Future<Output = Result<(), AttachmentStoreError>> {
             *self.delete_count.lock().unwrap() += 1;
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
@@ -1168,24 +1185,27 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl AttachmentStore for FailingAttachmentStore {
-        async fn put(&self, _reader: AttachmentReader) -> Result<PutResult, AttachmentStoreError> {
-            Err(AttachmentStoreError::Io {
+        fn put(
+            &self,
+            _reader: AttachmentReader,
+        ) -> impl Future<Output = Result<PutResult, AttachmentStoreError>> {
+            std::future::ready(Err(AttachmentStoreError::Io {
                 source: anyhow::anyhow!("store down"),
-            })
+            }))
         }
 
-        async fn get(
+        fn get(
             &self,
             _blob: &crate::entity::attachment::BlobRef,
-        ) -> Result<AttachmentReader, AttachmentStoreError> {
-            Err(AttachmentStoreError::NotFound)
+        ) -> impl Future<Output = Result<AttachmentReader, AttachmentStoreError>> {
+            std::future::ready(Err(AttachmentStoreError::NotFound))
         }
 
-        async fn delete(
+        fn delete(
             &self,
             _blob: &crate::entity::attachment::BlobRef,
-        ) -> Result<(), AttachmentStoreError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), AttachmentStoreError>> {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -1193,10 +1213,13 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl AttachmentFetcher for FakeFetcher {
-        async fn fetch(&self, _url: &url::Url) -> Result<AttachmentReader, AttachmentFetchError> {
-            Ok(Box::pin(std::io::Cursor::new(
+        fn fetch(
+            &self,
+            _url: &url::Url,
+        ) -> impl Future<Output = Result<AttachmentReader, AttachmentFetchError>> {
+            std::future::ready(Ok::<AttachmentReader, _>(Box::pin(std::io::Cursor::new(
                 b"fake remote bytes".to_vec(),
-            )))
+            ))))
         }
     }
 
@@ -1204,10 +1227,13 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl AttachmentFetcher for FailingFetcher {
-        async fn fetch(&self, _url: &url::Url) -> Result<AttachmentReader, AttachmentFetchError> {
-            Err(AttachmentFetchError::Fetch {
+        fn fetch(
+            &self,
+            _url: &url::Url,
+        ) -> impl Future<Output = Result<AttachmentReader, AttachmentFetchError>> {
+            std::future::ready(Err(AttachmentFetchError::Fetch {
                 source: anyhow::anyhow!("fetch failed"),
-            })
+            }))
         }
     }
 
@@ -1578,18 +1604,18 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailRepository for KeyedRepository {
-        async fn save(
+        fn save(
             &self,
             id: EmailId,
             envelope: &Envelope,
-        ) -> Result<SaveResult, EmailRepositoryError> {
+        ) -> impl Future<Output = Result<SaveResult, EmailRepositoryError>> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(key) = &envelope.idempotency_key
                 && let Some(row) = rows
                     .iter()
                     .find(|r| r.key.as_ref() == Some(key) && r.envelope.owner == envelope.owner)
             {
-                return Ok(SaveResult::Duplicate {
+                return std::future::ready(Ok(SaveResult::Duplicate {
                     id: row.id,
                     state: if row.state == RowState::Reserved {
                         DuplicateState::Reserved
@@ -1597,7 +1623,7 @@ mod tests {
                         DuplicateState::Complete
                     },
                     recovery: (row.state == RowState::Publishable).then(|| row.envelope.clone()),
-                });
+                }));
             }
             rows.push(KeyedRow {
                 id,
@@ -1605,79 +1631,82 @@ mod tests {
                 state: RowState::Reserved,
                 envelope: envelope.clone(),
             });
-            Ok(SaveResult::Created(id))
+            std::future::ready(Ok(SaveResult::Created(id)))
         }
 
-        async fn list_emails(
+        fn list_emails(
             &self,
             _params: crate::port::email_repository::ListEmailsParams,
-        ) -> Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError> {
-            Ok(vec![])
+        ) -> impl Future<
+            Output = Result<Vec<crate::port::email_repository::EmailRecord>, EmailRepositoryError>,
+        > {
+            std::future::ready(Ok(vec![]))
         }
 
-        async fn set_attachments(
+        fn set_attachments(
             &self,
             id: EmailId,
             attachments: &[AttachmentRef],
-        ) -> Result<(), EmailRepositoryError> {
+        ) -> impl Future<Output = Result<(), EmailRepositoryError>> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(row) = rows.iter_mut().find(|r| r.id == id) {
                 row.envelope.attachments = attachments.to_vec();
             }
-            Ok(())
+            std::future::ready(Ok(()))
         }
 
-        async fn set_enqueue_state(
+        fn set_enqueue_state(
             &self,
             id: EmailId,
             owner: &str,
             state: EnqueueState,
-        ) -> Result<bool, EmailRepositoryError> {
+        ) -> impl Future<Output = Result<bool, EmailRepositoryError>> {
             use std::sync::atomic::Ordering::SeqCst;
             let (fail, new_state) = match state {
                 EnqueueState::Publishable => (&self.fail_publishable, RowState::Publishable),
                 EnqueueState::Enqueued => (&self.fail_enqueued, RowState::Enqueued),
             };
             if fail.load(SeqCst) {
-                return Err(EmailRepositoryError::Storage {
+                return std::future::ready(Err(EmailRepositoryError::Storage {
                     source: anyhow::anyhow!("state write failed"),
-                });
+                }));
             }
             let mut rows = self.rows.lock().unwrap();
             let Some(row) = rows
                 .iter_mut()
                 .find(|r| r.id == id && r.envelope.owner == owner)
             else {
-                return Err(EmailRepositoryError::Storage {
+                return std::future::ready(Err(EmailRepositoryError::Storage {
                     source: anyhow::anyhow!("email not found"),
-                });
+                }));
             };
             let was_enqueued = row.state == RowState::Enqueued;
             row.state = new_state;
             if state == EnqueueState::Publishable && self.fail_publishable_after_commit.load(SeqCst)
             {
-                return Err(EmailRepositoryError::Storage {
+                return std::future::ready(Err(EmailRepositoryError::Storage {
                     source: anyhow::anyhow!("state write failed after commit"),
-                });
+                }));
             }
-            Ok(state == EnqueueState::Publishable
-                || (!was_enqueued && !self.worker_evidence.load(SeqCst)))
+            std::future::ready(Ok(state == EnqueueState::Publishable
+                || (!was_enqueued && !self.worker_evidence.load(SeqCst))))
         }
 
-        async fn delete(&self, id: EmailId) -> Result<(), EmailRepositoryError> {
+        fn delete(&self, id: EmailId) -> impl Future<Output = Result<(), EmailRepositoryError>> {
             if self.fail_delete.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(EmailRepositoryError::Storage {
+                return std::future::ready(Err(EmailRepositoryError::Storage {
                     source: anyhow::anyhow!("delete failed"),
-                });
+                }));
             }
             self.rows.lock().unwrap().retain(|r| r.id != id);
-            Ok(())
+            std::future::ready(Ok(()))
         }
 
-        async fn list_all_attachment_blobs(
+        fn list_all_attachment_blobs(
             &self,
-        ) -> Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError> {
-            Ok(vec![])
+        ) -> impl Future<Output = Result<Vec<crate::entity::attachment::BlobRef>, EmailRepositoryError>>
+        {
+            std::future::ready(Ok(vec![]))
         }
     }
 
@@ -1721,16 +1750,16 @@ mod tests {
             unimplemented!()
         }
 
-        async fn enqueue(
+        fn enqueue(
             &self,
             id: EmailId,
             envelope: &Envelope,
-        ) -> Result<EnqueueOutcome, EmailQueueError> {
+        ) -> impl Future<Output = Result<EnqueueOutcome, EmailQueueError>> {
             self.calls
                 .lock()
                 .unwrap()
                 .push((id, envelope.attachments.clone()));
-            match self.script.lock().unwrap().pop_front() {
+            std::future::ready(match self.script.lock().unwrap().pop_front() {
                 None if self
                     .already_enqueued
                     .load(std::sync::atomic::Ordering::SeqCst) =>
@@ -1754,7 +1783,7 @@ mod tests {
                 Some(false) => Err(EmailQueueError::Storage {
                     source: anyhow::anyhow!("rejected"),
                 }),
-            }
+            })
         }
 
         async fn dequeue(
@@ -1763,19 +1792,19 @@ mod tests {
             std::future::pending().await
         }
 
-        async fn ack(
+        fn ack(
             &self,
             _token: crate::port::email_queue::AckToken,
-        ) -> Result<(), EmailQueueError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
 
-        async fn nack(
+        fn nack(
             &self,
             _token: crate::port::email_queue::AckToken,
             _delay: std::time::Duration,
-        ) -> Result<(), EmailQueueError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), EmailQueueError>> {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -2219,43 +2248,51 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl crate::port::suppression_repository::SuppressionRepository for FakeSuppressions {
-        async fn list(
+        fn list(
             &self,
             _params: crate::port::suppression_repository::ListSuppressionsParams,
-        ) -> Result<
-            Vec<crate::entity::suppression::Suppression>,
-            crate::port::suppression_repository::SuppressionRepositoryError,
+        ) -> impl Future<
+            Output = Result<
+                Vec<crate::entity::suppression::Suppression>,
+                crate::port::suppression_repository::SuppressionRepositoryError,
+            >,
         > {
-            Ok(vec![])
+            std::future::ready(Ok(vec![]))
         }
 
-        async fn add(
+        fn add(
             &self,
             _entries: &[crate::entity::suppression::Suppression],
-        ) -> Result<(), crate::port::suppression_repository::SuppressionRepositoryError> {
-            Ok(())
+        ) -> impl Future<
+            Output = Result<(), crate::port::suppression_repository::SuppressionRepositoryError>,
+        > {
+            std::future::ready(Ok(()))
         }
 
-        async fn delete(
+        fn delete(
             &self,
             address: &str,
-        ) -> Result<bool, crate::port::suppression_repository::SuppressionRepositoryError> {
-            Ok(self.0.lock().unwrap().remove(address))
+        ) -> impl Future<
+            Output = Result<bool, crate::port::suppression_repository::SuppressionRepositoryError>,
+        > {
+            std::future::ready(Ok(self.0.lock().unwrap().remove(address)))
         }
 
-        async fn find_suppressed(
+        fn find_suppressed(
             &self,
             addresses: &[String],
-        ) -> Result<
-            std::collections::HashSet<String>,
-            crate::port::suppression_repository::SuppressionRepositoryError,
+        ) -> impl Future<
+            Output = Result<
+                std::collections::HashSet<String>,
+                crate::port::suppression_repository::SuppressionRepositoryError,
+            >,
         > {
             let set = self.0.lock().unwrap();
-            Ok(addresses
+            std::future::ready(Ok(addresses
                 .iter()
                 .filter(|a| set.contains(*a))
                 .cloned()
-                .collect())
+                .collect()))
         }
     }
 
@@ -2730,18 +2767,20 @@ mod tests {
             })
         }
 
-        async fn get(
+        fn get(
             &self,
             _blob: &crate::entity::attachment::BlobRef,
-        ) -> Result<AttachmentReader, AttachmentStoreError> {
-            Ok(Box::pin(std::io::Cursor::new(b"fake content".to_vec())))
+        ) -> impl Future<Output = Result<AttachmentReader, AttachmentStoreError>> {
+            std::future::ready(Ok::<AttachmentReader, _>(Box::pin(std::io::Cursor::new(
+                b"fake content".to_vec(),
+            ))))
         }
 
-        async fn delete(
+        fn delete(
             &self,
             _blob: &crate::entity::attachment::BlobRef,
-        ) -> Result<(), AttachmentStoreError> {
-            Ok(())
+        ) -> impl Future<Output = Result<(), AttachmentStoreError>> {
+            std::future::ready(Ok(()))
         }
     }
 

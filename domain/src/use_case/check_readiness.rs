@@ -43,18 +43,18 @@ mod tests {
     struct AlwaysOk;
 
     impl HealthCheck for AlwaysOk {
-        async fn check(&self) -> Result<(), HealthCheckError> {
-            Ok(())
+        fn check(&self) -> impl Future<Output = Result<(), HealthCheckError>> {
+            std::future::ready(Ok(()))
         }
     }
 
     struct AlwaysFail;
 
     impl HealthCheck for AlwaysFail {
-        async fn check(&self) -> Result<(), HealthCheckError> {
-            Err(HealthCheckError::Unavailable {
+        fn check(&self) -> impl Future<Output = Result<(), HealthCheckError>> {
+            std::future::ready(Err(HealthCheckError::Unavailable {
                 source: anyhow::anyhow!("boom"),
-            })
+            }))
         }
     }
 

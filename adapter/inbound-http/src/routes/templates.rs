@@ -221,21 +221,29 @@ pub(crate) struct NoopManageTemplates;
 
 #[cfg(test)]
 impl ManageTemplatesUseCase for NoopManageTemplates {
-    async fn list(
+    fn list(
         &self,
-    ) -> Result<
-        Vec<StoredTemplate>,
-        catapulte_domain::use_case::manage_templates::ManageTemplatesError,
+    ) -> impl Future<
+        Output = Result<
+            Vec<StoredTemplate>,
+            catapulte_domain::use_case::manage_templates::ManageTemplatesError,
+        >,
     > {
-        Ok(vec![])
+        std::future::ready(Ok(vec![]))
     }
 
-    async fn get(
+    fn get(
         &self,
         name: String,
-    ) -> Result<StoredTemplate, catapulte_domain::use_case::manage_templates::ManageTemplatesError>
-    {
-        Err(catapulte_domain::use_case::manage_templates::ManageTemplatesError::NotFound { name })
+    ) -> impl Future<
+        Output = Result<
+            StoredTemplate,
+            catapulte_domain::use_case::manage_templates::ManageTemplatesError,
+        >,
+    > {
+        std::future::ready(Err(
+            catapulte_domain::use_case::manage_templates::ManageTemplatesError::NotFound { name },
+        ))
     }
 
     async fn put(
@@ -248,22 +256,30 @@ impl ManageTemplatesUseCase for NoopManageTemplates {
         unimplemented!()
     }
 
-    async fn delete(
+    fn delete(
         &self,
         name: String,
-    ) -> Result<(), catapulte_domain::use_case::manage_templates::ManageTemplatesError> {
-        Err(catapulte_domain::use_case::manage_templates::ManageTemplatesError::NotFound { name })
+    ) -> impl Future<
+        Output = Result<(), catapulte_domain::use_case::manage_templates::ManageTemplatesError>,
+    > {
+        std::future::ready(Err(
+            catapulte_domain::use_case::manage_templates::ManageTemplatesError::NotFound { name },
+        ))
     }
 
-    async fn preview(
+    fn preview(
         &self,
         name: String,
         _: Variables,
-    ) -> Result<
-        catapulte_domain::use_case::manage_templates::TemplatePreview,
-        catapulte_domain::use_case::manage_templates::ManageTemplatesError,
+    ) -> impl Future<
+        Output = Result<
+            catapulte_domain::use_case::manage_templates::TemplatePreview,
+            catapulte_domain::use_case::manage_templates::ManageTemplatesError,
+        >,
     > {
-        Err(catapulte_domain::use_case::manage_templates::ManageTemplatesError::NotFound { name })
+        std::future::ready(Err(
+            catapulte_domain::use_case::manage_templates::ManageTemplatesError::NotFound { name },
+        ))
     }
 }
 

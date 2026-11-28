@@ -347,7 +347,7 @@ fn check_header_lines(
         let name = HeaderName::new_from_ascii(name.clone()).map_err(|_| unbuildable())?;
         builder = builder.raw_header(HeaderValue::new(name, value.clone()));
     }
-    for (name, value) in unsubscribe.map(Unsubscribe::headers).unwrap_or_default() {
+    for (name, value) in unsubscribe.map_or_default(Unsubscribe::headers) {
         let name = HeaderName::new_from_ascii(name.to_owned()).map_err(|_| unbuildable())?;
         builder = builder.raw_header(HeaderValue::new(name, value));
     }

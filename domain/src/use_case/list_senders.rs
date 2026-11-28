@@ -151,23 +151,23 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl SenderUsage for FakeSenderUsage {
-        async fn get_stats(
+        fn get_stats(
             &self,
             names: &[SenderName],
             since_ms: i64,
-        ) -> Result<Vec<SenderStats>, SenderUsageError> {
+        ) -> impl Future<Output = Result<Vec<SenderStats>, SenderUsageError>> {
             *self.call_count.lock().unwrap() += 1;
             self.calls.lock().unwrap().push((names.to_vec(), since_ms));
             if self.fail {
-                return Err(SenderUsageError::Storage {
+                return std::future::ready(Err(SenderUsageError::Storage {
                     source: anyhow::anyhow!("storage error"),
-                });
+                }));
             }
             let results = names
                 .iter()
                 .filter_map(|n| self.data.get(n.as_str()).cloned())
                 .collect();
-            Ok(results)
+            std::future::ready(Ok(results))
         }
     }
 

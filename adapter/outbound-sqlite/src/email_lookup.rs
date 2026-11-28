@@ -33,8 +33,8 @@ impl EmailLookup for SqliteAdapter {
                     correlation_id: row
                         .try_get("correlation_id")
                         .context("reading correlation_id")?,
-                    tags: tags.map(|j| j.0).unwrap_or_default(),
-                    metadata: extras.map(|j| j.0.metadata).unwrap_or_default(),
+                    tags: tags.map_or_default(|j| j.0),
+                    metadata: extras.map_or_default(|j| j.0.metadata),
                 },
             })
         })()

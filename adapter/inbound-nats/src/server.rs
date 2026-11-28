@@ -61,8 +61,7 @@ fn header_map_to_pairs(headers: &HeaderMap) -> Vec<(String, String)> {
     let tracestate_values: Vec<String> = headers
         .iter()
         .find(|(name, _)| name.to_string().eq_ignore_ascii_case("tracestate"))
-        .map(|(_, values)| values.iter().map(|v| v.as_str().to_owned()).collect())
-        .unwrap_or_default();
+        .map_or_default(|(_, values)| values.iter().map(|v| v.as_str().to_owned()).collect());
     if !tracestate_values.is_empty() {
         pairs.push(("tracestate".to_owned(), tracestate_values.join(",")));
     }
@@ -278,11 +277,7 @@ impl InboundNatsServer {
     }
 
     async fn handle_message<S: InboundNatsState>(&self, state: &S, msg: jetstream::Message) {
-        let trace_pairs = msg
-            .headers
-            .as_ref()
-            .map(header_map_to_pairs)
-            .unwrap_or_default();
+        let trace_pairs = msg.headers.as_ref().map_or_default(header_map_to_pairs);
         let span = tracing::info_span!("inbound_nats.submit");
         catapulte_telemetry::propagation::set_span_parent(&span, &trace_pairs);
 

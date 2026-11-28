@@ -645,10 +645,7 @@ fn classify(observed: Observed) -> Result<Outcome, SandboxError> {
             Err(e) => Err(SandboxError::Infrastructure(e)),
         },
         (exit, _) => {
-            let detail = observed
-                .io_error
-                .map(|e| format!(" ({e})"))
-                .unwrap_or_default();
+            let detail = observed.io_error.map_or_default(|e| format!(" ({e})"));
             Err(infra(format!(
                 "render child ended without a valid result: exit {exit:?}{detail}"
             )))

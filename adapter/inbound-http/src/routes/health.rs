@@ -52,8 +52,8 @@ mod tests {
     }
 
     impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase for MockReadiness {
-        async fn check_readiness(&self) -> Readiness {
-            self.0
+        fn check_readiness(&self) -> impl Future<Output = Readiness> {
+            std::future::ready(self.0)
         }
     }
 

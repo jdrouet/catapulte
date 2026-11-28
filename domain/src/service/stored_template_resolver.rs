@@ -92,25 +92,27 @@ pub(crate) mod fakes {
     }
 
     impl TemplateRepository for FakeRepo {
-        async fn latest(
+        fn latest(
             &self,
             name: &str,
-        ) -> Result<Option<StoredTemplate>, TemplateRepositoryError> {
-            Ok(self.0.lock().unwrap().get(name).cloned())
+        ) -> impl Future<Output = Result<Option<StoredTemplate>, TemplateRepositoryError>> {
+            std::future::ready(Ok(self.0.lock().unwrap().get(name).cloned()))
         }
 
-        async fn list(&self) -> Result<Vec<StoredTemplate>, TemplateRepositoryError> {
+        fn list(
+            &self,
+        ) -> impl Future<Output = Result<Vec<StoredTemplate>, TemplateRepositoryError>> {
             let mut all: Vec<_> = self.0.lock().unwrap().values().cloned().collect();
             all.sort_by(|a, b| a.name.cmp(&b.name));
-            Ok(all)
+            std::future::ready(Ok(all))
         }
 
-        async fn put(
+        fn put(
             &self,
             name: &str,
             source: &str,
             created_at_ms: i64,
-        ) -> Result<StoredTemplate, TemplateRepositoryError> {
+        ) -> impl Future<Output = Result<StoredTemplate, TemplateRepositoryError>> {
             let mut map = self.0.lock().unwrap();
             let version = map.get(name).map_or(1, |t| t.version + 1);
             let template = StoredTemplate {
@@ -120,11 +122,14 @@ pub(crate) mod fakes {
                 created_at_ms,
             };
             map.insert(name.to_owned(), template.clone());
-            Ok(template)
+            std::future::ready(Ok(template))
         }
 
-        async fn delete(&self, name: &str) -> Result<bool, TemplateRepositoryError> {
-            Ok(self.0.lock().unwrap().remove(name).is_some())
+        fn delete(
+            &self,
+            name: &str,
+        ) -> impl Future<Output = Result<bool, TemplateRepositoryError>> {
+            std::future::ready(Ok(self.0.lock().unwrap().remove(name).is_some()))
         }
     }
 
@@ -132,8 +137,11 @@ pub(crate) mod fakes {
     pub(crate) struct FakeDisk(pub HashMap<String, String>);
 
     impl TemplateResolver for FakeDisk {
-        async fn resolve(&self, body: BodySource) -> Result<ResolvedBody, ResolveError> {
-            match body {
+        fn resolve(
+            &self,
+            body: BodySource,
+        ) -> impl Future<Output = Result<ResolvedBody, ResolveError>> {
+            std::future::ready(match body {
                 BodySource::Mjml(MjmlSource::Named(name)) => self
                     .0
                     .get(&name)
@@ -142,7 +150,7 @@ pub(crate) mod fakes {
                 BodySource::Plain(p) => Ok(ResolvedBody::Plain(p)),
                 BodySource::Mjml(MjmlSource::Inline(s)) => Ok(ResolvedBody::Mjml(s)),
                 BodySource::Mjml(MjmlSource::Remote(_)) => unimplemented!(),
-            }
+            })
         }
     }
 }

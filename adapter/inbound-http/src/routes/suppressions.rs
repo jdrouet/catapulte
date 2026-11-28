@@ -183,28 +183,39 @@ pub(crate) struct NoopManageSuppressions;
 #[cfg(test)]
 #[allow(async_fn_in_trait)]
 impl ManageSuppressionsUseCase for NoopManageSuppressions {
-    async fn list(
+    fn list(
         &self,
         _: ListSuppressionsParams,
-    ) -> Result<
-        Vec<Suppression>,
-        catapulte_domain::use_case::manage_suppressions::ManageSuppressionsError,
+    ) -> impl Future<
+        Output = Result<
+            Vec<Suppression>,
+            catapulte_domain::use_case::manage_suppressions::ManageSuppressionsError,
+        >,
     > {
-        Ok(vec![])
+        std::future::ready(Ok(vec![]))
     }
 
-    async fn add(
+    fn add(
         &self,
         _: Vec<Suppression>,
-    ) -> Result<(), catapulte_domain::use_case::manage_suppressions::ManageSuppressionsError> {
-        Ok(())
+    ) -> impl Future<
+        Output = Result<
+            (),
+            catapulte_domain::use_case::manage_suppressions::ManageSuppressionsError,
+        >,
+    > {
+        std::future::ready(Ok(()))
     }
 
-    async fn remove(
+    fn remove(
         &self,
         _: String,
-    ) -> Result<bool, catapulte_domain::use_case::manage_suppressions::ManageSuppressionsError>
-    {
-        Ok(false)
+    ) -> impl Future<
+        Output = Result<
+            bool,
+            catapulte_domain::use_case::manage_suppressions::ManageSuppressionsError,
+        >,
+    > {
+        std::future::ready(Ok(false))
     }
 }

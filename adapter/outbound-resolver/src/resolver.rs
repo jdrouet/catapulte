@@ -273,14 +273,13 @@ impl TemplateResolverConfig {
     {
         let allowed_domains = lookup(&format!("{prefix}_ALLOWED_DOMAINS"))
             .ok()
-            .map(|v| {
+            .map_or_default(|v| {
                 v.split(',')
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned)
                     .collect()
-            })
-            .unwrap_or_default();
+            });
 
         let templates_dir = lookup(&format!("{prefix}_TEMPLATES_DIR"))
             .ok()

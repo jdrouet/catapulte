@@ -32,12 +32,12 @@ enum Outcome {
 struct StubProcessor(Outcome);
 
 impl ProcessQueuedEmailUseCase for StubProcessor {
-    async fn execute(
+    fn execute(
         &self,
         _: EmailId,
         _: Envelope,
-    ) -> Result<ProcessedEmail, ProcessQueuedEmailError> {
-        match self.0 {
+    ) -> impl Future<Output = Result<ProcessedEmail, ProcessQueuedEmailError>> {
+        std::future::ready(match self.0 {
             Outcome::Sent => Ok(ProcessedEmail {
                 sender_name: SenderName::new("primary"),
                 smtp_response: None,
@@ -45,7 +45,7 @@ impl ProcessQueuedEmailUseCase for StubProcessor {
                 suppressed: vec![],
             }),
             Outcome::PermanentFailure => Err(ProcessQueuedEmailError::AllRecipientsSuppressed),
-        }
+        })
     }
 }
 

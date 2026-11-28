@@ -375,22 +375,33 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl AttachmentStore for FakeAttachmentStore {
-        async fn put(&self, _reader: AttachmentReader) -> Result<PutResult, AttachmentStoreError> {
-            Ok(PutResult {
+        fn put(
+            &self,
+            _reader: AttachmentReader,
+        ) -> impl Future<Output = Result<PutResult, AttachmentStoreError>> {
+            std::future::ready(Ok(PutResult {
                 blob: BlobRef {
                     backend: "fake".into(),
                     key: "fake-key".into(),
                 },
                 size_bytes: 0,
-            })
+            }))
         }
 
-        async fn get(&self, _blob: &BlobRef) -> Result<AttachmentReader, AttachmentStoreError> {
-            Ok(Box::pin(std::io::Cursor::new(b"fake content".to_vec())))
+        fn get(
+            &self,
+            _blob: &BlobRef,
+        ) -> impl Future<Output = Result<AttachmentReader, AttachmentStoreError>> {
+            std::future::ready(Ok::<AttachmentReader, _>(Box::pin(std::io::Cursor::new(
+                b"fake content".to_vec(),
+            ))))
         }
 
-        async fn delete(&self, _blob: &BlobRef) -> Result<(), AttachmentStoreError> {
-            Ok(())
+        fn delete(
+            &self,
+            _blob: &BlobRef,
+        ) -> impl Future<Output = Result<(), AttachmentStoreError>> {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -399,24 +410,30 @@ mod tests {
     }
 
     impl TemplateResolver for FakeResolver {
-        async fn resolve(&self, body: BodySource) -> Result<ResolvedBody, ResolveError> {
-            match body {
+        fn resolve(
+            &self,
+            body: BodySource,
+        ) -> impl Future<Output = Result<ResolvedBody, ResolveError>> {
+            std::future::ready(match body {
                 BodySource::Plain(p) => Ok(ResolvedBody::Plain(p)),
                 BodySource::Mjml(MjmlSource::Inline(s)) => Ok(ResolvedBody::Mjml(s)),
                 BodySource::Mjml(MjmlSource::Named(_) | MjmlSource::Remote(_)) => {
                     Ok(ResolvedBody::Mjml(self.inline_mjml.clone()))
                 }
-            }
+            })
         }
     }
 
     struct FailingResolver;
 
     impl TemplateResolver for FailingResolver {
-        async fn resolve(&self, _body: BodySource) -> Result<ResolvedBody, ResolveError> {
-            Err(ResolveError::NotFound {
+        fn resolve(
+            &self,
+            _body: BodySource,
+        ) -> impl Future<Output = Result<ResolvedBody, ResolveError>> {
+            std::future::ready(Err(ResolveError::NotFound {
                 name: "missing".into(),
-            })
+            }))
         }
     }
 
@@ -436,12 +453,12 @@ mod tests {
     }
 
     impl TemplateInterpolator for FakeInterpolator {
-        async fn interpolate(
+        fn interpolate(
             &self,
             body: ResolvedBody,
             variables: &Map<String, Value>,
-        ) -> Result<InterpolatedBody, InterpolateError> {
-            match body {
+        ) -> impl Future<Output = Result<InterpolatedBody, InterpolateError>> {
+            std::future::ready(match body {
                 ResolvedBody::Plain(p) => {
                     let (text, html) = p.into_parts();
                     let text = text.map(|t| apply_vars(&t, variables));
@@ -450,15 +467,18 @@ mod tests {
                     Ok(InterpolatedBody::Plain(plain))
                 }
                 ResolvedBody::Mjml(s) => Ok(InterpolatedBody::Mjml(apply_vars(&s, variables))),
-            }
+            })
         }
     }
 
     struct FakeRenderer;
 
     impl TemplateRenderer for FakeRenderer {
-        async fn render(&self, body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
-            match body {
+        fn render(
+            &self,
+            body: InterpolatedBody,
+        ) -> impl Future<Output = Result<RenderedBody, RenderError>> {
+            std::future::ready(match body {
                 InterpolatedBody::Plain(p) => Ok(RenderedBody::new(p)),
                 InterpolatedBody::Mjml(s) => {
                     let text = if let Some(start) = s.find("<mj-preview>") {
@@ -473,7 +493,7 @@ mod tests {
                     let plain = Plain::try_new(text, Some(html)).expect("html always present");
                     Ok(RenderedBody::new(plain))
                 }
-            }
+            })
         }
     }
 
@@ -487,8 +507,11 @@ mod tests {
     struct FakeSender;
 
     impl EmailSender for FakeSender {
-        async fn send(&self, _email: OutboundEmail) -> Result<SentEmail, SendError> {
-            Ok(sent("fake"))
+        fn send(
+            &self,
+            _email: OutboundEmail,
+        ) -> impl Future<Output = Result<SentEmail, SendError>> {
+            std::future::ready(Ok(sent("fake")))
         }
     }
 
@@ -510,46 +533,52 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl EmailSender for CapturingSender {
-        async fn send(&self, email: OutboundEmail) -> Result<SentEmail, SendError> {
+        fn send(&self, email: OutboundEmail) -> impl Future<Output = Result<SentEmail, SendError>> {
             *self.captured.lock().unwrap() = Some(email);
-            Ok(sent("capturing"))
+            std::future::ready(Ok(sent("capturing")))
         }
     }
 
     struct FailingSender;
 
     impl EmailSender for FailingSender {
-        async fn send(&self, _email: OutboundEmail) -> Result<SentEmail, SendError> {
-            Err(SendError::Send {
+        fn send(
+            &self,
+            _email: OutboundEmail,
+        ) -> impl Future<Output = Result<SentEmail, SendError>> {
+            std::future::ready(Err(SendError::Send {
                 sender_name: SenderName::new("failing"),
                 permanent: false,
                 category: crate::entity::failure_category::FailureCategory::TemporaryRejection,
                 source: anyhow::anyhow!("connection refused"),
-            })
+            }))
         }
     }
 
     struct FailingInterpolator;
 
     impl TemplateInterpolator for FailingInterpolator {
-        async fn interpolate(
+        fn interpolate(
             &self,
             _body: ResolvedBody,
             _variables: &Map<String, Value>,
-        ) -> Result<InterpolatedBody, InterpolateError> {
-            Err(InterpolateError::Engine {
+        ) -> impl Future<Output = Result<InterpolatedBody, InterpolateError>> {
+            std::future::ready(Err(InterpolateError::Engine {
                 source: anyhow::anyhow!("interpolation failed"),
-            })
+            }))
         }
     }
 
     struct FailingRenderer;
 
     impl TemplateRenderer for FailingRenderer {
-        async fn render(&self, _body: InterpolatedBody) -> Result<RenderedBody, RenderError> {
-            Err(RenderError::Mjml {
+        fn render(
+            &self,
+            _body: InterpolatedBody,
+        ) -> impl Future<Output = Result<RenderedBody, RenderError>> {
+            std::future::ready(Err(RenderError::Mjml {
                 source: anyhow::anyhow!("render failed"),
-            })
+            }))
         }
     }
 
@@ -746,42 +775,50 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl crate::port::suppression_repository::SuppressionRepository for FixedSuppressions {
-        async fn list(
+        fn list(
             &self,
             _: crate::port::suppression_repository::ListSuppressionsParams,
-        ) -> Result<
-            Vec<crate::entity::suppression::Suppression>,
-            crate::port::suppression_repository::SuppressionRepositoryError,
+        ) -> impl Future<
+            Output = Result<
+                Vec<crate::entity::suppression::Suppression>,
+                crate::port::suppression_repository::SuppressionRepositoryError,
+            >,
         > {
-            Ok(vec![])
+            std::future::ready(Ok(vec![]))
         }
 
-        async fn add(
+        fn add(
             &self,
             _: &[crate::entity::suppression::Suppression],
-        ) -> Result<(), crate::port::suppression_repository::SuppressionRepositoryError> {
-            Ok(())
+        ) -> impl Future<
+            Output = Result<(), crate::port::suppression_repository::SuppressionRepositoryError>,
+        > {
+            std::future::ready(Ok(()))
         }
 
-        async fn delete(
+        fn delete(
             &self,
             _: &str,
-        ) -> Result<bool, crate::port::suppression_repository::SuppressionRepositoryError> {
-            Ok(false)
+        ) -> impl Future<
+            Output = Result<bool, crate::port::suppression_repository::SuppressionRepositoryError>,
+        > {
+            std::future::ready(Ok(false))
         }
 
-        async fn find_suppressed(
+        fn find_suppressed(
             &self,
             addresses: &[String],
-        ) -> Result<
-            std::collections::HashSet<String>,
-            crate::port::suppression_repository::SuppressionRepositoryError,
+        ) -> impl Future<
+            Output = Result<
+                std::collections::HashSet<String>,
+                crate::port::suppression_repository::SuppressionRepositoryError,
+            >,
         > {
-            Ok(addresses
+            std::future::ready(Ok(addresses
                 .iter()
                 .filter(|a| self.0.contains(&a.as_str()))
                 .cloned()
-                .collect())
+                .collect()))
         }
     }
 
@@ -1140,13 +1177,16 @@ mod tests {
     struct PermanentSender;
 
     impl EmailSender for PermanentSender {
-        async fn send(&self, _email: OutboundEmail) -> Result<SentEmail, SendError> {
-            Err(SendError::Send {
+        fn send(
+            &self,
+            _email: OutboundEmail,
+        ) -> impl Future<Output = Result<SentEmail, SendError>> {
+            std::future::ready(Err(SendError::Send {
                 sender_name: SenderName::new("failing"),
                 permanent: true,
                 category: crate::entity::failure_category::FailureCategory::PermanentRejection,
                 source: anyhow::anyhow!("550 5.1.1 unknown user"),
-            })
+            }))
         }
     }
 
@@ -1178,23 +1218,25 @@ mod tests {
     }
 
     impl crate::port::email_transport::EmailTransport for SizeLimitedTransport {
-        async fn deliver<'a>(
+        fn deliver<'a>(
             &'a self,
             email: &'a OutboundEmail,
-        ) -> Result<
-            crate::port::email_transport::DeliveryReceipt,
-            crate::port::email_transport::TransportError,
+        ) -> impl Future<
+            Output = Result<
+                crate::port::email_transport::DeliveryReceipt,
+                crate::port::email_transport::TransportError,
+            >,
         > {
             let size =
                 email.body.html().map_or(0, str::len) + email.body.text().map_or(0, str::len);
             if size > self.max {
-                return Err(crate::port::email_transport::TransportError {
+                return std::future::ready(Err(crate::port::email_transport::TransportError {
                     kind: crate::port::email_transport::TransportErrorKind::PermanentMessage,
                     category: crate::entity::failure_category::FailureCategory::Other,
                     source: anyhow::anyhow!("rendered message exceeds CATAPULTE_MAX_MESSAGE_BYTES"),
-                });
+                }));
             }
-            Ok(crate::port::email_transport::DeliveryReceipt::default())
+            std::future::ready(Ok(crate::port::email_transport::DeliveryReceipt::default()))
         }
     }
 
@@ -1246,10 +1288,13 @@ mod tests {
     struct NoMatchingRouteSender;
 
     impl EmailSender for NoMatchingRouteSender {
-        async fn send(&self, _email: OutboundEmail) -> Result<SentEmail, SendError> {
-            Err(SendError::NoMatchingRoute {
+        fn send(
+            &self,
+            _email: OutboundEmail,
+        ) -> impl Future<Output = Result<SentEmail, SendError>> {
+            std::future::ready(Err(SendError::NoMatchingRoute {
                 sender_domain: "example.com".to_owned(),
-            })
+            }))
         }
     }
 

@@ -160,8 +160,8 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl ListSendersUseCase for NoopListSenders {
-        async fn execute(&self) -> Result<Vec<SenderSnapshot>, ListSendersError> {
-            Ok(vec![])
+        fn execute(&self) -> impl Future<Output = Result<Vec<SenderSnapshot>, ListSendersError>> {
+            std::future::ready(Ok(vec![]))
         }
     }
 
@@ -169,11 +169,11 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl ListEmailsUseCase for NoopListEmails {
-        async fn execute(
+        fn execute(
             &self,
             _params: ListEmailsParams,
-        ) -> Result<Vec<EmailRecord>, ListEmailsError> {
-            Ok(vec![])
+        ) -> impl Future<Output = Result<Vec<EmailRecord>, ListEmailsError>> {
+            std::future::ready(Ok(vec![]))
         }
     }
 
@@ -181,11 +181,11 @@ mod tests {
     struct FakeSubmit;
 
     impl SubmitEmailUseCase for FakeSubmit {
-        async fn execute(
+        fn execute(
             &self,
             _input: catapulte_domain::use_case::submit_email::SubmitEmailInput,
-        ) -> Result<EmailId, SubmitEmailError> {
-            Ok(EmailId::default())
+        ) -> impl Future<Output = Result<EmailId, SubmitEmailError>> {
+            std::future::ready(Ok(EmailId::default()))
         }
     }
 
@@ -213,12 +213,12 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl ListEventsUseCase for FakeListEvents {
-        async fn execute(
+        fn execute(
             &self,
             params: ListEventsParams,
-        ) -> Result<Vec<EventRecord>, ListEventsError> {
+        ) -> impl Future<Output = Result<Vec<EventRecord>, ListEventsError>> {
             *self.captured_params.lock().unwrap() = Some(params);
-            Ok((*self.result).clone())
+            std::future::ready(Ok((*self.result).clone()))
         }
     }
 
@@ -226,21 +226,25 @@ mod tests {
 
     #[allow(async_fn_in_trait)]
     impl ListEventsUseCase for FailingListEvents {
-        async fn execute(
+        fn execute(
             &self,
             _params: ListEventsParams,
-        ) -> Result<Vec<EventRecord>, ListEventsError> {
-            Err(ListEventsError::Repository(EventRepositoryError::Storage {
-                source: anyhow::anyhow!("db down"),
-            }))
+        ) -> impl Future<Output = Result<Vec<EventRecord>, ListEventsError>> {
+            std::future::ready(Err(ListEventsError::Repository(
+                EventRepositoryError::Storage {
+                    source: anyhow::anyhow!("db down"),
+                },
+            )))
         }
     }
 
     struct NoopReadiness;
 
     impl catapulte_domain::use_case::check_readiness::CheckReadinessUseCase for NoopReadiness {
-        async fn check_readiness(&self) -> catapulte_domain::use_case::check_readiness::Readiness {
-            catapulte_domain::use_case::check_readiness::Readiness::Ready
+        fn check_readiness(
+            &self,
+        ) -> impl Future<Output = catapulte_domain::use_case::check_readiness::Readiness> {
+            std::future::ready(catapulte_domain::use_case::check_readiness::Readiness::Ready)
         }
     }
 

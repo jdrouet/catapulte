@@ -255,8 +255,11 @@ mod tests {
     struct FixedLookup(Option<EmailSummary>);
 
     impl EmailLookup for FixedLookup {
-        async fn find(&self, _: EmailId) -> Result<Option<EmailSummary>, EmailLookupError> {
-            Ok(self.0.clone())
+        fn find(
+            &self,
+            _: EmailId,
+        ) -> impl Future<Output = Result<Option<EmailSummary>, EmailLookupError>> {
+            std::future::ready(Ok(self.0.clone()))
         }
     }
 
@@ -267,34 +270,43 @@ mod tests {
     }
 
     impl EventPublisher for Recorder {
-        async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+        fn publish(
+            &self,
+            event: &LifecycleEvent,
+        ) -> impl Future<Output = Result<(), EventPublisherError>> {
             self.events.lock().unwrap().push(event.clone());
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
     impl SuppressionRepository for Recorder {
-        async fn list(
+        fn list(
             &self,
             _: ListSuppressionsParams,
-        ) -> Result<Vec<Suppression>, SuppressionRepositoryError> {
-            Ok(vec![])
+        ) -> impl Future<Output = Result<Vec<Suppression>, SuppressionRepositoryError>> {
+            std::future::ready(Ok(vec![]))
         }
 
-        async fn add(&self, entries: &[Suppression]) -> Result<(), SuppressionRepositoryError> {
+        fn add(
+            &self,
+            entries: &[Suppression],
+        ) -> impl Future<Output = Result<(), SuppressionRepositoryError>> {
             self.added.lock().unwrap().extend_from_slice(entries);
-            Ok(())
+            std::future::ready(Ok(()))
         }
 
-        async fn delete(&self, _: &str) -> Result<bool, SuppressionRepositoryError> {
-            Ok(false)
+        fn delete(
+            &self,
+            _: &str,
+        ) -> impl Future<Output = Result<bool, SuppressionRepositoryError>> {
+            std::future::ready(Ok(false))
         }
 
-        async fn find_suppressed(
+        fn find_suppressed(
             &self,
             _: &[String],
-        ) -> Result<HashSet<String>, SuppressionRepositoryError> {
-            Ok(HashSet::new())
+        ) -> impl Future<Output = Result<HashSet<String>, SuppressionRepositoryError>> {
+            std::future::ready(Ok(HashSet::new()))
         }
     }
 

@@ -88,13 +88,13 @@ mod tests {
     }
 
     impl EmailCancellation for FakeCancellation {
-        async fn cancel(
+        fn cancel(
             &self,
             _id: EmailId,
             owner: Option<&str>,
-        ) -> Result<CancelOutcome, EmailRepositoryError> {
+        ) -> impl Future<Output = Result<CancelOutcome, EmailRepositoryError>> {
             self.owners.lock().unwrap().push(owner.map(str::to_owned));
-            Ok(self.outcome.clone())
+            std::future::ready(Ok(self.outcome.clone()))
         }
 
         async fn start_delivery(
@@ -108,14 +108,14 @@ mod tests {
     struct FailingCancellation;
 
     impl EmailCancellation for FailingCancellation {
-        async fn cancel(
+        fn cancel(
             &self,
             _id: EmailId,
             _owner: Option<&str>,
-        ) -> Result<CancelOutcome, EmailRepositoryError> {
-            Err(EmailRepositoryError::Storage {
+        ) -> impl Future<Output = Result<CancelOutcome, EmailRepositoryError>> {
+            std::future::ready(Err(EmailRepositoryError::Storage {
                 source: anyhow::anyhow!("db down"),
-            })
+            }))
         }
 
         async fn start_delivery(
@@ -133,14 +133,17 @@ mod tests {
     }
 
     impl EventPublisher for Spy {
-        async fn publish(&self, event: &LifecycleEvent) -> Result<(), EventPublisherError> {
+        fn publish(
+            &self,
+            event: &LifecycleEvent,
+        ) -> impl Future<Output = Result<(), EventPublisherError>> {
             self.events.lock().unwrap().push(event.clone());
             if self.fail {
-                return Err(EventPublisherError::Publish {
+                return std::future::ready(Err(EventPublisherError::Publish {
                     source: anyhow::anyhow!("bus down"),
-                });
+                }));
             }
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 

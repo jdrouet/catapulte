@@ -1,4 +1,6 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1.95.0-alpine3.23 AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.100.0-alpine3.23 AS chef
+# No cargo-chef image ships Rust 1.100.1 yet; the workspace MSRV requires it.
+RUN rustup toolchain install 1.100.1 --profile minimal && rustup default 1.100.1
 WORKDIR /app
 
 # Run the planner on the native build host: `cargo chef prepare` only parses the
