@@ -1,6 +1,85 @@
 # Changelog
 
 All notable changes to this project are documented here.
+## [2.1.0] - 2026-11-27
+
+### Bug fixes
+- Reject stale ack and nack on the storage queues
+- Reject stale ack and nack on the storage queues (#832)
+- Bump lettre to 0.11.24 and keep rejecting quoted addresses (#842)
+- Keep the in-memory database alive for the whole process (#858)
+- Keep mail relay replies out of failed-send logs (#854)
+- Count sender usage from delivery event types (#861)
+- Drop async-nats wire frames at TRACE (#863)
+- Keep less common in-memory URL forms alive (#866)
+- Keep remote replies out of publish failure logs (#870)
+- Record an email as finished in the same step that removes it from the queue (#878)
+- Drop library log lines carrying broker errors or webhook hosts (#889)
+
+### Documentation
+- Scheduled sends on the storage queue
+- Scheduled sends on the NATS and memory queues
+- Note that the deployment decision is amended too
+- Note the remaining late-announcement window
+- Scheduled sends on NATS and memory queues
+- Upgrade note for the stored delivery outcome
+
+### Features
+- Persist send_at_ms and enqueue each email once
+- Accept send_at_ms for scheduled sends
+- Scheduled status and send_at_ms in GET /emails
+- Cancel a scheduled email that no worker has touched
+- POST /emails/{id}/cancel
+- Scheduled sends (send_at_ms) and cancellation (#823)
+- Fence delivery of scheduled emails against cancel
+- Announce once on queues that do not track enqueue state
+- Renew a dequeued message's claim
+- Never process a scheduled email early and honour the cancel fence
+- Hold scheduled emails in the memory queue
+- Schedule future sends with JetStream message schedules
+- Accept scheduled sends on the NATS and memory queues
+- Scheduled sends on the NATS and memory queues (#827)
+- Delete old emails after a configurable retention period (#867)
+- Report a failure_category on failed sends (#879)
+- Warn at startup when retention is shorter than a quota window (#887)
+
+### Miscellaneous
+- Bump sha2 to 0.11 and hmac to 0.13 (#838)
+- Bump redis from 1.8.1 to 1.8.2 (#839)
+- Update lockfile and checkout action (#841)
+- Fix lints from current stable (#843)
+
+### Performance
+- Claim storage-queue rows by availability time
+- Index emails by owner and creation time
+- Index emails by owner and creation time (#833)
+- Store each email's latest terminal event on sqlite
+- Store each email's latest terminal event on postgres
+- List sqlite emails from the stored terminal event
+- List postgres emails from the stored terminal event
+- List emails from a stored delivery outcome (#835)
+
+### Refactor
+- Take terminal event names from the domain (#869)
+
+### Testing
+- Wait up to 60 s for the server to become ready
+- Wait up to 60 s for the server to become ready (#822)
+- Scheduled delivery and cancellation end to end
+- Remove test containers when the test process exits
+- Share one Postgres server across scenarios
+- Wait for the final Postgres server and retry container cleanup
+- Remove test containers when the test process exits (#826)
+- Fail scenarios at once when the app stops before readiness
+- Fail scenarios at once when the app stops before readiness (#831)
+- Require email id and attempt on the failed-send event (#865)
+- Assert budget outcomes instead of wall-clock time (#876)
+- Make the orphaned queue entry due before dequeuing it (#881)
+- Prove TRACE logs never carry email contents on the NATS queue (#874)
+- Assert on limits, not wall-clock time (#883)
+- Measure the renewed claim from before the renewal (#884)
+- Cover every delivery failure category (#885)
+
 ## [2.0.0] - 2026-11-11
 
 ### Bug fixes
