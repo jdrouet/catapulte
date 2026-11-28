@@ -133,7 +133,11 @@ impl EmailQueue for QueueAdapter {
                     .publish(event)
                     .await
                     .map_err(|e| EmailQueueError::Storage { source: e.into() })?;
-                a.ack(token).await.map(|()| FinishOutcome::Recorded)
+                // Once stored, the event must still reach the sinks; dequeue skips the redelivery.
+                if let Err(e) = a.ack(token).await {
+                    tracing::warn!(error = %e, "failed to ack a finished email");
+                }
+                Ok(FinishOutcome::Recorded)
             }
         }
     }
@@ -249,7 +253,7 @@ mod tests {
     use catapulte_domain::entity::envelope::Envelope;
     use catapulte_domain::entity::lifecycle_event::{EventContext, LifecycleEvent};
     use catapulte_domain::entity::sender::SenderName;
-    use catapulte_domain::port::email_queue::{EmailQueue, FinishOutcome};
+    use catapulte_domain::port::email_queue::{AckToken, EmailQueue, FinishOutcome};
     use catapulte_domain::port::email_repository::EmailRepository;
     use catapulte_domain::port::event_publisher::EventPublisher;
     use catapulte_domain::port::event_repository::{EventRepository, ListEventsParams};
@@ -372,6 +376,25 @@ mod tests {
         assert_eq!(outcome, FinishOutcome::Recorded);
         assert_eq!(h.succeeded_events(id).await, 1);
         assert_eq!(h.unacked().await, 0);
+    }
+
+    #[tokio::test]
+    async fn nats_queue_finish_reports_recorded_when_the_ack_fails() {
+        let h = NatsHarness::start().await;
+        let id = h.enqueue().await;
+        let _dequeued = h.queue.dequeue().await.unwrap();
+
+        let outcome = h
+            .queue
+            .finish(AckToken::new(vec![0xff]), &sent(id))
+            .await
+            .unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(4), h.queue.dequeue()).await;
+
+        assert_eq!(outcome, FinishOutcome::Recorded);
+        assert!(next.is_err(), "the finished email was handed out again");
+        assert_eq!(h.unacked().await, 0);
+        assert_eq!(h.succeeded_events(id).await, 1);
     }
 
     #[tokio::test]
