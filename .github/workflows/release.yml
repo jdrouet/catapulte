@@ -106,6 +106,15 @@ jobs:
               MERGED) break ;;
               CLOSED) echo "::error::release PR closed without merging"; exit 1 ;;
             esac
+            # Errors before required checks are reported; empty means none failed yet.
+            FAILED="$(gh pr checks "$BRANCH" --required --json name,bucket \
+              --jq '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | join(", ")' || true)"
+            if [ -n "$FAILED" ]; then
+              # Keep a later rerun of the check from merging a release that has no tag.
+              gh pr merge "$BRANCH" --disable-auto || true
+              echo "::error::release PR checks failed: $FAILED"
+              exit 1
+            fi
             sleep 30
           done
           echo "sha=$(gh pr view "$BRANCH" --json mergeCommit --jq .mergeCommit.oid)" >> "$GITHUB_OUTPUT"
