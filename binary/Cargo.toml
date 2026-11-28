@@ -45,7 +45,7 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 catapulte = { path = ".", features = ["test-hooks"] }
-async-nats = "0.52"
+async-nats = "0.53"
 base64 = { version = "0.23" }
 futures-util = "0.3"
 paste = "1"
