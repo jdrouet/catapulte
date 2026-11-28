@@ -26,7 +26,7 @@ members = [
 version = "2.1.0"
 license = "AGPL-3.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.100.1"
 publish = false
 
 [workspace.dependencies]
